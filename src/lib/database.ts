@@ -1,0 +1,216 @@
+import { Pool, PoolConfig } from 'pg'
+import dotenv from 'dotenv'
+
+// Load environment variables
+dotenv.config()
+
+interface DatabaseConfig extends PoolConfig {
+  min?: number
+  max?: number
+}
+
+// Database configuration
+const config: DatabaseConfig = {
+  host: process.env.DB_HOST || 'localhost',
+  port: parseInt(process.env.DB_PORT || '5432'),
+  database: process.env.DB_NAME || 'legitify_convey_hub',
+  user: process.env.DB_USER || 'your_username',
+  password: process.env.DB_PASSWORD || 'your_password',
+  ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false,
+  min: parseInt(process.env.DB_MIN_CONNECTIONS || '2'),
+  max: parseInt(process.env.DB_MAX_CONNECTIONS || '10'),
+  // Connection timeout settings
+  connectionTimeoutMillis: 10000,
+  idleTimeoutMillis: 30000,
+  // Query timeout
+  query_timeout: 30000,
+}
+
+// Create connection pool
+const pool = new Pool(config)
+
+// Handle pool errors
+pool.on('error', (err) => {
+  console.error('Unexpected error on idle client', err)
+  process.exit(-1)
+})
+
+// Database connection class
+export class Database {
+  private static instance: Database
+  private pool: Pool
+
+  constructor() {
+    this.pool = pool
+  }
+
+  // Singleton pattern
+  public static getInstance(): Database {
+    if (!Database.instance) {
+      Database.instance = new Database()
+    }
+    return Database.instance
+  }
+
+  // Test connection
+  public async testConnection(): Promise<boolean> {
+    try {
+      const client = await this.pool.connect()
+      await client.query('SELECT NOW()')
+      client.release()
+      console.log('✅ Database connection successful')
+      return true
+    } catch (error) {
+      console.error('❌ Database connection failed:', error)
+      return false
+    }
+  }
+
+  // Execute query
+  public async query(text: string, params?: any[]): Promise<any> {
+    const start = Date.now()
+    try {
+      const result = await this.pool.query(text, params)
+      const duration = Date.now() - start
+      console.log('Executed query', { text, duration, rows: result.rowCount })
+      return result
+    } catch (error) {
+      console.error('Query error:', { text, error })
+      throw error
+    }
+  }
+
+  // Get transaction client
+  public async getClient(): Promise<any> {
+    return await this.pool.connect()
+  }
+
+  // Execute transaction
+  public async transaction(callback: (client: any) => Promise<any>): Promise<any> {
+    const client = await this.getClient()
+    try {
+      await client.query('BEGIN')
+      const result = await callback(client)
+      await client.query('COMMIT')
+      return result
+    } catch (error) {
+      await client.query('ROLLBACK')
+      throw error
+    } finally {
+      client.release()
+    }
+  }
+
+  // Close all connections
+  public async close(): Promise<void> {
+    await this.pool.end()
+    console.log('Database connection pool closed')
+  }
+
+  // Get pool stats
+  public getPoolStats() {
+    return {
+      totalCount: this.pool.totalCount,
+      idleCount: this.pool.idleCount,
+      waitingCount: this.pool.waitingCount,
+    }
+  }
+}
+
+// Export singleton instance
+export const db = Database.getInstance()
+
+// Database initialization
+export const initializeDatabase = async (): Promise<void> => {
+  try {
+    const connected = await db.testConnection()
+    if (!connected) {
+      throw new Error('Failed to connect to database')
+    }
+    
+    // Create tables if they don't exist
+    await createTables()
+    console.log('✅ Database initialized successfully')
+  } catch (error) {
+    console.error('❌ Database initialization failed:', error)
+    throw error
+  }
+}
+
+// Create database tables
+const createTables = async (): Promise<void> => {
+  const queries = [
+    // Transfers table
+    `CREATE TABLE IF NOT EXISTS transfers (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      transfer_id VARCHAR(50) UNIQUE NOT NULL,
+      property_address TEXT NOT NULL,
+      purchase_price DECIMAL(12,2) NOT NULL,
+      transfer_duty DECIMAL(12,2),
+      conveyancing_fees DECIMAL(12,2),
+      deeds_office_fees DECIMAL(12,2),
+      vat DECIMAL(12,2),
+      total_costs DECIMAL(12,2),
+      status VARCHAR(50) DEFAULT 'draft',
+      current_step INTEGER DEFAULT 1,
+      total_steps INTEGER DEFAULT 5,
+      progress INTEGER DEFAULT 0,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )`,
+
+    // Parties table
+    `CREATE TABLE IF NOT EXISTS parties (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      transfer_id UUID REFERENCES transfers(id) ON DELETE CASCADE,
+      name VARCHAR(255) NOT NULL,
+      type VARCHAR(50) NOT NULL CHECK (type IN ('buyer', 'seller')),
+      id_number VARCHAR(13),
+      registration_number VARCHAR(50),
+      email VARCHAR(255),
+      phone VARCHAR(50),
+      address TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )`,
+
+    // Documents table
+    `CREATE TABLE IF NOT EXISTS documents (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      transfer_id UUID REFERENCES transfers(id) ON DELETE CASCADE,
+      name VARCHAR(255) NOT NULL,
+      file_path TEXT,
+      file_size INTEGER,
+      file_type VARCHAR(100),
+      category VARCHAR(100),
+      status VARCHAR(50) DEFAULT 'pending',
+      uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )`,
+
+    // Users table
+    `CREATE TABLE IF NOT EXISTS users (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      email VARCHAR(255) UNIQUE NOT NULL,
+      name VARCHAR(255) NOT NULL,
+      role VARCHAR(50) DEFAULT 'user',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )`,
+
+    // Create indexes for better performance
+    `CREATE INDEX IF NOT EXISTS idx_transfers_status ON transfers(status)`,
+    `CREATE INDEX IF NOT EXISTS idx_transfers_created_at ON transfers(created_at)`,
+    `CREATE INDEX IF NOT EXISTS idx_parties_transfer_id ON parties(transfer_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_documents_transfer_id ON documents(transfer_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)`,
+  ]
+
+  for (const query of queries) {
+    await db.query(query)
+  }
+}
+
+// Export database utilities
+export { pool }
+export default db

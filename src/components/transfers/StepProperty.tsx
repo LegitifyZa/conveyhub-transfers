@@ -1,4 +1,5 @@
-import React from 'react'
+import React, { useEffect } from 'react'
+import { useLocation } from 'react-router-dom'
 import { Building, MapPin, Home, FileText } from 'lucide-react'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui'
 import { Input } from '@/components/ui'
@@ -7,6 +8,28 @@ import { useTransfer, PropertyDetails } from './TransferForm'
 const StepProperty: React.FC = () => {
   const { state, dispatch } = useTransfer()
   const { propertyDetails } = state
+  const location = useLocation()
+  const goldenRecord = location.state?.goldenRecord
+
+  // Auto-populate from golden record if available
+  useEffect(() => {
+    if (goldenRecord) {
+      dispatch({
+        type: 'UPDATE_PROPERTY_DETAILS',
+        payload: {
+          address: goldenRecord.propertyAddress || '',
+          city: '',
+          state: '',
+          zipCode: '',
+          propertyType: 'Single Family Home',
+          lotNumber: '',
+          legalDescription: '',
+          yearBuilt: '',
+          squareFootage: ''
+        }
+      })
+    }
+  }, [goldenRecord, dispatch])
 
   const updatePropertyDetails = (field: keyof PropertyDetails, value: string) => {
     dispatch({

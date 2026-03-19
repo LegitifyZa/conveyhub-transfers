@@ -1,7 +1,8 @@
 import React from 'react'
-import { Bell, Search, User, Moon, Sun } from 'lucide-react'
+import { Bell, Search, User, Moon, Sun, Home } from 'lucide-react'
 import { Button } from '@/components/ui'
 import { cn } from '@/utils/cn'
+import { useNavigate } from 'react-router-dom'
 
 interface HeaderProps {
   className?: string
@@ -9,6 +10,7 @@ interface HeaderProps {
 
 const Header: React.FC<HeaderProps> = ({ className }) => {
   const [isDarkMode, setIsDarkMode] = React.useState(false)
+  const navigate = useNavigate()
 
   React.useEffect(() => {
     const isDark = localStorage.getItem('darkMode') === 'true'
@@ -23,6 +25,10 @@ const Header: React.FC<HeaderProps> = ({ className }) => {
     setIsDarkMode(newDarkMode)
     localStorage.setItem('darkMode', newDarkMode.toString())
     document.documentElement.classList.toggle('dark')
+  }
+
+  const goHome = () => {
+    navigate('/')
   }
 
   return (
@@ -43,6 +49,11 @@ const Header: React.FC<HeaderProps> = ({ className }) => {
         </div>
 
         <div className="flex items-center space-x-3">
+          <Button variant="ghost" size="sm" onClick={goHome} className="flex items-center space-x-2">
+            <Home className="h-5 w-5" />
+            <span>Home</span>
+          </Button>
+          
           <Button variant="ghost" size="sm" className="relative">
             <Bell className="h-5 w-5" />
             <span className="absolute -top-1 -right-1 h-2 w-2 bg-teal-500 rounded-full"></span>

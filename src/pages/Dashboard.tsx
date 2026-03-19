@@ -9,6 +9,7 @@ import {
   Calendar,
   Building
 } from 'lucide-react'
+import { formatZAR } from '@/utils/transferCalculations'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui'
 import { Button } from '@/components/ui'
 
@@ -32,7 +33,7 @@ const Dashboard: React.FC = () => {
     },
     {
       title: 'Revenue',
-      value: '$124,500',
+      value: formatZAR(124500),
       change: '+23%',
       changeType: 'positive' as const,
       icon: TrendingUp,
@@ -54,7 +55,7 @@ const Dashboard: React.FC = () => {
       client: 'John Smith',
       property: '123 Oak Street',
       status: 'In Progress',
-      value: '$450,000',
+      value: formatZAR(450000),
       dueDate: '2024-03-25'
     },
     {
@@ -62,7 +63,7 @@ const Dashboard: React.FC = () => {
       client: 'Sarah Johnson',
       property: '456 Elm Avenue',
       status: 'Review',
-      value: '$325,000',
+      value: formatZAR(325000),
       dueDate: '2024-03-28'
     },
     {
@@ -70,7 +71,7 @@ const Dashboard: React.FC = () => {
       client: 'Michael Brown',
       property: '789 Pine Road',
       status: 'Pending',
-      value: '$580,000',
+      value: formatZAR(580000),
       dueDate: '2024-04-01'
     }
   ]

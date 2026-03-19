@@ -6,9 +6,9 @@ import {
   MoreVertical,
   Building,
   User,
-  Calendar,
-  DollarSign
+  Calendar
 } from 'lucide-react'
+import { formatZAR } from '@/utils/transferCalculations'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui'
 import { Button } from '@/components/ui'
 import { Input } from '@/components/ui'
@@ -21,41 +21,41 @@ const Cases: React.FC = () => {
       property: '123 Oak Street, Downtown',
       type: 'Residential',
       status: 'In Progress',
-      value: '$450,000',
+      value: formatZAR(450000),
       assignedTo: 'Sarah Johnson',
       dueDate: '2024-03-25',
       priority: 'high'
     },
     {
       id: 'CASE-002',
-      client: 'Emily Davis',
+      client: 'Sarah Johnson',
       property: '456 Elm Avenue, Westside',
       type: 'Commercial',
       status: 'Review',
-      value: '$825,000',
+      value: formatZAR(825000),
       assignedTo: 'Michael Brown',
       dueDate: '2024-03-28',
       priority: 'medium'
     },
     {
       id: 'CASE-003',
-      client: 'Robert Wilson',
+      client: 'Michael Brown',
       property: '789 Pine Road, North District',
       type: 'Residential',
       status: 'Pending',
-      value: '$580,000',
+      value: formatZAR(580000),
       assignedTo: 'Lisa Anderson',
       dueDate: '2024-04-01',
       priority: 'low'
     },
     {
       id: 'CASE-004',
-      client: 'Jennifer Martinez',
+      client: 'David Lee',
       property: '321 Maple Drive, Eastside',
       type: 'Residential',
       status: 'In Progress',
-      value: '$320,000',
-      assignedTo: 'David Lee',
+      value: formatZAR(320000),
+      assignedTo: 'Robert Wilson',
       dueDate: '2024-03-30',
       priority: 'high'
     }
@@ -177,10 +177,7 @@ const Cases: React.FC = () => {
                       </span>
                     </td>
                     <td className="py-3 px-4">
-                      <div className="flex items-center space-x-1">
-                        <DollarSign className="h-4 w-4 text-gray-400" />
-                        <span className="font-medium text-gray-900 dark:text-gray-100">{case_.value}</span>
-                      </div>
+                      <span className="font-medium text-gray-900 dark:text-gray-100">{case_.value}</span>
                     </td>
                     <td className="py-3 px-4">
                       <span className="text-gray-700 dark:text-gray-300">{case_.assignedTo}</span>

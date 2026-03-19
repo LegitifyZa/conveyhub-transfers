@@ -1,4 +1,5 @@
-import React from 'react'
+import React, { useEffect } from 'react'
+import { useLocation } from 'react-router-dom'
 import { Users, Plus, Trash2, User, Star, Phone, Mail } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui'
 import { Input } from '@/components/ui'
@@ -8,6 +9,25 @@ import { useTransfer, Party } from './TransferForm'
 const StepParties: React.FC = () => {
   const { state, dispatch } = useTransfer()
   const { parties } = state
+  const location = useLocation()
+  const goldenRecord = location.state?.goldenRecord
+
+  // Auto-populate buyer from golden record if available
+  useEffect(() => {
+    if (goldenRecord && parties.filter(p => p.type === 'buyer').length === 0) {
+      const newParty: Party = {
+        id: Date.now().toString(),
+        type: 'buyer',
+        name: goldenRecord.name,
+        idNumber: goldenRecord.idNumber,
+        email: goldenRecord.email || '',
+        phone: goldenRecord.phone || '',
+        address: goldenRecord.address || '',
+        isPrimary: true
+      }
+      dispatch({ type: 'ADD_PARTY', payload: newParty })
+    }
+  }, [goldenRecord, dispatch, parties])
 
   const addParty = (type: 'buyer' | 'seller') => {
     const newParty: Party = {

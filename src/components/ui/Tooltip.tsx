@@ -22,7 +22,7 @@ const Tooltip: React.FC<TooltipProps> = ({
 }) => {
   const [isVisible, setIsVisible] = useState(false)
   const triggerRef = useRef<HTMLDivElement>(null)
-  const timeoutRef = useRef<number>()
+  const timeoutRef = useRef<any>()
 
   const getPositionClasses = () => {
     const baseClasses = 'absolute z-50 pointer-events-none transition-all duration-200'
