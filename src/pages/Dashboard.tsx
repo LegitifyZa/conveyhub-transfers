@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { useState } from 'react'
 import { 
   TrendingUp, 
   Users, 
@@ -7,13 +7,22 @@ import {
   ArrowUpRight,
   ArrowDownRight,
   Calendar,
-  Building
+  Building,
+  Mail
 } from 'lucide-react'
 import { formatZAR } from '@/utils/transferCalculations'
-import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui'
+import { Card, CardHeader, CardTitle, CardContent, EmailModal } from '@/components/ui'
 import { Button } from '@/components/ui'
 
 const Dashboard: React.FC = () => {
+  const [isEmailModalOpen, setIsEmailModalOpen] = useState(false)
+
+  const handleSendEmail = (emailData: any) => {
+    console.log('Email sent:', emailData)
+    // Here you would integrate with your email service
+    // For now, we'll just log it
+    alert(`Email sent to ${emailData.clientName} at ${emailData.to}`)
+  }
   const stats = [
     {
       title: 'Active Cases',
@@ -101,10 +110,16 @@ const Dashboard: React.FC = () => {
           <h1 className="text-3xl font-bold tracking-tight text-gray-900 dark:text-gray-100">Dashboard</h1>
           <p className="text-gray-600 dark:text-gray-400">Welcome back, John. Here's what's happening today.</p>
         </div>
-        <Button variant="premium-primary">
-          <Calendar className="h-4 w-4 mr-2" />
-          Schedule Meeting
-        </Button>
+        <div className="flex space-x-3">
+          <Button variant="premium-primary" onClick={() => setIsEmailModalOpen(true)}>
+            <Mail className="h-4 w-4 mr-2" />
+            Send Email
+          </Button>
+          <Button variant="premium-primary">
+            <Calendar className="h-4 w-4 mr-2" />
+            Schedule Meeting
+          </Button>
+        </div>
       </div>
 
       {/* Stats Grid */}
@@ -184,6 +199,13 @@ const Dashboard: React.FC = () => {
           </CardContent>
         </Card>
       </div>
+
+      {/* Email Modal */}
+      <EmailModal
+        isOpen={isEmailModalOpen}
+        onClose={() => setIsEmailModalOpen(false)}
+        onSendEmail={handleSendEmail}
+      />
     </div>
   )
 }

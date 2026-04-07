@@ -13,11 +13,46 @@ users (UUID PK)
 └── updated_at (TIMESTAMP)
 ```
 
+### Properties
+```
+properties (UUID PK)
+├── id (UUID, PK)
+├── property_id (VARCHAR, UNIQUE)
+├── erf_number (VARCHAR)
+├── street_address (TEXT)
+├── suburb (VARCHAR)
+├── city (VARCHAR)
+├── postal_code (VARCHAR)
+├── province (VARCHAR)
+├── country (VARCHAR)
+├── property_type (ENUM: residential|commercial|industrial|agricultural|vacant_land)
+├── title_deed_number (VARCHAR)
+├── survey_general_number (VARCHAR)
+├── extent_sqm (DECIMAL)
+├── zoning (VARCHAR)
+├── rates_number (VARCHAR)
+├── municipal_valuation (DECIMAL)
+├── year_built (INTEGER)
+├── bedrooms (INTEGER)
+├── bathrooms (INTEGER)
+├── garages (INTEGER)
+├── parking_spaces (INTEGER)
+├── swimming_pool (BOOLEAN)
+├── security_features (TEXT)
+├── description (TEXT)
+├── latitude (DECIMAL)
+├── longitude (DECIMAL)
+├── status (ENUM: active|inactive|sold|under_offer|suspended)
+├── created_at (TIMESTAMP)
+└── updated_at (TIMESTAMP)
+```
+
 ### Transfers
 ```
 transfers (UUID PK)
 ├── id (UUID, PK)
 ├── transfer_id (VARCHAR, UNIQUE)
+├── property_id (UUID, FK→properties.id)
 ├── property_address (TEXT)
 ├── purchase_price (DECIMAL)
 ├── transfer_duty (DECIMAL)
@@ -83,9 +118,11 @@ audit_log (UUID PK)
 users (1) ──────── (∞) audit_log
   │
   │
-transfers (1) ──── (∞) parties
+properties (1) ──── (∞) transfers
   │                   │
-  │                   └─── (1) users (via audit)
+  │                   └─── (∞) parties
+  │                           │
+  │                           └─── (1) users (via audit)
   │
   └─── (∞) documents
 ```
@@ -97,6 +134,7 @@ transfers (1) ──── (∞) parties
 - Foreign key cascading deletes
 - Check constraints for enums
 - SA ID number validation
+- Postal code validation
 
 ### Triggers
 - Auto-updated_at timestamps
@@ -104,6 +142,7 @@ transfers (1) ──── (∞) parties
 - Audit logging for all changes
 
 ### Views
+- property_details (with transfer counts)
 - transfer_summary (with counts)
 - party_details (with transfer info)
 - document_details (with transfer info)
@@ -111,4 +150,5 @@ transfers (1) ──── (∞) parties
 ### Indexes
 - Performance indexes on foreign keys
 - Search indexes on email, name, status
+- Geospatial indexes on latitude/longitude
 - Time-based indexes on timestamps

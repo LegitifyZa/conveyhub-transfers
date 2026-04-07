@@ -13,9 +13,42 @@ erDiagram
         timestamp updated_at
     }
     
+    PROPERTIES {
+        uuid id PK
+        varchar property_id UK
+        varchar erf_number
+        text street_address
+        varchar suburb
+        varchar city
+        varchar postal_code
+        varchar province
+        varchar country
+        enum property_type
+        varchar title_deed_number
+        varchar survey_general_number
+        decimal extent_sqm
+        varchar zoning
+        varchar rates_number
+        decimal municipal_valuation
+        integer year_built
+        integer bedrooms
+        integer bathrooms
+        integer garages
+        integer parking_spaces
+        boolean swimming_pool
+        text security_features
+        text description
+        decimal latitude
+        decimal longitude
+        enum status
+        timestamp created_at
+        timestamp updated_at
+    }
+    
     TRANSFERS {
         uuid id PK
         varchar transfer_id UK
+        uuid property_id FK
         text property_address
         decimal purchase_price
         decimal transfer_duty
@@ -70,6 +103,7 @@ erDiagram
     }
     
     USERS ||--o{ AUDIT_LOG : creates
+    PROPERTIES ||--o{ TRANSFERS : has
     TRANSFERS ||--o{ PARTIES : has
     TRANSFERS ||--o{ DOCUMENTS : contains
     USERS ||--o{ AUDIT_LOG : modifies
@@ -79,11 +113,13 @@ erDiagram
 
 ### One-to-Many Relationships
 - **USERS** to **AUDIT_LOG**: One user can create many audit entries
+- **PROPERTIES** to **TRANSFERS**: One property can have many transfers
 - **TRANSFERS** to **PARTIES**: One transfer can have many parties
 - **TRANSFERS** to **DOCUMENTS**: One transfer can have many documents
 
 ### Cascade Delete Rules
 - Deleting a TRANSFER deletes associated PARTIES and DOCUMENTS
+- Deleting a PROPERTY sets TRANSFER.property_id to NULL (preserves history)
 - AUDIT_LOG entries are preserved for compliance
 
 ## Enum Values
@@ -92,6 +128,20 @@ erDiagram
 - `admin` - System administrator
 - `user` - Regular user
 - `conveyancer` - Legal practitioner
+
+### Property Types
+- `residential` - Residential property
+- `commercial` - Commercial property
+- `industrial` - Industrial property
+- `agricultural` - Agricultural land
+- `vacant_land` - Vacant land
+
+### Property Status
+- `active` - Currently available
+- `inactive` - Not available
+- `sold` - Sold and transferred
+- `under_offer` - Offer pending
+- `suspended` - Temporarily suspended
 
 ### Transfer Status
 - `draft` - Initial state
@@ -122,6 +172,7 @@ erDiagram
 - Audit logging for all modifications
 
 ### Views
+- `property_details` - Aggregated property data
 - `transfer_summary` - Aggregated transfer data
 - `party_details` - Party with transfer information
 - `document_details` - Document with transfer context
@@ -129,4 +180,11 @@ erDiagram
 ### Indexes
 - Performance optimization on foreign keys
 - Search indexes on email, name, status
+- Geospatial indexes on latitude/longitude
 - Time-based indexes for reporting
+
+### Property Features
+- **Geospatial**: Latitude/longitude for mapping
+- **South African Specific**: ERF numbers, title deeds, survey numbers
+- **Municipal Integration**: Rates numbers, valuations, zoning
+- **Comprehensive Attributes**: Bedrooms, bathrooms, amenities, security
