@@ -89,7 +89,7 @@ const StepProperty: React.FC = () => {
                 </label>
                 <Input
                   variant="premium"
-                  placeholder="New York"
+                  placeholder="Santon"
                   value={propertyDetails.city}
                   onChange={(e) => updatePropertyDetails('city', e.target.value)}
                   className="transition-all duration-200 focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
@@ -98,11 +98,11 @@ const StepProperty: React.FC = () => {
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                  State *
+                  Province *
                 </label>
                 <Input
                   variant="premium"
-                  placeholder="NY"
+                  placeholder="Gouteng"
                   value={propertyDetails.state}
                   onChange={(e) => updatePropertyDetails('state', e.target.value)}
                   className="transition-all duration-200 focus:ring-2 focus:ring-teal-500 focus:border-teal-500"

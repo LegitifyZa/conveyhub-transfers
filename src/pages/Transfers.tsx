@@ -8,6 +8,8 @@ import {
 import { StepProperty } from '@/components/transfers/StepProperty'
 import { StepParties } from '@/components/transfers/StepParties'
 import { StepFinancials } from '@/components/transfers/StepFinancials'
+import { StepDocuments } from '@/components/transfers/StepDocuments'
+import { StepReview } from '@/components/transfers/StepReview'
 import { TransferNavigation } from '@/components/transfers/TransferNavigation'
 
 const Transfers: React.FC = () => {
@@ -39,15 +41,9 @@ const TransferWorkflow: React.FC = () => {
       case 3:
         return <StepFinancials />
       case 4:
-        return <div className="text-center p-8">
-          <h2 className="text-2xl font-bold mb-4">Documents</h2>
-          <p className="text-gray-600">Document upload coming soon...</p>
-        </div>
+        return <StepDocuments />
       case 5:
-        return <div className="text-center p-8">
-          <h2 className="text-2xl font-bold mb-4">Review</h2>
-          <p className="text-gray-600">Review step coming soon...</p>
-        </div>
+        return <StepReview />
       default:
         return <StepProperty />
     }

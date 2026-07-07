@@ -1,7 +1,7 @@
 import React from 'react'
 import { ChevronLeft, ChevronRight, Save } from 'lucide-react'
 import { Button } from '@/components/ui'
-import { useTransfer, validatePropertyDetails, validateParties, validateFinancials, validateDocuments } from './TransferForm'
+import { useTransfer, validatePropertyDetails, validateParties, validateFinancials, validateDocuments, REQUIRED_DOCUMENT_TYPES } from './TransferForm'
 
 interface TransferNavigationProps {
   currentStep: number
@@ -69,12 +69,14 @@ const TransferNavigation: React.FC<TransferNavigationProps> = ({
         if (!state.financials.depositAmount) errors.push('Deposit amount is required')
         break
       case 4:
-        const requiredDocs = ['deed', 'title', 'survey']
-        requiredDocs.forEach(docType => {
-          const hasDoc = state.documents.some(doc => 
-            doc.name.toLowerCase().includes(docType.toLowerCase())
+        REQUIRED_DOCUMENT_TYPES.forEach(docType => {
+          const hasDoc = state.documents.some(doc =>
+            doc.type === docType && doc.status === 'uploaded'
           )
-          if (!hasDoc) errors.push(`${docType.charAt(0).toUpperCase() + docType.slice(1)} document is required`)
+          if (!hasDoc) {
+            const label = docType.split('_').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ')
+            errors.push(`${label} is required`)
+          }
         })
         break
     }
