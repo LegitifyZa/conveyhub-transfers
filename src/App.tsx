@@ -1,6 +1,6 @@
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom'
 import { MainLayout } from '@/layouts'
-import { Landing, Dashboard, Cases, Documents, Settings, NewTransfer, Transfers, Bonds, Cancellations, TransfersDashboard } from '@/pages'
+import { Landing, Dashboard, Cases, Documents, Settings, NewTransfer, Transfers, Bonds, Cancellations, TransfersDashboard, TransferMilestones } from '@/pages'
 
 function App() {
   return (
@@ -14,6 +14,7 @@ function App() {
         <Route path="/transfers" element={<MainLayout><TransfersDashboard /></MainLayout>} />
         <Route path="/transfers/new" element={<MainLayout><NewTransfer /></MainLayout>} />
         <Route path="/transfers/workflow" element={<MainLayout><Transfers /></MainLayout>} />
+        <Route path="/transfers/:transferId/milestones" element={<MainLayout><TransferMilestones /></MainLayout>} />
         <Route path="/bonds" element={<MainLayout><Bonds /></MainLayout>} />
         <Route path="/cancellations" element={<MainLayout><Cancellations /></MainLayout>} />
       </Routes>

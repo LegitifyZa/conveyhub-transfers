@@ -50,7 +50,7 @@ export class TransferService {
     query += ` ORDER BY ${sortColumn} ${sortOrder.toUpperCase()}`
 
     // Get total count
-    const countQuery = query.replace('SELECT * FROM transfers', 'SELECT COUNT(*) FROM transfers')
+    const countQuery = query.replace('SELECT * FROM transfers', 'SELECT COUNT(*) FROM transfers').split(' ORDER BY ')[0]
     const countResult = await db.query(countQuery, params)
     const total = parseInt(countResult.rows[0].count)
 

@@ -1,4 +1,4 @@
-import { Pool, PoolConfig } from 'pg'
+import { Pool, PoolConfig, escapeIdentifier } from 'pg'
 import dotenv from 'dotenv'
 
 // Load environment variables
@@ -24,6 +24,12 @@ const config: DatabaseConfig = {
   idleTimeoutMillis: 30000,
   // Query timeout
   query_timeout: 30000,
+}
+
+// Configure schema search path
+const schema = process.env.DB_SCHEMA || 'Transfers'
+if (schema !== 'public') {
+  config.options = `--search_path=${escapeIdentifier(schema)},public`
 }
 
 // Create connection pool
@@ -127,7 +133,12 @@ export const initializeDatabase = async (): Promise<void> => {
     if (!connected) {
       throw new Error('Failed to connect to database')
     }
-    
+
+    // Create target schema if one is configured
+    if (schema !== 'public') {
+      await db.query(`CREATE SCHEMA IF NOT EXISTS ${escapeIdentifier(schema)}`)
+    }
+
     // Create tables if they don't exist
     await createTables()
     console.log('✅ Database initialized successfully')

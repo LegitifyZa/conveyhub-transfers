@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { Plus, Search, Calendar, User, Building, FileText, TrendingUp, MoreVertical } from 'lucide-react'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui'
 import { Button } from '@/components/ui'
@@ -59,6 +59,7 @@ const mockTransfers = [
 ]
 
 const TransfersDashboard: React.FC = () => {
+  const navigate = useNavigate()
   const [searchTerm, setSearchTerm] = useState('')
   const [filterStatus, setFilterStatus] = useState('all')
 
@@ -327,11 +328,19 @@ const TransfersDashboard: React.FC = () => {
                               </div>
                             </div>
                             
-                            <Link to={`/transfers/${transfer.id}`}>
-                              <Button variant="secondary" size="sm">
-                                View Details
-                              </Button>
-                            </Link>
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              onClick={() => {
+                                if (transfer.status === 'in_progress') {
+                                  navigate(`/transfers/${transfer.id}/milestones`)
+                                } else {
+                                  navigate(`/transfers/${transfer.id}`)
+                                }
+                              }}
+                            >
+                              {transfer.status === 'in_progress' ? 'View Milestones' : 'View Details'}
+                            </Button>
                             
                             <Button variant="ghost" size="sm">
                               <MoreVertical className="w-4 h-4" />
