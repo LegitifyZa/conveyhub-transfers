@@ -2,6 +2,32 @@
 -- Migration: 002_add_properties_table.sql
 -- Created: 2026-04-07
 
+CREATE OR REPLACE FUNCTION update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = CURRENT_TIMESTAMP;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION audit_trigger_function()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        INSERT INTO audit_log (table_name, record_id, action, old_values)
+        VALUES (TG_TABLE_NAME, OLD.id, 'DELETE', to_jsonb(OLD));
+        RETURN OLD;
+    ELSIF TG_OP = 'UPDATE' THEN
+        INSERT INTO audit_log (table_name, record_id, action, old_values, new_values)
+        VALUES (TG_TABLE_NAME, NEW.id, 'UPDATE', to_jsonb(OLD), to_jsonb(NEW));
+        RETURN NEW;
+    END IF;
+    INSERT INTO audit_log (table_name, record_id, action, new_values)
+    VALUES (TG_TABLE_NAME, NEW.id, 'INSERT', to_jsonb(NEW));
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
 -- Create properties table
 CREATE TABLE IF NOT EXISTS properties (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),

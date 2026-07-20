@@ -1,120 +1,104 @@
-import React, { useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Plus, Search, Calendar, User, Building, FileText, TrendingUp, MoreVertical } from 'lucide-react'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui'
 import { Button } from '@/components/ui'
 import { Input } from '@/components/ui'
 import { Badge } from '@/components/ui'
+import { useTransfers, TransferAggregate } from '@/hooks/useTransfers'
 
-// Mock transfer data
-const mockTransfers = [
-  {
-    id: 'TRF-001',
-    propertyAddress: '123 Main Street, Cape Town',
-    buyerName: 'John Smith',
-    sellerName: 'Jane Doe',
-    purchasePrice: 2500000,
-    status: 'in_progress',
-    createdDate: '2024-03-15',
-    currentStep: 2,
-    totalSteps: 5,
-    progress: 40
-  },
-  {
-    id: 'TRF-002',
-    propertyAddress: '456 Oak Avenue, Johannesburg',
-    buyerName: 'Michael Johnson',
-    sellerName: 'Sarah Williams',
-    purchasePrice: 1800000,
-    status: 'completed',
-    createdDate: '2024-03-10',
-    currentStep: 5,
-    totalSteps: 5,
-    progress: 100
-  },
-  {
-    id: 'TRF-003',
-    propertyAddress: '789 Pine Road, Durban',
-    buyerName: 'David Brown',
-    sellerName: 'Emily Davis',
-    purchasePrice: 3200000,
-    status: 'draft',
-    createdDate: '2024-03-18',
-    currentStep: 1,
-    totalSteps: 5,
-    progress: 20
-  },
-  {
-    id: 'TRF-004',
-    propertyAddress: '321 Elm Street, Pretoria',
-    buyerName: 'Robert Wilson',
-    sellerName: 'Lisa Anderson',
-    purchasePrice: 1500000,
-    status: 'in_progress',
-    createdDate: '2024-03-12',
-    currentStep: 3,
-    totalSteps: 5,
-    progress: 60
+const getStatusColor = (status: string) => {
+  switch (status) {
+    case 'completed':
+      return 'bg-green-100 text-green-800 dark:bg-green-900/20 dark:text-green-300'
+    case 'in_progress':
+      return 'bg-blue-100 text-blue-800 dark:bg-blue-900/20 dark:text-blue-300'
+    case 'draft':
+      return 'bg-gray-100 text-gray-800 dark:bg-gray-900/20 dark:text-gray-300'
+    default:
+      return 'bg-gray-100 text-gray-800 dark:bg-gray-900/20 dark:text-gray-300'
   }
-]
+}
+
+const getStatusText = (status: string) => {
+  switch (status) {
+    case 'completed':
+      return 'Completed'
+    case 'in_progress':
+      return 'In Progress'
+    case 'draft':
+      return 'Draft'
+    default:
+      return 'Unknown'
+  }
+}
+
+const formatCurrency = (amount: number) => {
+  return new Intl.NumberFormat('en-ZA', {
+    style: 'currency',
+    currency: 'ZAR',
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0
+  }).format(amount || 0)
+}
+
+const getTransferDisplay = (transfer: TransferAggregate) => {
+  const id = transfer.transfer_id || transfer.id || '—'
+  const propertyAddress = transfer.propertyDetails?.address || '—'
+  const buyer = transfer.parties?.find(p => p.type === 'buyer')
+  const buyerName = buyer?.name || 'Unknown buyer'
+  const purchasePrice = parseFloat(transfer.financials?.purchasePrice || '0') || 0
+  const createdDate = transfer.created_at
+    ? new Date(transfer.created_at).toISOString().split('T')[0]
+    : '—'
+  const currentStep = transfer.currentStep || 1
+  const progress = Math.min(100, Math.round((currentStep / 5) * 100))
+
+  return {
+    id,
+    propertyAddress,
+    buyerName,
+    purchasePrice,
+    status: transfer.status || 'draft',
+    createdDate,
+    currentStep,
+    totalSteps: 5,
+    progress
+  }
+}
 
 const TransfersDashboard: React.FC = () => {
   const navigate = useNavigate()
+  const { transfers, isLoading, error, fetchTransfers } = useTransfers()
   const [searchTerm, setSearchTerm] = useState('')
   const [filterStatus, setFilterStatus] = useState('all')
 
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'completed':
-        return 'bg-green-100 text-green-800 dark:bg-green-900/20 dark:text-green-300'
-      case 'in_progress':
-        return 'bg-blue-100 text-blue-800 dark:bg-blue-900/20 dark:text-blue-300'
-      case 'draft':
-        return 'bg-gray-100 text-gray-800 dark:bg-gray-900/20 dark:text-gray-300'
-      default:
-        return 'bg-gray-100 text-gray-800 dark:bg-gray-900/20 dark:text-gray-300'
+  useEffect(() => {
+    fetchTransfers(filterStatus === 'all' ? {} : { status: filterStatus })
+  }, [fetchTransfers, filterStatus])
+
+  const filteredTransfers = useMemo(() => {
+    const term = searchTerm.toLowerCase().trim()
+    if (!term) return transfers
+    return transfers.filter(transfer => {
+      const display = getTransferDisplay(transfer)
+      return (
+        display.propertyAddress.toLowerCase().includes(term) ||
+        display.buyerName.toLowerCase().includes(term) ||
+        display.id.toLowerCase().includes(term)
+      )
+    })
+  }, [transfers, searchTerm])
+
+  const stats = useMemo(() => {
+    const counts = {
+      total: transfers.length,
+      completed: transfers.filter(t => t.status === 'completed').length,
+      inProgress: transfers.filter(t => t.status === 'in_progress').length,
+      draft: transfers.filter(t => t.status === 'draft').length
     }
-  }
-
-  const getStatusText = (status: string) => {
-    switch (status) {
-      case 'completed':
-        return 'Completed'
-      case 'in_progress':
-        return 'In Progress'
-      case 'draft':
-        return 'Draft'
-      default:
-        return 'Unknown'
-    }
-  }
-
-  const formatCurrency = (amount: number) => {
-    return new Intl.NumberFormat('en-ZA', {
-      style: 'currency',
-      currency: 'ZAR',
-      minimumFractionDigits: 0,
-      maximumFractionDigits: 0
-    }).format(amount)
-  }
-
-  const filteredTransfers = mockTransfers.filter(transfer => {
-    const matchesSearch = transfer.propertyAddress.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         transfer.buyerName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         transfer.sellerName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         transfer.id.toLowerCase().includes(searchTerm.toLowerCase())
-    
-    const matchesFilter = filterStatus === 'all' || transfer.status === filterStatus
-    
-    return matchesSearch && matchesFilter
-  })
-
-  const stats = {
-    total: mockTransfers.length,
-    completed: mockTransfers.filter(t => t.status === 'completed').length,
-    inProgress: mockTransfers.filter(t => t.status === 'in_progress').length,
-    draft: mockTransfers.filter(t => t.status === 'draft').length
-  }
+    return counts
+  }, [transfers])
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-navy-900">
@@ -247,114 +231,131 @@ const TransfersDashboard: React.FC = () => {
           </CardContent>
         </Card>
 
-        {/* Transfers List */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Recent Transfers</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {filteredTransfers.length === 0 ? (
-              <div className="text-center py-12">
-                <div className="w-16 h-16 rounded-full bg-gray-100 dark:bg-gray-900/20 flex items-center justify-center mx-auto mb-4">
-                  <Search className="w-8 h-8 text-gray-400" />
-                </div>
-                <h3 className="text-lg font-medium text-gray-900 dark:text-gray-100 mb-2">
-                  No transfers found
-                </h3>
-                <p className="text-gray-600 dark:text-gray-400 mb-4">
-                  {searchTerm ? 'Try adjusting your search terms' : 'Get started by creating your first transfer'}
-                </p>
-                {!searchTerm && (
-                  <Link to="/transfers/new">
-                    <Button variant="premium-primary">
-                      <Plus className="w-4 h-4 mr-2" />
-                      Create Transfer
-                    </Button>
-                  </Link>
-                )}
-              </div>
-            ) : (
-              <div className="space-y-4">
-                {filteredTransfers.map((transfer) => (
-                  <div key={transfer.id} className="border border-gray-200 dark:border-navy-700 rounded-lg p-4 hover:shadow-md transition-shadow">
-                    <div className="flex items-center justify-between">
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center space-x-3 mb-2">
-                          <h3 className="text-lg font-medium text-gray-900 dark:text-gray-100 truncate">
-                            {transfer.id}
-                          </h3>
-                          <Badge className={getStatusColor(transfer.status)}>
-                            {getStatusText(transfer.status)}
-                          </Badge>
-                        </div>
-                        
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-3">
-                          <div className="flex items-center space-x-2">
-                            <Building className="w-4 h-4 text-gray-400" />
-                            <span className="text-sm text-gray-600 dark:text-gray-400 truncate">
-                              {transfer.propertyAddress}
-                            </span>
-                          </div>
-                          <div className="flex items-center space-x-2">
-                            <User className="w-4 h-4 text-gray-400" />
-                            <span className="text-sm text-gray-600 dark:text-gray-400">
-                              {transfer.buyerName}
-                            </span>
-                          </div>
-                          <div className="flex items-center space-x-2">
-                            <span className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                              {formatCurrency(transfer.purchasePrice)}
-                            </span>
-                          </div>
-                        </div>
+        {/* Status Messages */}
+        {isLoading && (
+          <div className="text-center py-8 text-gray-600 dark:text-gray-400">
+            Loading transfers...
+          </div>
+        )}
+        {error && !isLoading && (
+          <div className="mb-6 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4">
+            <p className="text-sm text-red-700 dark:text-red-300">{error}</p>
+          </div>
+        )}
 
+        {/* Transfers List */}
+        {!isLoading && (
+          <Card>
+            <CardHeader>
+              <CardTitle>Recent Transfers</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {filteredTransfers.length === 0 ? (
+                <div className="text-center py-12">
+                  <div className="w-16 h-16 rounded-full bg-gray-100 dark:bg-gray-900/20 flex items-center justify-center mx-auto mb-4">
+                    <Search className="w-8 h-8 text-gray-400" />
+                  </div>
+                  <h3 className="text-lg font-medium text-gray-900 dark:text-gray-100 mb-2">
+                    No transfers found
+                  </h3>
+                  <p className="text-gray-600 dark:text-gray-400 mb-4">
+                    {searchTerm ? 'Try adjusting your search terms' : 'Get started by creating your first transfer'}
+                  </p>
+                  {!searchTerm && (
+                    <Link to="/transfers/new">
+                      <Button variant="premium-primary">
+                        <Plus className="w-4 h-4 mr-2" />
+                        Create Transfer
+                      </Button>
+                    </Link>
+                  )}
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {filteredTransfers.map((transfer) => {
+                    const display = getTransferDisplay(transfer)
+                    return (
+                      <div key={display.id} className="border border-gray-200 dark:border-navy-700 rounded-lg p-4 hover:shadow-md transition-shadow">
                         <div className="flex items-center justify-between">
-                          <div className="flex items-center space-x-4 text-sm text-gray-500 dark:text-gray-400">
-                            <span>Created {transfer.createdDate}</span>
-                            <span>Step {transfer.currentStep} of {transfer.totalSteps}</span>
-                          </div>
-                          
-                          <div className="flex items-center space-x-3">
-                            <div className="w-32">
-                              <div className="flex items-center justify-between text-xs text-gray-600 dark:text-gray-400 mb-1">
-                                <span>Progress</span>
-                                <span>{transfer.progress}%</span>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center space-x-3 mb-2">
+                              <h3 className="text-lg font-medium text-gray-900 dark:text-gray-100 truncate">
+                                {display.id}
+                              </h3>
+                              <Badge className={getStatusColor(display.status)}>
+                                {getStatusText(display.status)}
+                              </Badge>
+                            </div>
+
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-3">
+                              <div className="flex items-center space-x-2">
+                                <Building className="w-4 h-4 text-gray-400" />
+                                <span className="text-sm text-gray-600 dark:text-gray-400 truncate">
+                                  {display.propertyAddress}
+                                </span>
                               </div>
-                              <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
-                                <div
-                                  className="bg-teal-600 h-2 rounded-full transition-all duration-300"
-                                  style={{ width: `${transfer.progress}%` }}
-                                />
+                              <div className="flex items-center space-x-2">
+                                <User className="w-4 h-4 text-gray-400" />
+                                <span className="text-sm text-gray-600 dark:text-gray-400">
+                                  {display.buyerName}
+                                </span>
+                              </div>
+                              <div className="flex items-center space-x-2">
+                                <span className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                                  {formatCurrency(display.purchasePrice)}
+                                </span>
                               </div>
                             </div>
-                            
-                            <Button
-                              variant="secondary"
-                              size="sm"
-                              onClick={() => {
-                                if (transfer.status === 'in_progress') {
-                                  navigate(`/transfers/${transfer.id}/milestones`)
-                                } else {
-                                  navigate(`/transfers/${transfer.id}`)
-                                }
-                              }}
-                            >
-                              {transfer.status === 'in_progress' ? 'View Milestones' : 'View Details'}
-                            </Button>
-                            
-                            <Button variant="ghost" size="sm">
-                              <MoreVertical className="w-4 h-4" />
-                            </Button>
+
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center space-x-4 text-sm text-gray-500 dark:text-gray-400">
+                                <span>Created {display.createdDate}</span>
+                                <span>Step {display.currentStep} of {display.totalSteps}</span>
+                              </div>
+
+                              <div className="flex items-center space-x-3">
+                                <div className="w-32">
+                                  <div className="flex items-center justify-between text-xs text-gray-600 dark:text-gray-400 mb-1">
+                                    <span>Progress</span>
+                                    <span>{display.progress}%</span>
+                                  </div>
+                                  <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
+                                    <div
+                                      className="bg-teal-600 h-2 rounded-full transition-all duration-300"
+                                      style={{ width: `${display.progress}%` }}
+                                    />
+                                  </div>
+                                </div>
+
+                                <Button
+                                  variant="secondary"
+                                  size="sm"
+                                  onClick={() => {
+                                    if (display.status === 'in_progress') {
+                                      navigate(`/transfers/${display.id}/milestones`)
+                                    } else {
+                                      navigate('/transfers/workflow', { state: { transferId: display.id } })
+                                    }
+                                  }}
+                                >
+                                  {display.status === 'in_progress' ? 'View Milestones' : 'View Details'}
+                                </Button>
+
+                                <Button variant="ghost" size="sm">
+                                  <MoreVertical className="w-4 h-4" />
+                                </Button>
+                              </div>
+                            </div>
                           </div>
                         </div>
                       </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </CardContent>
-        </Card>
+                    )
+                  })}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
       </div>
     </div>
   )

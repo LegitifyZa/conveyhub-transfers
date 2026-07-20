@@ -54,6 +54,8 @@ export interface Document {
 }
 
 export interface TransferState {
+  id?: string
+  transfer_id?: string
   currentStep: number
   propertyDetails: PropertyDetails
   parties: Party[]
@@ -108,6 +110,8 @@ type TransferAction =
   | { type: 'UPDATE_DOCUMENT'; payload: { id: string; updates: Partial<Document> } }
   | { type: 'REMOVE_DOCUMENT'; payload: string }
   | { type: 'SET_STATUS'; payload: 'draft' | 'in_progress' | 'completed' }
+  | { type: 'SET_TRANSFER_ID'; payload: { id?: string; transfer_id?: string } }
+  | { type: 'HYDRATE_TRANSFER'; payload: TransferState }
   | { type: 'RESET_FORM' }
 
 // Reducer
@@ -177,7 +181,20 @@ const transferReducer = (state: TransferState, action: TransferAction): Transfer
         ...state,
         status: action.payload
       }
-    
+
+    case 'SET_TRANSFER_ID':
+      return {
+        ...state,
+        id: action.payload.id,
+        transfer_id: action.payload.transfer_id
+      }
+
+    case 'HYDRATE_TRANSFER':
+      return {
+        ...initialState,
+        ...action.payload
+      }
+
     case 'RESET_FORM':
       return initialState
     

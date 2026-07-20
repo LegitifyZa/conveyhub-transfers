@@ -125,6 +125,34 @@ CREATE TRIGGER update_parties_updated_at BEFORE UPDATE ON parties
 CREATE TRIGGER update_documents_updated_at BEFORE UPDATE ON documents
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+CREATE OR REPLACE FUNCTION audit_trigger_function()
+RETURNS TRIGGER AS $$
+DECLARE
+    changed_record RECORD;
+    audit_action VARCHAR(20);
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        changed_record := OLD;
+        audit_action := 'DELETE';
+        INSERT INTO audit_log (table_name, record_id, action, old_values, new_values)
+        VALUES (TG_TABLE_NAME, changed_record.id, audit_action, to_jsonb(OLD), NULL);
+        RETURN OLD;
+    ELSIF TG_OP = 'UPDATE' THEN
+        changed_record := NEW;
+        audit_action := 'UPDATE';
+        INSERT INTO audit_log (table_name, record_id, action, old_values, new_values)
+        VALUES (TG_TABLE_NAME, changed_record.id, audit_action, to_jsonb(OLD), to_jsonb(NEW));
+        RETURN NEW;
+    END IF;
+
+    changed_record := NEW;
+    audit_action := 'INSERT';
+    INSERT INTO audit_log (table_name, record_id, action, old_values, new_values)
+    VALUES (TG_TABLE_NAME, changed_record.id, audit_action, NULL, to_jsonb(NEW));
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
 -- Create audit triggers for main tables
 CREATE TRIGGER audit_users_trigger
     AFTER INSERT OR UPDATE OR DELETE ON users

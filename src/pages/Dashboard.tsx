@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import { 
   TrendingUp, 
   Users, 
@@ -13,9 +13,15 @@ import {
 import { formatZAR } from '@/utils/transferCalculations'
 import { Card, CardHeader, CardTitle, CardContent, EmailModal } from '@/components/ui'
 import { Button } from '@/components/ui'
+import { useTransfers } from '@/hooks/useTransfers'
 
 const Dashboard: React.FC = () => {
   const [isEmailModalOpen, setIsEmailModalOpen] = useState(false)
+  const { transfers, isLoading, fetchTransfers } = useTransfers()
+
+  useEffect(() => {
+    fetchTransfers({ limit: 50 })
+  }, [fetchTransfers])
 
   const handleSendEmail = (emailData: any) => {
     console.log('Email sent:', emailData)
@@ -23,67 +29,64 @@ const Dashboard: React.FC = () => {
     // For now, we'll just log it
     alert(`Email sent to ${emailData.clientName} at ${emailData.to}`)
   }
+
+  const activeCount = useMemo(() => transfers.filter(t => t.status === 'in_progress').length, [transfers])
+  const draftCount = useMemo(() => transfers.filter(t => t.status === 'draft').length, [transfers])
+  const totalRevenue = useMemo(() => transfers.reduce((sum, t) => sum + (parseFloat(t.financials?.purchasePrice || '0') || 0), 0), [transfers])
+  const uniqueParties = useMemo(() => {
+    const names = new Set<string>()
+    transfers.forEach(t => t.parties?.forEach(p => { if (p.name) names.add(p.name) }))
+    return names.size
+  }, [transfers])
+
   const stats = [
     {
       title: 'Active Cases',
-      value: '47',
-      change: '+12%',
+      value: String(activeCount),
+      change: '',
       changeType: 'positive' as const,
       icon: FileText,
-      description: 'From last month'
+      description: 'In progress'
     },
     {
       title: 'Total Clients',
-      value: '238',
-      change: '+8%',
+      value: String(uniqueParties),
+      change: '',
       changeType: 'positive' as const,
       icon: Users,
-      description: 'From last month'
+      description: 'Unique parties'
     },
     {
       title: 'Revenue',
-      value: formatZAR(124500),
-      change: '+23%',
+      value: formatZAR(totalRevenue),
+      change: '',
       changeType: 'positive' as const,
       icon: TrendingUp,
-      description: 'From last month'
+      description: 'Total purchase prices'
     },
     {
-      title: 'Pending Tasks',
-      value: '19',
-      change: '-5%',
+      title: 'Draft Transfers',
+      value: String(draftCount),
+      change: '',
       changeType: 'negative' as const,
       icon: Clock,
-      description: 'From last month'
+      description: 'Awaiting action'
     }
   ]
 
-  const recentCases = [
-    {
-      id: 'CASE-001',
-      client: 'John Smith',
-      property: '123 Oak Street',
-      status: 'In Progress',
-      value: formatZAR(450000),
-      dueDate: '2024-03-25'
-    },
-    {
-      id: 'CASE-002',
-      client: 'Sarah Johnson',
-      property: '456 Elm Avenue',
-      status: 'Review',
-      value: formatZAR(325000),
-      dueDate: '2024-03-28'
-    },
-    {
-      id: 'CASE-003',
-      client: 'Michael Brown',
-      property: '789 Pine Road',
-      status: 'Pending',
-      value: formatZAR(580000),
-      dueDate: '2024-04-01'
-    }
-  ]
+  const recentCases = useMemo(() => {
+    return transfers.slice(0, 5).map(t => {
+      const buyer = t.parties?.find(p => p.type === 'buyer')
+      return {
+        id: t.transfer_id || t.id || '—',
+        client: buyer?.name || 'Unknown',
+        property: t.propertyDetails?.address || '—',
+        status: t.status || 'draft',
+        value: formatZAR(parseFloat(t.financials?.purchasePrice || '0') || 0),
+        dueDate: t.created_at ? new Date(t.created_at).toISOString().split('T')[0] : '—'
+      }
+    })
+  }, [transfers])
 
   const upcomingEvents = [
     {
@@ -133,16 +136,18 @@ const Dashboard: React.FC = () => {
               <stat.icon className="h-4 w-4 text-gray-500" />
             </CardHeader>
             <CardContent className="space-y-3">
-              <div className="stats-value">{stat.value}</div>
+              <div className="stats-value">{isLoading ? '—' : stat.value}</div>
               <div className="flex items-center space-x-2">
-                {stat.changeType === 'positive' ? (
+                {stat.change && (stat.changeType === 'positive' ? (
                   <ArrowUpRight className="h-3 w-3 text-green-500" />
                 ) : (
                   <ArrowDownRight className="h-3 w-3 text-red-500" />
+                ))}
+                {stat.change && (
+                  <span className={stat.changeType === 'positive' ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}>
+                    {stat.change}
+                  </span>
                 )}
-                <span className={stat.changeType === 'positive' ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}>
-                  {stat.change}
-                </span>
                 <span className="text-gray-500 text-xs">{stat.description}</span>
               </div>
             </CardContent>

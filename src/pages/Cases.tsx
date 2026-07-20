@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import { 
   Search, 
   Filter, 
@@ -12,54 +12,44 @@ import { formatZAR } from '@/utils/transferCalculations'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui'
 import { Button } from '@/components/ui'
 import { Input } from '@/components/ui'
+import { useTransfers } from '@/hooks/useTransfers'
 
 const Cases: React.FC = () => {
-  const cases = [
-    {
-      id: 'CASE-001',
-      client: 'John Smith',
-      property: '123 Oak Street, Downtown',
-      type: 'Residential',
-      status: 'In Progress',
-      value: formatZAR(450000),
-      assignedTo: 'Sarah Johnson',
-      dueDate: '2024-03-25',
-      priority: 'high'
-    },
-    {
-      id: 'CASE-002',
-      client: 'Sarah Johnson',
-      property: '456 Elm Avenue, Westside',
-      type: 'Commercial',
-      status: 'Review',
-      value: formatZAR(825000),
-      assignedTo: 'Michael Brown',
-      dueDate: '2024-03-28',
-      priority: 'medium'
-    },
-    {
-      id: 'CASE-003',
-      client: 'Michael Brown',
-      property: '789 Pine Road, North District',
-      type: 'Residential',
-      status: 'Pending',
-      value: formatZAR(580000),
-      assignedTo: 'Lisa Anderson',
-      dueDate: '2024-04-01',
-      priority: 'low'
-    },
-    {
-      id: 'CASE-004',
-      client: 'David Lee',
-      property: '321 Maple Drive, Eastside',
-      type: 'Residential',
-      status: 'In Progress',
-      value: formatZAR(320000),
-      assignedTo: 'Robert Wilson',
-      dueDate: '2024-03-30',
-      priority: 'high'
-    }
-  ]
+  const { transfers, fetchTransfers } = useTransfers()
+  const [searchTerm, setSearchTerm] = useState('')
+
+  useEffect(() => {
+    fetchTransfers({ limit: 50 })
+  }, [fetchTransfers])
+
+  const cases = useMemo(() => {
+    return transfers
+      .filter(t => {
+        if (!searchTerm) return true
+        const term = searchTerm.toLowerCase()
+        const buyer = t.parties?.find(p => p.type === 'buyer')
+        return (
+          (t.transfer_id || '').toLowerCase().includes(term) ||
+          (buyer?.name || '').toLowerCase().includes(term) ||
+          (t.propertyDetails?.address || '').toLowerCase().includes(term)
+        )
+      })
+      .map(t => {
+        const buyer = t.parties?.find(p => p.type === 'buyer')
+        const statusMap: Record<string, string> = { draft: 'Pending', in_progress: 'In Progress', completed: 'Completed' }
+        return {
+          id: t.transfer_id || t.id || '—',
+          client: buyer?.name || 'Unknown',
+          property: t.propertyDetails?.address || '—',
+          type: t.propertyDetails?.propertyType || 'Residential',
+          status: statusMap[t.status || 'draft'] || 'Pending',
+          value: formatZAR(parseFloat(t.financials?.purchasePrice || '0') || 0),
+          assignedTo: '—',
+          dueDate: t.created_at ? new Date(t.created_at).toISOString().split('T')[0] : '—',
+          priority: t.status === 'in_progress' ? 'high' : t.status === 'draft' ? 'medium' : 'low'
+        }
+      })
+  }, [transfers, searchTerm])
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -112,6 +102,8 @@ const Cases: React.FC = () => {
                 <Input
                   placeholder="Search cases..."
                   className="pl-10"
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
                 />
               </div>
             </div>
