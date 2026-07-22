@@ -271,13 +271,21 @@ const TransfersDashboard: React.FC = () => {
                   )}
                 </div>
               ) : (
-                <div className="space-y-4">
+                <div className="space-y-3">
+                  <div className="hidden md:grid grid-cols-[200px_1fr_1fr_120px_100px_110px] gap-4 px-3 text-xs font-medium text-gray-500 dark:text-gray-400">
+                    <span>Transfer / Status</span>
+                    <span>Property</span>
+                    <span>Buyer</span>
+                    <span className="text-right">Price</span>
+                    <span className="text-center">Progress</span>
+                    <span className="text-right">Action</span>
+                  </div>
                   {filteredTransfers.map((transfer) => {
                     const display = getTransferDisplay(transfer)
                     return (
                       <div key={display.id} className="border border-gray-200 dark:border-navy-700 rounded-lg p-3 hover:shadow-md transition-shadow">
-                        <div className="flex flex-col md:flex-row md:items-center gap-3">
-                          <div className="flex items-center gap-2 min-w-0 md:w-48">
+                        <div className="grid grid-cols-1 md:grid-cols-[200px_1fr_1fr_120px_100px_110px] gap-4 items-center">
+                          <div className="flex items-center gap-2 min-w-0">
                             <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
                               {display.id}
                             </h3>
@@ -286,34 +294,34 @@ const TransfersDashboard: React.FC = () => {
                             </Badge>
                           </div>
 
-                          <div className="flex-1 min-w-0 flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 text-sm text-gray-600 dark:text-gray-400">
-                            <span className="flex items-center gap-1.5 truncate" title={display.propertyAddress}>
-                              <Building className="w-4 h-4 flex-shrink-0 text-gray-400" />
-                              <span className="truncate">{display.propertyAddress}</span>
-                            </span>
-                            <span className="flex items-center gap-1.5 truncate" title={display.buyerName}>
-                              <User className="w-4 h-4 flex-shrink-0 text-gray-400" />
-                              <span className="truncate">{display.buyerName}</span>
-                            </span>
-                            <span className="font-medium text-gray-900 dark:text-gray-100 whitespace-nowrap">
-                              {formatCurrency(display.purchasePrice)}
-                            </span>
+                          <div className="flex items-center gap-1.5 min-w-0 text-sm text-gray-600 dark:text-gray-400 truncate" title={display.propertyAddress}>
+                            <Building className="w-4 h-4 flex-shrink-0 text-gray-400" />
+                            <span className="truncate">{display.propertyAddress}</span>
                           </div>
 
-                          <div className="flex items-center gap-3">
-                            <div className="w-24 hidden sm:block">
-                              <div className="flex items-center justify-between text-xs text-gray-600 dark:text-gray-400 mb-1">
-                                <span>Progress</span>
-                                <span>{display.progress}%</span>
-                              </div>
-                              <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-1.5">
-                                <div
-                                  className="bg-teal-600 h-1.5 rounded-full transition-all duration-300"
-                                  style={{ width: `${display.progress}%` }}
-                                />
-                              </div>
-                            </div>
+                          <div className="flex items-center gap-1.5 min-w-0 text-sm text-gray-600 dark:text-gray-400 truncate" title={display.buyerName}>
+                            <User className="w-4 h-4 flex-shrink-0 text-gray-400" />
+                            <span className="truncate">{display.buyerName}</span>
+                          </div>
 
+                          <div className="text-sm font-medium text-gray-900 dark:text-gray-100 text-right">
+                            {formatCurrency(display.purchasePrice)}
+                          </div>
+
+                          <div className="w-full">
+                            <div className="flex items-center justify-between text-xs text-gray-600 dark:text-gray-400 mb-1">
+                              <span className="md:hidden">Progress</span>
+                              <span className="hidden md:inline">{display.progress}%</span>
+                            </div>
+                            <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-1.5">
+                              <div
+                                className="bg-teal-600 h-1.5 rounded-full transition-all duration-300"
+                                style={{ width: `${display.progress}%` }}
+                              />
+                            </div>
+                          </div>
+
+                          <div className="text-right">
                             <Button
                               variant="secondary"
                               size="sm"
