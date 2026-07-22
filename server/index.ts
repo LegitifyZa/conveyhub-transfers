@@ -9,6 +9,7 @@ import templateDataFieldsRouter from './routes/templateDataFields'
 import clausesRouter from './routes/clauses'
 import generatedDocumentsRouter from './routes/generatedDocuments'
 import documentsRouter from './routes/documents'
+import usersRouter from './routes/users'
 import { pool } from './db'
 
 dotenv.config()
@@ -28,6 +29,7 @@ app.use('/api/data-fields', templateDataFieldsRouter)
 app.use('/api/clauses', clausesRouter)
 app.use('/api/generated-documents', generatedDocumentsRouter)
 app.use('/api/documents', documentsRouter)
+app.use('/api/users', usersRouter)
 
 app.get('/api', (_req: Request, res: Response) => {
   res.json({
@@ -61,6 +63,8 @@ app.get('/api', (_req: Request, res: Response) => {
       'POST /api/generated-documents',
       'GET /api/generated-documents/:id',
       'GET /api/documents',
+      'GET /api/users/me',
+      'PUT /api/users/me',
     ],
   })
 })

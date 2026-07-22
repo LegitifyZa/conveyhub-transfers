@@ -1,56 +1,87 @@
-import React from 'react'
-import { 
-  User, 
-  Bell, 
-  Shield, 
-  Palette,
-  Globe,
-  CreditCard,
-  HelpCircle,
-  LogOut
-} from 'lucide-react'
+import React, { useEffect, useState } from 'react'
+import { User, Bell, Shield, Palette, Globe, CreditCard, HelpCircle, LogOut } from 'lucide-react'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui'
 import { Button } from '@/components/ui'
 import { Input } from '@/components/ui'
+import { apiRequest } from '@/lib/api/http'
+
+interface UserProfile {
+  id: string
+  email: string
+  name: string
+  firstName?: string
+  lastName?: string
+  phone?: string
+  avatarUrl?: string
+}
+
+const settingsSections = [
+  { title: 'Profile Settings', icon: User, description: 'Manage your personal information and account details' },
+  { title: 'Notifications', icon: Bell, description: 'Configure how you receive notifications and updates' },
+  { title: 'Security', icon: Shield, description: 'Manage your password and security preferences' },
+  { title: 'Appearance', icon: Palette, description: 'Customize the look and feel of your workspace' },
+  { title: 'Language & Region', icon: Globe, description: 'Set your language preferences and regional settings' },
+  { title: 'Billing & Plans', icon: CreditCard, description: 'Manage your subscription and payment methods' },
+  { title: 'Help & Support', icon: HelpCircle, description: 'Get help and contact our support team' }
+]
 
 const Settings: React.FC = () => {
-  const settingsSections = [
-    {
-      title: 'Profile Settings',
-      icon: User,
-      description: 'Manage your personal information and account details'
-    },
-    {
-      title: 'Notifications',
-      icon: Bell,
-      description: 'Configure how you receive notifications and updates'
-    },
-    {
-      title: 'Security',
-      icon: Shield,
-      description: 'Manage your password and security preferences'
-    },
-    {
-      title: 'Appearance',
-      icon: Palette,
-      description: 'Customize the look and feel of your workspace'
-    },
-    {
-      title: 'Language & Region',
-      icon: Globe,
-      description: 'Set your language preferences and regional settings'
-    },
-    {
-      title: 'Billing & Plans',
-      icon: CreditCard,
-      description: 'Manage your subscription and payment methods'
-    },
-    {
-      title: 'Help & Support',
-      icon: HelpCircle,
-      description: 'Get help and contact our support team'
+  const [user, setUser] = useState<UserProfile | null>(null)
+  const [firstName, setFirstName] = useState('')
+  const [lastName, setLastName] = useState('')
+  const [email, setEmail] = useState('')
+  const [phone, setPhone] = useState('')
+  const [isLoading, setIsLoading] = useState(true)
+  const [isSaving, setIsSaving] = useState(false)
+  const [error, setError] = useState('')
+  const [success, setSuccess] = useState('')
+
+  useEffect(() => {
+    const loadProfile = async () => {
+      try {
+        const response = await apiRequest<{ success: boolean; data: UserProfile }>('/api/users/me')
+        if (response.success && response.data) {
+          setUser(response.data)
+          setFirstName(response.data.firstName || '')
+          setLastName(response.data.lastName || '')
+          setEmail(response.data.email || '')
+          setPhone(response.data.phone || '')
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to load profile')
+      } finally {
+        setIsLoading(false)
+      }
     }
-  ]
+
+    loadProfile()
+  }, [])
+
+  const handleSave = async () => {
+    setIsSaving(true)
+    setError('')
+    setSuccess('')
+
+    try {
+      const response = await apiRequest<{ success: boolean; data: UserProfile; message?: string }>('/api/users/me', {
+        method: 'PUT',
+        body: { firstName, lastName, email, phone }
+      })
+
+      if (response.success && response.data) {
+        setUser(response.data)
+        setSuccess(response.message || 'Profile updated successfully')
+      } else {
+        setError('Update failed')
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save profile')
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
+  const displayName = user?.name || `${firstName} ${lastName}`.trim() || '—'
 
   return (
     <div className="space-y-6">
@@ -71,44 +102,59 @@ const Settings: React.FC = () => {
                 <User className="h-8 w-8 text-white" />
               </div>
               <div>
-                <h3 className="text-lg font-medium text-gray-900 dark:text-gray-100">John Doe</h3>
-                <p className="text-sm text-gray-500 dark:text-gray-400">john.doe@legitify.com</p>
+                <h3 className="text-lg font-medium text-gray-900 dark:text-gray-100">{displayName}</h3>
+                <p className="text-sm text-gray-500 dark:text-gray-400">{email}</p>
                 <Button variant="outline" size="sm" className="mt-2">
                   Change Photo
                 </Button>
               </div>
             </div>
-            
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                  First Name
-                </label>
-                <Input defaultValue="John" />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                  Last Name
-                </label>
-                <Input defaultValue="Doe" />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                  Email
-                </label>
-                <Input defaultValue="john.doe@legitify.com" />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                  Phone
-                </label>
-                <Input defaultValue="+1 (555) 123-4567" />
-              </div>
-            </div>
-            
-            <div className="flex justify-end">
-              <Button>Save Changes</Button>
-            </div>
+
+            {isLoading ? (
+              <p className="text-sm text-gray-500 dark:text-gray-400">Loading profile...</p>
+            ) : (
+              <>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                      First Name
+                    </label>
+                    <Input value={firstName} onChange={(e) => setFirstName(e.target.value)} />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                      Last Name
+                    </label>
+                    <Input value={lastName} onChange={(e) => setLastName(e.target.value)} />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                      Email
+                    </label>
+                    <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                      Phone
+                    </label>
+                    <Input value={phone} onChange={(e) => setPhone(e.target.value)} />
+                  </div>
+                </div>
+
+                {error && (
+                  <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
+                )}
+                {success && (
+                  <p className="text-sm text-green-600 dark:text-green-400">{success}</p>
+                )}
+
+                <div className="flex justify-end">
+                  <Button onClick={handleSave} disabled={isSaving}>
+                    {isSaving ? 'Saving...' : 'Save Changes'}
+                  </Button>
+                </div>
+              </>
+            )}
           </div>
         </CardContent>
       </Card>
@@ -123,12 +169,8 @@ const Settings: React.FC = () => {
                   <section.icon className="h-5 w-5 text-gray-600 dark:text-gray-400" />
                 </div>
                 <div className="flex-1">
-                  <h3 className="font-medium text-gray-900 dark:text-gray-100 mb-1">
-                    {section.title}
-                  </h3>
-                  <p className="text-sm text-gray-500 dark:text-gray-400">
-                    {section.description}
-                  </p>
+                  <h3 className="font-medium text-gray-900 dark:text-gray-100 mb-1">{section.title}</h3>
+                  <p className="text-sm text-gray-500 dark:text-gray-400">{section.description}</p>
                 </div>
               </div>
             </CardContent>
