@@ -2,6 +2,13 @@ import { Router, Request, Response } from 'express'
 import { pool, query, withTransaction } from '../db'
 import { asyncHandler } from '../utils/asyncHandler'
 import { isNonEmptyString, isValidStatus, toNumber } from '../utils/validate'
+import fs from 'fs'
+import path from 'path'
+import { fileURLToPath } from 'url'
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = path.dirname(__filename)
+const UPLOAD_DIR = path.resolve(__dirname, '..', '..', 'uploads')
 
 const router = Router()
 
@@ -70,13 +77,17 @@ function mapDocumentRow(row: any) {
   return {
     id: row.id,
     transferId: row.transfer_id,
+    catalogueDocumentId: row.catalogue_document_id,
     name: row.name,
+    type: row.catalogue_document_id || row.category || row.type,
     category: row.category,
     status: row.status,
     filePath: row.file_path,
-    fileSize: row.file_size,
+    fileSize: row.file_size != null ? Number(row.file_size) : undefined,
     fileType: row.file_type,
-    description: row.description,
+    description: row.notes ?? row.description,
+    notes: row.notes,
+    originalFileName: row.original_file_name,
     uploadedAt: row.uploaded_at,
     updatedAt: row.updated_at,
   }
@@ -150,6 +161,88 @@ async function generateUniquePropertyId(client: import('pg').PoolClient): Promis
     if (existing.rowCount === 0) return propertyId
   }
   throw new Error('Failed to generate unique property ID')
+}
+
+async function seedTransferDocuments(
+  client: import('pg').PoolClient,
+  transferUuid: string
+): Promise<void> {
+  const existing = await client.query('SELECT 1 FROM transfer_documents WHERE transfer_id = $1 LIMIT 1', [transferUuid])
+  if (existing.rowCount && existing.rowCount > 0) return
+
+  const catalogueResult = await client.query(
+    `SELECT id, name, module, matter_type
+     FROM document_catalogue
+     WHERE status = 'Active' AND module = 'Transfers'
+     ORDER BY name`,
+    []
+  )
+
+  for (const row of catalogueResult.rows) {
+    await client.query(
+      `INSERT INTO transfer_documents (transfer_id, catalogue_document_id, name, status)
+       VALUES ($1, $2, $3, 'pending')
+       ON CONFLICT (transfer_id, catalogue_document_id) DO NOTHING`,
+      [transferUuid, row.id, row.name]
+    )
+  }
+}
+
+function extensionFromFileName(fileName: string): string {
+  const ext = path.extname(fileName).toLowerCase()
+  return ext || '.bin'
+}
+
+function sanitiseFileName(fileName: string): string {
+  return fileName.replace(/[^a-zA-Z0-9_.-]/g, '_').replace(/_{2,}/g, '_')
+}
+
+async function saveTransferDocumentUpload(
+  client: import('pg').PoolClient,
+  transferUuid: string,
+  transferDocumentId: string,
+  fileName: string,
+  fileType: string,
+  base64Data: string
+) {
+  const match = base64Data.match(/^data:.*?;base64,(.*)$/)
+  const rawBase64 = match ? match[1] : base64Data
+
+  if (!rawBase64) {
+    throw new Error('Invalid file data')
+  }
+
+  const buffer = Buffer.from(rawBase64, 'base64')
+  if (buffer.length === 0) {
+    throw new Error('Empty file')
+  }
+
+  const safeName = sanitiseFileName(fileName)
+  const extension = extensionFromFileName(safeName)
+  const uploadDir = path.join(UPLOAD_DIR, 'transfers', transferUuid)
+  fs.mkdirSync(uploadDir, { recursive: true })
+
+  const storageName = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}${extension}`
+  const filePath = path.join(uploadDir, storageName)
+  fs.writeFileSync(filePath, buffer)
+
+  const relativeFilePath = path.relative(process.cwd(), filePath).replace(/\\/g, '/')
+
+  const result = await client.query(
+    `UPDATE transfer_documents
+     SET status = 'uploaded',
+         file_path = $1,
+         file_size = $2,
+         file_type = $3,
+         original_file_name = $4,
+         uploaded_at = CURRENT_TIMESTAMP,
+         updated_at = CURRENT_TIMESTAMP
+     WHERE id = $5 AND transfer_id = $6
+     RETURNING *`,
+    [relativeFilePath, buffer.length, fileType, fileName, transferDocumentId, transferUuid]
+  )
+
+  return result.rows[0]
 }
 
 async function getOrCreateMatterForTransfer(
@@ -319,7 +412,14 @@ router.get(
 
     const [partiesResult, documentsResult, financialsResult] = await Promise.all([
       query('SELECT * FROM parties WHERE transfer_id = $1 ORDER BY type, name', [transferUuid]),
-      query('SELECT * FROM documents WHERE transfer_id = $1 ORDER BY uploaded_at DESC', [transferUuid]),
+      query(
+        `SELECT td.*, dc.catalogue_code, dc.module, dc.matter_type
+         FROM transfer_documents td
+         LEFT JOIN document_catalogue dc ON dc.id = td.catalogue_document_id
+         WHERE td.transfer_id = $1
+         ORDER BY td.created_at`,
+        [transferUuid]
+      ),
       query('SELECT * FROM transfer_financials WHERE transfer_id = $1', [transferUuid]),
     ])
 
@@ -505,36 +605,19 @@ router.post(
         }
       }
 
-      const createdDocuments: any[] = []
-      if (Array.isArray(documents)) {
-        for (const raw of documents) {
-          const doc = raw as Record<string, unknown>
-          const docName = isNonEmptyString(doc.name) ? doc.name : undefined
-          if (!docName) continue
-          const docResult = await client.query(
-            `INSERT INTO documents (transfer_id, name, category, status, file_path, file_size, file_type, description)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-             RETURNING *`,
-            [
-              transferUuid,
-              docName,
-              isNonEmptyString(doc.category) ? doc.category : null,
-              typeof doc.status === 'string' ? doc.status : 'pending',
-              isNonEmptyString(doc.filePath) ? doc.filePath : null,
-              toNumber(doc.fileSize),
-              isNonEmptyString(doc.fileType) ? doc.fileType : null,
-              isNonEmptyString(doc.description) ? doc.description : null,
-            ]
-          )
-          createdDocuments.push(mapDocumentRow(docResult.rows[0]))
-        }
-      }
-
       const matterId = await getOrCreateMatterForTransfer(client, transferUuid, transferId)
       await createDefaultMilestones(client, matterId)
+      await seedTransferDocuments(client, transferUuid)
 
       const financialsResult = await client.query('SELECT * FROM transfer_financials WHERE transfer_id = $1', [transferUuid])
-      const documentsResult = await client.query('SELECT * FROM documents WHERE transfer_id = $1 ORDER BY uploaded_at DESC', [transferUuid])
+      const documentsResult = await client.query(
+        `SELECT td.*, dc.catalogue_code, dc.module, dc.matter_type
+         FROM transfer_documents td
+         LEFT JOIN document_catalogue dc ON dc.id = td.catalogue_document_id
+         WHERE td.transfer_id = $1
+         ORDER BY td.created_at`,
+        [transferUuid]
+      )
 
       return {
         ...mapTransferRow(transferRow),
@@ -823,55 +906,40 @@ router.put(
       }
 
       if (Array.isArray(documents)) {
-        const retainedDocumentIds = documents
-          .map(raw => raw as Record<string, unknown>)
-          .filter(document => isUuid(document.id))
-          .map(document => document.id as string)
-        if (retainedDocumentIds.length > 0) {
-          await client.query('DELETE FROM documents WHERE transfer_id = $1 AND NOT (id = ANY($2::uuid[]))', [transferUuid, retainedDocumentIds])
-        } else {
-          await client.query('DELETE FROM documents WHERE transfer_id = $1', [transferUuid])
-        }
         for (const raw of documents) {
           const doc = raw as Record<string, unknown>
           const docId = isUuid(doc.id) ? doc.id : undefined
-          const docName = isNonEmptyString(doc.name) ? doc.name : undefined
-          if (!docName) continue
+          const catalogueDocumentId = isUuid(doc.catalogueDocumentId) ? doc.catalogueDocumentId : undefined
+          if (!docId && !catalogueDocumentId) continue
+
+          const notes = isNonEmptyString(doc.notes)
+            ? doc.notes
+            : isNonEmptyString(doc.description)
+              ? doc.description
+              : null
 
           if (docId) {
-            const existing = await client.query('SELECT id FROM documents WHERE id = $1 AND transfer_id = $2', [docId, transferUuid])
-            if (existing.rowCount && existing.rowCount > 0) {
-              await client.query(
-                `UPDATE documents SET
-                  name = $1, category = $2, status = $3, file_path = $4, file_size = $5, file_type = $6,
-                  description = $7, updated_at = CURRENT_TIMESTAMP
-                WHERE id = $8 AND transfer_id = $9`,
-                [
-                  docName,
-                  isNonEmptyString(doc.category) ? doc.category : null,
-                  typeof doc.status === 'string' ? doc.status : 'pending',
-                  isNonEmptyString(doc.filePath) ? doc.filePath : null,
-                  toNumber(doc.fileSize),
-                  isNonEmptyString(doc.fileType) ? doc.fileType : null,
-                  isNonEmptyString(doc.description) ? doc.description : null,
-                  docId,
-                  transferUuid,
-                ]
-              )
-            }
-          } else {
             await client.query(
-              `INSERT INTO documents (transfer_id, name, category, status, file_path, file_size, file_type, description)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+              `UPDATE transfer_documents
+               SET status = $1, notes = $2, updated_at = CURRENT_TIMESTAMP
+               WHERE id = $3 AND transfer_id = $4`,
               [
-                transferUuid,
-                docName,
-                isNonEmptyString(doc.category) ? doc.category : null,
                 typeof doc.status === 'string' ? doc.status : 'pending',
-                isNonEmptyString(doc.filePath) ? doc.filePath : null,
-                toNumber(doc.fileSize),
-                isNonEmptyString(doc.fileType) ? doc.fileType : null,
-                isNonEmptyString(doc.description) ? doc.description : null,
+                notes,
+                docId,
+                transferUuid,
+              ]
+            )
+          } else if (catalogueDocumentId) {
+            await client.query(
+              `UPDATE transfer_documents
+               SET status = $1, notes = $2, updated_at = CURRENT_TIMESTAMP
+               WHERE transfer_id = $3 AND catalogue_document_id = $4`,
+              [
+                typeof doc.status === 'string' ? doc.status : 'pending',
+                notes,
+                transferUuid,
+                catalogueDocumentId,
               ]
             )
           }
@@ -891,7 +959,14 @@ router.put(
         [transferUuid]
       )
       const finalParties = await client.query('SELECT * FROM parties WHERE transfer_id = $1 ORDER BY type, name', [transferUuid])
-      const finalDocs = await client.query('SELECT * FROM documents WHERE transfer_id = $1 ORDER BY uploaded_at DESC', [transferUuid])
+      const finalDocs = await client.query(
+        `SELECT td.*, dc.catalogue_code, dc.module, dc.matter_type
+         FROM transfer_documents td
+         LEFT JOIN document_catalogue dc ON dc.id = td.catalogue_document_id
+         WHERE td.transfer_id = $1
+         ORDER BY td.created_at`,
+        [transferUuid]
+      )
       const finalFinancials = await client.query('SELECT * FROM transfer_financials WHERE transfer_id = $1', [transferUuid])
 
       const finalRow = finalTransfer.rows[0]
@@ -965,8 +1040,53 @@ router.get(
       res.status(404).json({ success: false, error: 'Transfer not found' })
       return
     }
-    const documentsResult = await query('SELECT * FROM documents WHERE transfer_id = $1 ORDER BY uploaded_at DESC', [transferResult.rows[0].id])
+    const documentsResult = await query(
+      `SELECT td.*, dc.catalogue_code, dc.module, dc.matter_type
+       FROM transfer_documents td
+       LEFT JOIN document_catalogue dc ON dc.id = td.catalogue_document_id
+       WHERE td.transfer_id = $1
+       ORDER BY td.created_at`,
+      [transferResult.rows[0].id]
+    )
     res.json({ success: true, data: documentsResult.rows.map(mapDocumentRow) })
+  })
+)
+
+router.post(
+  '/:id/documents/:documentId/upload',
+  asyncHandler(async (req: Request, res: Response) => {
+    const { id, documentId } = req.params
+    const { fileName, fileType, fileData } = req.body as Record<string, unknown>
+
+    if (!isNonEmptyString(fileName) || !isNonEmptyString(fileData)) {
+      res.status(400).json({ success: false, error: 'fileName and fileData are required' })
+      return
+    }
+
+    const transferResult = await query(`SELECT id FROM transfers WHERE transfer_id = $1${isUuid(id) ? ' OR id = $1::uuid' : ''}`, [id])
+    if (transferResult.rows.length === 0) {
+      res.status(404).json({ success: false, error: 'Transfer not found' })
+      return
+    }
+    const transferUuid = transferResult.rows[0].id
+
+    const updated = await withTransaction(async (client) => {
+      return saveTransferDocumentUpload(
+        client,
+        transferUuid,
+        documentId,
+        fileName,
+        typeof fileType === 'string' ? fileType : 'application/octet-stream',
+        fileData
+      )
+    })
+
+    if (!updated) {
+      res.status(404).json({ success: false, error: 'Transfer document not found' })
+      return
+    }
+
+    res.json({ success: true, data: mapDocumentRow(updated), message: 'Document uploaded successfully' })
   })
 )
 

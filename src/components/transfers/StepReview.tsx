@@ -5,11 +5,6 @@ import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui'
 import { Button } from '@/components/ui'
 import { Badge } from '@/components/ui'
 import { useTransfer, formatCurrency, getProgressPercentage, Document } from './TransferForm'
-import { DOCUMENT_TYPES } from './StepDocuments'
-
-const getDocumentTypeLabel = (type: string) => {
-  return DOCUMENT_TYPES.find(t => t.value === type)?.label || type
-}
 
 interface ReviewSectionProps {
   title: string
@@ -281,7 +276,6 @@ const StepReview: React.FC = () => {
                   <span className="font-medium text-gray-900 dark:text-gray-100">{doc.name}</span>
                 </div>
                 <div className="flex items-center space-x-2">
-                  <Badge variant="primary" size="sm">{getDocumentTypeLabel(doc.type)}</Badge>
                   <Badge
                     variant={doc.status === 'verified' ? 'success' : doc.status === 'uploaded' ? 'warning' : 'default'}
                     size="sm"

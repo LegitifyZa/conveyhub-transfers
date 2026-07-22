@@ -1,6 +1,6 @@
 import { apiRequest } from './http'
 import type { ApiResponse, PaginatedResponse, TransferFilters } from '../types'
-import type { TransferState } from '../../components/transfers/TransferForm'
+import type { TransferState, Document as TransferDocument } from '../../components/transfers/TransferForm'
 
 export interface TransferAggregate extends TransferState {
   id?: string
@@ -26,6 +26,30 @@ export interface AuditEntry {
   timestamp: string
 }
 
+interface ServerDocument {
+  id?: unknown
+  transferId?: unknown
+  transfer_id?: unknown
+  catalogueDocumentId?: unknown
+  catalogue_document_id?: unknown
+  name?: unknown
+  category?: unknown
+  type?: unknown
+  status?: unknown
+  filePath?: unknown
+  file_path?: unknown
+  fileSize?: unknown
+  file_size?: unknown
+  fileType?: unknown
+  file_type?: unknown
+  originalFileName?: unknown
+  original_file_name?: unknown
+  description?: unknown
+  notes?: unknown
+  uploadedAt?: unknown
+  uploadDate?: unknown
+}
+
 interface ServerAggregate {
   id?: string
   transferId?: string
@@ -39,7 +63,7 @@ interface ServerAggregate {
   property?: Record<string, unknown>
   parties?: Record<string, unknown>[]
   financials?: Record<string, unknown>
-  documents?: Record<string, unknown>[]
+  documents?: ServerDocument[]
   createdAt?: string
   updatedAt?: string
 }
@@ -103,7 +127,13 @@ function toServerAggregate(state: TransferAggregate) {
     documents: state.documents.map(({ file: _file, ...document }) => ({
       ...document,
       category: document.type,
-      uploadedAt: document.uploadDate
+      uploadedAt: document.uploadDate,
+      catalogueDocumentId: document.catalogueDocumentId,
+      notes: document.notes ?? document.description,
+      originalFileName: document.originalFileName,
+      fileSize: document.fileSize,
+      fileType: document.fileType,
+      filePath: document.filePath
     }))
   }
 }
@@ -162,9 +192,15 @@ function fromServerAggregate(server: ServerAggregate): TransferAggregate {
       id: value(document.id),
       name: value(document.name),
       type: value(document.category ?? document.type),
-      status: document.status === 'verified' ? 'verified' : document.status === 'pending' ? 'pending' : 'uploaded',
+      catalogueDocumentId: value(document.catalogueDocumentId ?? document.catalogue_document_id),
+      status: (document.status === 'verified' ? 'verified' : document.status === 'pending' ? 'pending' : document.status === 'rejected' ? 'rejected' : document.status === 'not_required' ? 'not_required' : 'uploaded') as TransferDocument['status'],
       uploadDate: value(document.uploadedAt ?? document.uploadDate),
-      description: value(document.description)
+      description: value(document.description ?? document.notes),
+      notes: value(document.notes ?? document.description),
+      filePath: value(document.filePath ?? document.file_path),
+      fileSize: typeof document.fileSize === 'number' ? document.fileSize : typeof document.file_size === 'number' ? document.file_size : undefined,
+      fileType: value(document.fileType ?? document.file_type),
+      originalFileName: value(document.originalFileName ?? document.original_file_name)
     }))
   }
 }
@@ -190,6 +226,47 @@ export class TransferApi {
   static async updateTransfer(id: string, data: Partial<TransferAggregate>): Promise<ApiResponse<TransferAggregate>> {
     const response = await apiRequest<ApiResponse<ServerAggregate>>(`/api/transfers/${id}`, { method: 'PUT', body: toServerAggregate(data as TransferAggregate) })
     return { ...response, data: response.data ? fromServerAggregate(response.data) : undefined }
+  }
+
+  static async uploadTransferDocument(transferId: string, documentId: string, file: File): Promise<ApiResponse<TransferDocument>> {
+    const base64 = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(reader.result as string)
+      reader.onerror = () => reject(new Error('Failed to read file'))
+      reader.readAsDataURL(file)
+    })
+
+    const response = await apiRequest<ApiResponse<ServerDocument>>(`/api/transfers/${transferId}/documents/${documentId}/upload`, {
+      method: 'POST',
+      body: {
+        fileName: file.name,
+        fileType: file.type || 'application/octet-stream',
+        fileData: base64
+      }
+    })
+
+    if (!response.data) {
+      return { success: false, error: response.error || 'Upload failed' }
+    }
+
+    const document = response.data
+    return {
+      success: true,
+      data: {
+        id: value(document.id),
+        name: value(document.name),
+        type: value(document.category ?? document.type),
+        catalogueDocumentId: value(document.catalogueDocumentId ?? document.catalogue_document_id),
+        status: (document.status === 'verified' ? 'verified' : document.status === 'pending' ? 'pending' : document.status === 'rejected' ? 'rejected' : document.status === 'not_required' ? 'not_required' : 'uploaded') as TransferDocument['status'],
+        uploadDate: value(document.uploadedAt ?? document.uploadDate),
+        description: value(document.description ?? document.notes),
+        notes: value(document.notes ?? document.description),
+        filePath: value(document.filePath ?? document.file_path),
+        fileSize: typeof document.fileSize === 'number' ? document.fileSize : typeof document.file_size === 'number' ? document.file_size : undefined,
+        fileType: value(document.fileType ?? document.file_type),
+        originalFileName: value(document.originalFileName ?? document.original_file_name)
+      }
+    }
   }
 
   static async deleteTransfer(id: string): Promise<ApiResponse<boolean>> {

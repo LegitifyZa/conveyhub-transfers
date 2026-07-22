@@ -47,10 +47,16 @@ export interface Document {
   id: string
   name: string
   type: string
-  status: 'pending' | 'uploaded' | 'verified'
+  catalogueDocumentId?: string
+  status: 'pending' | 'uploaded' | 'verified' | 'rejected' | 'not_required'
   uploadDate?: string
   file?: File
   description?: string
+  notes?: string
+  filePath?: string
+  fileSize?: number
+  fileType?: string
+  originalFileName?: string
 }
 
 export interface TransferState {
@@ -245,13 +251,10 @@ export const validateFinancials = (financials: Financials): boolean => {
   return !!(financials.purchasePrice && financials.depositAmount)
 }
 
-export const REQUIRED_DOCUMENT_TYPES = ['title_deed', 'sale_agreement', 'identification'] as const
-
 export const validateDocuments = (documents: Document[]): boolean => {
-  const hasRequiredTypes = REQUIRED_DOCUMENT_TYPES.every(type =>
-    documents.some(doc => doc.type === type && doc.status === 'uploaded')
+  return documents.length > 0 && documents.every(doc =>
+    doc.status === 'uploaded' || doc.status === 'not_required'
   )
-  return documents.length >= 3 && documents.every(doc => doc.status === 'uploaded') && hasRequiredTypes
 }
 
 export const calculateTransferCosts = (financials: Financials): {
