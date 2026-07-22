@@ -420,36 +420,6 @@ const TransferMilestones: React.FC = () => {
           </div>
         </div>
 
-        {/* Tabs */}
-        <div className="mb-6 border-b border-gray-200 dark:border-navy-700">
-          <div className="flex space-x-8">
-            <button
-              type="button"
-              onClick={() => setActiveTab('milestones')}
-              className={cn(
-                'pb-3 text-sm font-medium border-b-2 transition-colors duration-200',
-                activeTab === 'milestones'
-                  ? 'border-teal-600 text-teal-600 dark:border-teal-400 dark:text-teal-400'
-                  : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
-              )}
-            >
-              Milestones
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveTab('documents')}
-              className={cn(
-                'pb-3 text-sm font-medium border-b-2 transition-colors duration-200',
-                activeTab === 'documents'
-                  ? 'border-teal-600 text-teal-600 dark:border-teal-400 dark:text-teal-400'
-                  : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
-              )}
-            >
-              Documents
-            </button>
-          </div>
-        </div>
-
         {(error || isLoading) && (
           <div className={`mb-6 rounded-lg p-4 ${error ? 'bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800' : 'bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800'}`}>
             <p className={`text-sm ${error ? 'text-red-700 dark:text-red-300' : 'text-blue-700 dark:text-blue-300'}`}>
@@ -512,6 +482,36 @@ const TransferMilestones: React.FC = () => {
             )}
           </CardContent>
         </Card>
+
+        {/* Tabs */}
+        <div className="mb-6 border-b border-gray-200 dark:border-navy-700">
+          <div className="flex space-x-8">
+            <button
+              type="button"
+              onClick={() => setActiveTab('milestones')}
+              className={cn(
+                'pb-3 text-sm font-medium border-b-2 transition-colors duration-200',
+                activeTab === 'milestones'
+                  ? 'border-teal-600 text-teal-600 dark:border-teal-400 dark:text-teal-400'
+                  : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
+              )}
+            >
+              Milestones
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('documents')}
+              className={cn(
+                'pb-3 text-sm font-medium border-b-2 transition-colors duration-200',
+                activeTab === 'documents'
+                  ? 'border-teal-600 text-teal-600 dark:border-teal-400 dark:text-teal-400'
+                  : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
+              )}
+            >
+              Documents
+            </button>
+          </div>
+        </div>
 
         {activeTab === 'milestones' ? (
           <>
