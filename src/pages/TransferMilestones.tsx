@@ -6,6 +6,7 @@ import { Button } from '@/components/ui'
 import { Badge } from '@/components/ui'
 import { useTransfers, TransferAggregate } from '@/hooks/useTransfers'
 import { TransferDocumentsPanel } from '@/components/transfers/TransferDocumentsPanel'
+import { cn } from '@/utils/cn'
 import type { Party } from '@/components/transfers/TransferForm'
 
 export type MilestoneStatus = 'not_started' | 'in_progress' | 'completed' | 'overdue' | 'not_required'
@@ -190,6 +191,7 @@ const TransferMilestones: React.FC = () => {
   const [isDetailsExpanded, setIsDetailsExpanded] = useState(false)
   const [transfer, setTransfer] = useState<TransferDetails>(() => emptyDetails(resolvedTransferId))
   const [isSaving, setIsSaving] = useState(false)
+  const [activeTab, setActiveTab] = useState<'milestones' | 'documents'>('milestones')
   const noteValuesAtFocus = useRef(new Map<string, string>())
 
   // Load transfer, milestones and activity from the backend.
@@ -418,6 +420,36 @@ const TransferMilestones: React.FC = () => {
           </div>
         </div>
 
+        {/* Tabs */}
+        <div className="mb-6 border-b border-gray-200 dark:border-navy-700">
+          <div className="flex space-x-8">
+            <button
+              type="button"
+              onClick={() => setActiveTab('milestones')}
+              className={cn(
+                'pb-3 text-sm font-medium border-b-2 transition-colors duration-200',
+                activeTab === 'milestones'
+                  ? 'border-teal-600 text-teal-600 dark:border-teal-400 dark:text-teal-400'
+                  : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
+              )}
+            >
+              Milestones
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('documents')}
+              className={cn(
+                'pb-3 text-sm font-medium border-b-2 transition-colors duration-200',
+                activeTab === 'documents'
+                  ? 'border-teal-600 text-teal-600 dark:border-teal-400 dark:text-teal-400'
+                  : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
+              )}
+            >
+              Documents
+            </button>
+          </div>
+        </div>
+
         {(error || isLoading) && (
           <div className={`mb-6 rounded-lg p-4 ${error ? 'bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800' : 'bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800'}`}>
             <p className={`text-sm ${error ? 'text-red-700 dark:text-red-300' : 'text-blue-700 dark:text-blue-300'}`}>
@@ -568,10 +600,9 @@ const TransferMilestones: React.FC = () => {
           </CardContent>
         </Card>
 
-        {/* Transfer Documents */}
-        <TransferDocumentsPanel transferId={resolvedTransferId} />
-
-        {/* Expanded Content */}
+        {activeTab === 'milestones' ? (
+          <>
+            {/* Progress Overview */}
         <Modal isOpen={!!selectedMilestone} onClose={() => setExpandedMilestone(null)} title={selectedMilestone ? `Edit ${selectedMilestone.name}` : ''} description={selectedMilestone?.statusLabel} size="md">
           {selectedMilestone && (
             <div className="space-y-4">
@@ -633,6 +664,10 @@ const TransferMilestones: React.FC = () => {
             )}
           </CardContent>
         </Card>
+          </>
+        ) : (
+          <TransferDocumentsPanel transferId={resolvedTransferId} />
+        )}
       </div>
     </div>
   )
