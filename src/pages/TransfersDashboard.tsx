@@ -272,7 +272,7 @@ const TransfersDashboard: React.FC = () => {
                 </div>
               ) : (
                 <div className="space-y-3">
-                  <div className="hidden md:grid grid-cols-[200px_1fr_1fr_120px_100px_110px] gap-4 px-3 text-xs font-medium text-gray-500 dark:text-gray-400">
+                  <div className="hidden md:grid grid-cols-[260px_1fr_180px_120px_100px_110px] gap-4 px-3 text-xs font-medium text-gray-500 dark:text-gray-400">
                     <span>Transfer / Status</span>
                     <span>Property</span>
                     <span>Buyer</span>
@@ -284,7 +284,7 @@ const TransfersDashboard: React.FC = () => {
                     const display = getTransferDisplay(transfer)
                     return (
                       <div key={display.id} className="border border-gray-200 dark:border-navy-700 rounded-lg p-3 hover:shadow-md transition-shadow">
-                        <div className="grid grid-cols-1 md:grid-cols-[200px_1fr_1fr_120px_100px_110px] gap-4 items-center">
+                        <div className="grid grid-cols-1 md:grid-cols-[260px_1fr_180px_120px_100px_110px] gap-4 items-center">
                           <div className="flex items-center gap-2 min-w-0">
                             <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
                               {display.id}
