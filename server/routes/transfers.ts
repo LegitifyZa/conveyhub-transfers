@@ -1090,4 +1090,106 @@ router.post(
   })
 )
 
+router.post(
+  '/:id/documents',
+  asyncHandler(async (req: Request, res: Response) => {
+    const { id } = req.params
+    const { catalogueDocumentId, name } = req.body as { catalogueDocumentId?: unknown; name?: unknown }
+
+    const transferResult = await query(`SELECT id FROM transfers WHERE transfer_id = $1${isUuid(id) ? ' OR id = $1::uuid' : ''}`, [id])
+    if (transferResult.rows.length === 0) {
+      res.status(404).json({ success: false, error: 'Transfer not found' })
+      return
+    }
+    const transferUuid = transferResult.rows[0].id
+
+    const newDocument = await withTransaction(async (client) => {
+      if (isUuid(catalogueDocumentId)) {
+        const catalogueResult = await client.query('SELECT name FROM document_catalogue WHERE id = $1', [catalogueDocumentId])
+        if (catalogueResult.rows.length === 0) {
+          res.status(404).json({ success: false, error: 'Catalogue document not found' })
+          return null
+        }
+        const catalogueName = catalogueResult.rows[0].name
+        const insertResult = await client.query(
+          `INSERT INTO transfer_documents (transfer_id, catalogue_document_id, name, status)
+           VALUES ($1, $2, $3, 'pending')
+           ON CONFLICT (transfer_id, catalogue_document_id) DO UPDATE SET updated_at = CURRENT_TIMESTAMP
+           RETURNING *`,
+          [transferUuid, catalogueDocumentId, catalogueName]
+        )
+        return insertResult.rows[0]
+      }
+
+      if (!isNonEmptyString(name)) {
+        res.status(400).json({ success: false, error: 'catalogueDocumentId or name is required' })
+        return null
+      }
+
+      const insertResult = await client.query(
+        `INSERT INTO transfer_documents (transfer_id, name, status)
+         VALUES ($1, $2, 'pending')
+         RETURNING *`,
+        [transferUuid, name]
+      )
+      return insertResult.rows[0]
+    })
+
+    if (!newDocument) return
+
+    res.status(201).json({ success: true, data: mapDocumentRow(newDocument), message: 'Document added to transfer' })
+  })
+)
+
+router.patch(
+  '/:id/documents/:documentId',
+  asyncHandler(async (req: Request, res: Response) => {
+    const { id, documentId } = req.params
+    const { status, notes } = req.body as { status?: unknown; notes?: unknown }
+
+    const transferResult = await query(`SELECT id FROM transfers WHERE transfer_id = $1${isUuid(id) ? ' OR id = $1::uuid' : ''}`, [id])
+    if (transferResult.rows.length === 0) {
+      res.status(404).json({ success: false, error: 'Transfer not found' })
+      return
+    }
+    const transferUuid = transferResult.rows[0].id
+
+    const updates: string[] = []
+    const params: unknown[] = []
+    let paramIdx = 1
+
+    const validStatuses = ['pending', 'uploaded', 'verified', 'rejected', 'not_required']
+    if (typeof status === 'string' && validStatuses.includes(status)) {
+      updates.push(`status = $${paramIdx}`)
+      params.push(status)
+      paramIdx += 1
+    }
+
+    if (typeof notes === 'string') {
+      updates.push(`notes = $${paramIdx}`)
+      params.push(notes)
+      paramIdx += 1
+    }
+
+    if (updates.length === 0) {
+      res.status(400).json({ success: false, error: 'status or notes is required' })
+      return
+    }
+
+    updates.push(`updated_at = CURRENT_TIMESTAMP`)
+    params.push(documentId, transferUuid)
+    const result = await query(
+      `UPDATE transfer_documents SET ${updates.join(', ')} WHERE id = $${paramIdx} AND transfer_id = $${paramIdx + 1} RETURNING *`,
+      params
+    )
+
+    if (result.rows.length === 0) {
+      res.status(404).json({ success: false, error: 'Transfer document not found' })
+      return
+    }
+
+    res.json({ success: true, data: mapDocumentRow(result.rows[0]), message: 'Document updated successfully' })
+  })
+)
+
 export default router

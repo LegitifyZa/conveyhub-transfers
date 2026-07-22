@@ -140,6 +140,23 @@ function toServerAggregate(state: TransferAggregate) {
 
 const value = (input: unknown) => input === null || input === undefined ? '' : String(input)
 
+function mapServerDocument(document: ServerDocument): TransferDocument {
+  return {
+    id: value(document.id),
+    name: value(document.name),
+    type: value(document.category ?? document.type),
+    catalogueDocumentId: value(document.catalogueDocumentId ?? document.catalogue_document_id),
+    status: (document.status === 'verified' ? 'verified' : document.status === 'pending' ? 'pending' : document.status === 'rejected' ? 'rejected' : document.status === 'not_required' ? 'not_required' : 'uploaded') as TransferDocument['status'],
+    uploadDate: value(document.uploadedAt ?? document.uploadDate),
+    description: value(document.description ?? document.notes),
+    notes: value(document.notes ?? document.description),
+    filePath: value(document.filePath ?? document.file_path),
+    fileSize: typeof document.fileSize === 'number' ? document.fileSize : typeof document.file_size === 'number' ? document.file_size : undefined,
+    fileType: value(document.fileType ?? document.file_type),
+    originalFileName: value(document.originalFileName ?? document.original_file_name)
+  }
+}
+
 function fromServerAggregate(server: ServerAggregate): TransferAggregate {
   const property = server.property || {}
   const financials = server.financials || {}
@@ -188,20 +205,7 @@ function fromServerAggregate(server: ServerAggregate): TransferAggregate {
       clearanceCertificate: value(financials.clearanceCertificateFee ?? financials.clearanceCertificate),
       ratesClearance: value(financials.ratesClearanceAmount ?? financials.ratesClearance)
     },
-    documents: (server.documents || []).map(document => ({
-      id: value(document.id),
-      name: value(document.name),
-      type: value(document.category ?? document.type),
-      catalogueDocumentId: value(document.catalogueDocumentId ?? document.catalogue_document_id),
-      status: (document.status === 'verified' ? 'verified' : document.status === 'pending' ? 'pending' : document.status === 'rejected' ? 'rejected' : document.status === 'not_required' ? 'not_required' : 'uploaded') as TransferDocument['status'],
-      uploadDate: value(document.uploadedAt ?? document.uploadDate),
-      description: value(document.description ?? document.notes),
-      notes: value(document.notes ?? document.description),
-      filePath: value(document.filePath ?? document.file_path),
-      fileSize: typeof document.fileSize === 'number' ? document.fileSize : typeof document.file_size === 'number' ? document.file_size : undefined,
-      fileType: value(document.fileType ?? document.file_type),
-      originalFileName: value(document.originalFileName ?? document.original_file_name)
-    }))
+    documents: (server.documents || []).map(mapServerDocument)
   }
 }
 
@@ -249,24 +253,33 @@ export class TransferApi {
       return { success: false, error: response.error || 'Upload failed' }
     }
 
-    const document = response.data
-    return {
-      success: true,
-      data: {
-        id: value(document.id),
-        name: value(document.name),
-        type: value(document.category ?? document.type),
-        catalogueDocumentId: value(document.catalogueDocumentId ?? document.catalogue_document_id),
-        status: (document.status === 'verified' ? 'verified' : document.status === 'pending' ? 'pending' : document.status === 'rejected' ? 'rejected' : document.status === 'not_required' ? 'not_required' : 'uploaded') as TransferDocument['status'],
-        uploadDate: value(document.uploadedAt ?? document.uploadDate),
-        description: value(document.description ?? document.notes),
-        notes: value(document.notes ?? document.description),
-        filePath: value(document.filePath ?? document.file_path),
-        fileSize: typeof document.fileSize === 'number' ? document.fileSize : typeof document.file_size === 'number' ? document.file_size : undefined,
-        fileType: value(document.fileType ?? document.file_type),
-        originalFileName: value(document.originalFileName ?? document.original_file_name)
-      }
+    return { success: true, data: mapServerDocument(response.data) }
+  }
+
+  static async addTransferDocument(transferId: string, catalogueDocumentId: string, name?: string): Promise<ApiResponse<TransferDocument>> {
+    const response = await apiRequest<ApiResponse<ServerDocument>>(`/api/transfers/${transferId}/documents`, {
+      method: 'POST',
+      body: { catalogueDocumentId, name }
+    })
+
+    if (!response.data) {
+      return { success: false, error: response.error || 'Failed to add document' }
     }
+
+    return { success: true, data: mapServerDocument(response.data) }
+  }
+
+  static async updateTransferDocument(transferId: string, documentId: string, updates: { status?: TransferDocument['status']; notes?: string }): Promise<ApiResponse<TransferDocument>> {
+    const response = await apiRequest<ApiResponse<ServerDocument>>(`/api/transfers/${transferId}/documents/${documentId}`, {
+      method: 'PATCH',
+      body: updates
+    })
+
+    if (!response.data) {
+      return { success: false, error: response.error || 'Failed to update document' }
+    }
+
+    return { success: true, data: mapServerDocument(response.data) }
   }
 
   static async deleteTransfer(id: string): Promise<ApiResponse<boolean>> {

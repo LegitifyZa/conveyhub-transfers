@@ -5,6 +5,7 @@ import { Card, CardHeader, CardTitle, CardContent, Modal } from '@/components/ui
 import { Button } from '@/components/ui'
 import { Badge } from '@/components/ui'
 import { useTransfers, TransferAggregate } from '@/hooks/useTransfers'
+import { TransferDocumentsPanel } from '@/components/transfers/TransferDocumentsPanel'
 import type { Party } from '@/components/transfers/TransferForm'
 
 export type MilestoneStatus = 'not_started' | 'in_progress' | 'completed' | 'overdue' | 'not_required'
@@ -566,6 +567,9 @@ const TransferMilestones: React.FC = () => {
             </div>
           </CardContent>
         </Card>
+
+        {/* Transfer Documents */}
+        <TransferDocumentsPanel transferId={resolvedTransferId} />
 
         {/* Expanded Content */}
         <Modal isOpen={!!selectedMilestone} onClose={() => setExpandedMilestone(null)} title={selectedMilestone ? `Edit ${selectedMilestone.name}` : ''} description={selectedMilestone?.statusLabel} size="md">
