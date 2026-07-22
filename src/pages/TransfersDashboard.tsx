@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { Plus, Search, Calendar, User, Building, FileText, TrendingUp, MoreVertical } from 'lucide-react'
+import { Plus, Search, Calendar, User, Building, FileText, TrendingUp } from 'lucide-react'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui'
 import { Button } from '@/components/ui'
 import { Input } from '@/components/ui'
@@ -275,77 +275,58 @@ const TransfersDashboard: React.FC = () => {
                   {filteredTransfers.map((transfer) => {
                     const display = getTransferDisplay(transfer)
                     return (
-                      <div key={display.id} className="border border-gray-200 dark:border-navy-700 rounded-lg p-4 hover:shadow-md transition-shadow">
-                        <div className="flex items-center justify-between">
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center space-x-3 mb-2">
-                              <h3 className="text-lg font-medium text-gray-900 dark:text-gray-100 truncate">
-                                {display.id}
-                              </h3>
-                              <Badge className={getStatusColor(display.status)}>
-                                {getStatusText(display.status)}
-                              </Badge>
-                            </div>
+                      <div key={display.id} className="border border-gray-200 dark:border-navy-700 rounded-lg p-3 hover:shadow-md transition-shadow">
+                        <div className="flex flex-col md:flex-row md:items-center gap-3">
+                          <div className="flex items-center gap-2 min-w-0 md:w-48">
+                            <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
+                              {display.id}
+                            </h3>
+                            <Badge className={getStatusColor(display.status)} size="sm">
+                              {getStatusText(display.status)}
+                            </Badge>
+                          </div>
 
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-3">
-                              <div className="flex items-center space-x-2">
-                                <Building className="w-4 h-4 text-gray-400" />
-                                <span className="text-sm text-gray-600 dark:text-gray-400 truncate">
-                                  {display.propertyAddress}
-                                </span>
+                          <div className="flex-1 min-w-0 flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 text-sm text-gray-600 dark:text-gray-400">
+                            <span className="flex items-center gap-1.5 truncate" title={display.propertyAddress}>
+                              <Building className="w-4 h-4 flex-shrink-0 text-gray-400" />
+                              <span className="truncate">{display.propertyAddress}</span>
+                            </span>
+                            <span className="flex items-center gap-1.5 truncate" title={display.buyerName}>
+                              <User className="w-4 h-4 flex-shrink-0 text-gray-400" />
+                              <span className="truncate">{display.buyerName}</span>
+                            </span>
+                            <span className="font-medium text-gray-900 dark:text-gray-100 whitespace-nowrap">
+                              {formatCurrency(display.purchasePrice)}
+                            </span>
+                          </div>
+
+                          <div className="flex items-center gap-3">
+                            <div className="w-24 hidden sm:block">
+                              <div className="flex items-center justify-between text-xs text-gray-600 dark:text-gray-400 mb-1">
+                                <span>Progress</span>
+                                <span>{display.progress}%</span>
                               </div>
-                              <div className="flex items-center space-x-2">
-                                <User className="w-4 h-4 text-gray-400" />
-                                <span className="text-sm text-gray-600 dark:text-gray-400">
-                                  {display.buyerName}
-                                </span>
-                              </div>
-                              <div className="flex items-center space-x-2">
-                                <span className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                                  {formatCurrency(display.purchasePrice)}
-                                </span>
-                              </div>
-                            </div>
-
-                            <div className="flex items-center justify-between">
-                              <div className="flex items-center space-x-4 text-sm text-gray-500 dark:text-gray-400">
-                                <span>Created {display.createdDate}</span>
-                                <span>Step {display.currentStep} of {display.totalSteps}</span>
-                              </div>
-
-                              <div className="flex items-center space-x-3">
-                                <div className="w-32">
-                                  <div className="flex items-center justify-between text-xs text-gray-600 dark:text-gray-400 mb-1">
-                                    <span>Progress</span>
-                                    <span>{display.progress}%</span>
-                                  </div>
-                                  <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
-                                    <div
-                                      className="bg-teal-600 h-2 rounded-full transition-all duration-300"
-                                      style={{ width: `${display.progress}%` }}
-                                    />
-                                  </div>
-                                </div>
-
-                                <Button
-                                  variant="secondary"
-                                  size="sm"
-                                  onClick={() => {
-                                    if (display.status === 'in_progress') {
-                                      navigate(`/transfers/${display.id}/milestones`)
-                                    } else {
-                                      navigate('/transfers/workflow', { state: { transferId: display.id } })
-                                    }
-                                  }}
-                                >
-                                  {display.status === 'in_progress' ? 'View Milestones' : 'View Details'}
-                                </Button>
-
-                                <Button variant="ghost" size="sm">
-                                  <MoreVertical className="w-4 h-4" />
-                                </Button>
+                              <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-1.5">
+                                <div
+                                  className="bg-teal-600 h-1.5 rounded-full transition-all duration-300"
+                                  style={{ width: `${display.progress}%` }}
+                                />
                               </div>
                             </div>
+
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              onClick={() => {
+                                if (display.status === 'in_progress') {
+                                  navigate(`/transfers/${display.id}/milestones`)
+                                } else {
+                                  navigate('/transfers/workflow', { state: { transferId: display.id } })
+                                }
+                              }}
+                            >
+                              {display.status === 'in_progress' ? 'Milestones' : 'Details'}
+                            </Button>
                           </div>
                         </div>
                       </div>
