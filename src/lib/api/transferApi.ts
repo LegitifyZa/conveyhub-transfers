@@ -5,6 +5,7 @@ import type { TransferState, Document as TransferDocument } from '../../componen
 export interface TransferAggregate extends TransferState {
   id?: string
   transfer_id?: string
+  progress?: number
   created_at?: string
   updated_at?: string
 }
@@ -164,6 +165,7 @@ function fromServerAggregate(server: ServerAggregate): TransferAggregate {
   return {
     id: server.id,
     transfer_id: server.transferId || server.transfer_id,
+    progress: typeof server.progress === 'number' ? server.progress : undefined,
     created_at: server.createdAt,
     updated_at: server.updatedAt,
     currentStep: server.currentStep || 1,

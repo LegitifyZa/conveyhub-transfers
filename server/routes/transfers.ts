@@ -40,15 +40,17 @@ function parseFilters(req: Request): TransferFilters {
 }
 
 function mapTransferRow(row: any) {
+  const milestoneProgress = row.milestone_progress != null ? Number(row.milestone_progress) : undefined
+  const milestoneCompleted = row.milestone_completed === true
   return {
     id: row.id,
     transferId: row.transfer_id,
     propertyAddress: row.property_address,
     purchasePrice: row.purchase_price != null ? Number(row.purchase_price) : undefined,
-    status: row.status,
+    status: milestoneCompleted ? 'completed' : row.status,
     currentStep: row.current_step,
     totalSteps: row.total_steps,
-    progress: row.progress,
+    progress: milestoneProgress != null ? milestoneProgress : (row.progress != null ? Number(row.progress) : undefined),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     parties: Array.isArray(row.parties) ? row.parties.map(mapPartyRow) : [],
@@ -352,7 +354,16 @@ router.get(
     const offset = (filters.page - 1) * filters.limit
     const dataQuery = `
       SELECT t.id, t.transfer_id, t.property_address, t.purchase_price, t.status, t.current_step, t.total_steps, t.progress, t.created_at, t.updated_at,
-        COALESCE((SELECT json_agg(parties.*) FROM parties WHERE parties.transfer_id = t.id), '[]'::json) AS parties
+        COALESCE((SELECT json_agg(parties.*) FROM parties WHERE parties.transfer_id = t.id), '[]'::json) AS parties,
+        (SELECT ROUND(COUNT(*) FILTER (WHERE mm.status = 'completed') * 100.0 / NULLIF(COUNT(*) FILTER (WHERE mm.status != 'not_required'), 0))
+         FROM matter_milestones mm
+         JOIN matters m ON m.id = mm.matter_id
+         WHERE m.source_record_id::uuid = t.id) AS milestone_progress,
+        (SELECT COUNT(*) FILTER (WHERE mm.status != 'not_required') > 0
+           AND COUNT(*) FILTER (WHERE mm.status = 'completed') = COUNT(*) FILTER (WHERE mm.status != 'not_required')
+         FROM matter_milestones mm
+         JOIN matters m ON m.id = mm.matter_id
+         WHERE m.source_record_id::uuid = t.id) AS milestone_completed
       FROM transfers t
       ${whereClause}
       ORDER BY ${sortColumn} ${filters.sortOrder.toUpperCase()}
@@ -397,7 +408,16 @@ router.get(
       `SELECT t.*, p.id as property_row_id, p.property_id, p.erf_number, p.street_address, p.suburb, p.city,
               p.postal_code, p.province, p.country, p.property_type, p.title_deed_number, p.extent_sqm,
               p.description as property_description, p.legal_description, p.lot_number, p.year_built, p.square_footage,
-              p.status as property_status, p.created_at as property_created_at, p.updated_at as property_updated_at
+              p.status as property_status, p.created_at as property_created_at, p.updated_at as property_updated_at,
+              (SELECT ROUND(COUNT(*) FILTER (WHERE mm.status = 'completed') * 100.0 / NULLIF(COUNT(*) FILTER (WHERE mm.status != 'not_required'), 0))
+               FROM matter_milestones mm
+               JOIN matters m ON m.id = mm.matter_id
+               WHERE m.source_record_id::uuid = t.id) AS milestone_progress,
+              (SELECT COUNT(*) FILTER (WHERE mm.status != 'not_required') > 0
+                 AND COUNT(*) FILTER (WHERE mm.status = 'completed') = COUNT(*) FILTER (WHERE mm.status != 'not_required')
+               FROM matter_milestones mm
+               JOIN matters m ON m.id = mm.matter_id
+               WHERE m.source_record_id::uuid = t.id) AS milestone_completed
        FROM transfers t
        LEFT JOIN properties p ON t.property_id = p.id
        WHERE t.transfer_id = $1${isUuid(id) ? ' OR t.id = $1::uuid' : ''}`,
@@ -448,15 +468,18 @@ router.get(
       updated_at: transferRow.property_updated_at,
     })
 
+    const milestoneProgress = transferRow.milestone_progress != null ? Number(transferRow.milestone_progress) : undefined
+    const milestoneCompleted = transferRow.milestone_completed === true
+
     res.json({
       success: true,
       data: {
         id: transferRow.id,
         transferId: transferRow.transfer_id,
-        status: transferRow.status,
+        status: milestoneCompleted ? 'completed' : transferRow.status,
         currentStep: transferRow.current_step,
         totalSteps: transferRow.total_steps,
-        progress: transferRow.progress,
+        progress: milestoneProgress != null ? milestoneProgress : (transferRow.progress != null ? Number(transferRow.progress) : undefined),
         property,
         parties: partiesResult.rows.map(mapPartyRow),
         financials: mapFinancialRow(financialsResult.rows[0]),

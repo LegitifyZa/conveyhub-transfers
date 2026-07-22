@@ -52,7 +52,9 @@ const getTransferDisplay = (transfer: TransferAggregate) => {
     ? new Date(transfer.created_at).toISOString().split('T')[0]
     : '—'
   const currentStep = transfer.currentStep || 1
-  const progress = Math.min(100, Math.round((currentStep / 5) * 100))
+  const progress = transfer.progress != null
+    ? Math.min(100, transfer.progress)
+    : Math.min(100, Math.round((currentStep / 5) * 100))
 
   return {
     id,

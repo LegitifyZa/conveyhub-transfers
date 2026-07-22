@@ -164,6 +164,44 @@ async function updateSingleMilestone(
   return { milestone: mapMilestoneRow(updatedRow), audit: true }
 }
 
+async function syncTransferProgressFromMilestones(
+  client: import('pg').PoolClient,
+  matterId: string
+) {
+  const matterResult = await client.query<{ source_record_id: string }>(
+    'SELECT source_record_id FROM matters WHERE id = $1',
+    [matterId]
+  )
+  const transferId = matterResult.rows[0]?.source_record_id
+  if (!transferId) return
+
+  const stats = await client.query<{
+    completed: string
+    total_required: string
+  }>(
+    `SELECT
+      COUNT(*) FILTER (WHERE status = 'completed') AS completed,
+      COUNT(*) FILTER (WHERE status != 'not_required') AS total_required
+     FROM matter_milestones
+     WHERE matter_id = $1`,
+    [matterId]
+  )
+
+  const completed = parseInt(stats.rows[0]?.completed || '0', 10)
+  const totalRequired = parseInt(stats.rows[0]?.total_required || '0', 10)
+  if (totalRequired === 0) return
+
+  const progress = Math.round((completed / totalRequired) * 100)
+  await client.query(
+    `UPDATE transfers
+     SET progress = $1,
+         status = CASE WHEN $2 = 100 AND status != 'completed' THEN 'completed' ELSE status END,
+         updated_at = CURRENT_TIMESTAMP
+     WHERE id = $3`,
+    [progress, progress, transferId]
+  )
+}
+
 router.patch(
   '/transfers/:transferId/milestones/:milestoneId',
   asyncHandler(async (req: Request, res: Response) => {
@@ -176,6 +214,7 @@ router.patch(
 
     const updated = await withTransaction(async (client) => {
       const { milestone } = await updateSingleMilestone(client, matterId, milestoneId, req.body as Record<string, unknown>)
+      await syncTransferProgressFromMilestones(client, matterId)
       return milestone
     })
 
@@ -203,6 +242,7 @@ router.put(
         const { milestone } = await updateSingleMilestone(client, matterId, id, item)
         results.push(milestone)
       }
+      await syncTransferProgressFromMilestones(client, matterId)
       return results
     })
 
