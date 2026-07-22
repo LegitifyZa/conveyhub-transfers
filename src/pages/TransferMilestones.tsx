@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, CheckCircle2, Clock, Circle, AlertCircle, Calendar, Building, User, ChevronDown, ChevronUp, History, FileText } from 'lucide-react'
+import { ArrowLeft, CheckCircle2, Clock, Circle, AlertCircle, Calendar, Building, User, ChevronDown, ChevronUp, History } from 'lucide-react'
 import { Card, CardHeader, CardTitle, CardContent, Modal } from '@/components/ui'
 import { Button } from '@/components/ui'
 import { Badge } from '@/components/ui'
@@ -413,10 +413,7 @@ const TransferMilestones: React.FC = () => {
                 Track progress for {transfer.id}
               </p>
             </div>
-            <Button variant="outline" size="sm" onClick={() => navigate('/documents')}>
-              <FileText className="mr-2 h-4 w-4" />
-              Documents
-            </Button>
+
           </div>
         </div>
 

@@ -12,7 +12,7 @@ const StepFinancials: React.FC = () => {
   useEffect(() => {
     if (financials.purchasePrice) {
       const costs = calculateSATransferCosts(financials.purchasePrice)
-      
+
       // Update all calculated fields
       dispatch({
         type: 'UPDATE_FINANCIALS',
@@ -28,6 +28,20 @@ const StepFinancials: React.FC = () => {
       })
     }
   }, [financials.purchasePrice, dispatch])
+
+  // Auto-calculate loan amount when purchase price or deposit changes
+  useEffect(() => {
+    const purchasePrice = parseFloat(financials.purchasePrice)
+    const depositAmount = parseFloat(financials.depositAmount)
+
+    if (!isNaN(purchasePrice) && !isNaN(depositAmount)) {
+      const loanAmount = Math.max(0, purchasePrice - depositAmount).toString()
+      dispatch({
+        type: 'UPDATE_FINANCIALS',
+        payload: { loanAmount }
+      })
+    }
+  }, [financials.purchasePrice, financials.depositAmount, dispatch])
 
   const updateFinancials = (field: keyof Financials, value: string) => {
     dispatch({

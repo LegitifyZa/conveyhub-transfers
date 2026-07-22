@@ -238,7 +238,7 @@ export const validateParties = (parties: Party[]): boolean => {
   return parties.length >= 2 && 
          parties.some(p => p.type === 'buyer') && 
          parties.some(p => p.type === 'seller') &&
-         parties.every(p => p.name && p.email)
+         parties.every(p => p.name && p.email && p.idNumber && p.phone)
 }
 
 export const validateFinancials = (financials: Financials): boolean => {

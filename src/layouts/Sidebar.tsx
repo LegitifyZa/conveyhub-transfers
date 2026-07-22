@@ -22,21 +22,29 @@ interface SidebarItemProps {
   label: string
   href: string
   isActive?: boolean
+  comingSoon?: boolean
 }
 
-const SidebarItem: React.FC<SidebarItemProps> = ({ icon: Icon, label, href, isActive }) => {
+const SidebarItem: React.FC<SidebarItemProps> = ({ icon: Icon, label, href, isActive, comingSoon }) => {
   return (
     <Link
       to={href}
       className={cn(
-        'flex items-center space-x-3 px-3 py-2 rounded-lg transition-colors duration-200',
+        'flex items-center px-3 py-2 rounded-lg transition-colors duration-200',
         isActive
           ? 'bg-teal-50 dark:bg-teal-900/20 text-teal-700 dark:text-teal-300'
           : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-navy-700 hover:text-gray-900 dark:hover:text-gray-100'
       )}
     >
-      <Icon className="h-5 w-5" />
-      <span className="font-medium">{label}</span>
+      <span className="flex items-center space-x-3 flex-1">
+        <Icon className="h-5 w-5" />
+        <span className="font-medium">{label}</span>
+      </span>
+      {comingSoon && (
+        <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400">
+          Coming soon
+        </span>
+      )}
     </Link>
   )
 }
@@ -45,7 +53,13 @@ interface SidebarProps {
   className?: string
 }
 
-const navigation = [
+const primaryNavigation = [
+  { name: 'Transfers', href: '/transfers', icon: FileText },
+  { name: 'Bonds', href: '/bonds', icon: Shield, comingSoon: true },
+  { name: 'Cancellations', href: '/cancellations', icon: RefreshCw, comingSoon: true },
+]
+
+const otherNavigation = [
   { name: 'Dashboard', href: '/dashboard', icon: Home },
   { name: 'Cases', href: '/cases', icon: FileText },
   { name: 'Documents', href: '/documents', icon: FolderOpen },
@@ -54,9 +68,6 @@ const navigation = [
   { name: 'Template Engine', href: '/template-engine', icon: Code2 },
   { name: 'Clause Library', href: '/clause-library', icon: Library },
   { name: 'Document Generator', href: '/document-generator', icon: Wand2 },
-  { name: 'Transfers', href: '/transfers', icon: FileText },
-  { name: 'Bonds', href: '/bonds', icon: Shield },
-  { name: 'Cancellations', href: '/cancellations', icon: RefreshCw },
   { name: 'Settings', href: '/settings', icon: Settings },
 ]
 
@@ -93,17 +104,35 @@ const Sidebar: React.FC<SidebarProps> = ({ className }) => {
           <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Convey Hub</p>
         </div>
 
-        <nav className="flex-1 px-4 pb-6">
+        <nav className="flex-1 px-4 pb-6 space-y-6">
           <div className="space-y-1">
-            {navigation.map((item) => (
+            {primaryNavigation.map((item) => (
               <SidebarItem
                 key={item.href}
                 icon={item.icon}
                 label={item.name}
                 href={item.href}
                 isActive={location.pathname === item.href}
+                comingSoon={item.comingSoon}
               />
             ))}
+          </div>
+
+          <div>
+            <p className="px-3 text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-2">
+              Other
+            </p>
+            <div className="space-y-1">
+              {otherNavigation.map((item) => (
+                <SidebarItem
+                  key={item.href}
+                  icon={item.icon}
+                  label={item.name}
+                  href={item.href}
+                  isActive={location.pathname === item.href}
+                />
+              ))}
+            </div>
           </div>
         </nav>
 

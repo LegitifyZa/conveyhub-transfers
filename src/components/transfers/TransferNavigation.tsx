@@ -62,8 +62,10 @@ const TransferNavigation: React.FC<TransferNavigationProps> = ({
         if (!hasSeller) errors.push('At least one seller is required')
         
         state.parties.forEach((party, index) => {
-          if (!party.name) errors.push(`Party ${index + 1} name is required`)
-          if (!party.email) errors.push(`Party ${index + 1} email is required`)
+          if (!party.name) errors.push(`Party ${index + 1} full name is required`)
+          if (!party.email) errors.push(`Party ${index + 1} email address is required`)
+          if (!party.idNumber) errors.push(`Party ${index + 1} ID number is required`)
+          if (!party.phone) errors.push(`Party ${index + 1} phone number is required`)
         })
         break
       case 3:
