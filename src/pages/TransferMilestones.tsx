@@ -513,7 +513,9 @@ const TransferMilestones: React.FC = () => {
           </CardContent>
         </Card>
 
-        {/* Progress Overview */}
+        {activeTab === 'milestones' ? (
+          <>
+            {/* Progress Overview */}
         <div className="grid grid-cols-1 gap-4 md:grid-cols-5 mb-6">
           <Card>
             <CardContent className="p-4 text-center">
@@ -600,9 +602,6 @@ const TransferMilestones: React.FC = () => {
           </CardContent>
         </Card>
 
-        {activeTab === 'milestones' ? (
-          <>
-            {/* Progress Overview */}
         <Modal isOpen={!!selectedMilestone} onClose={() => setExpandedMilestone(null)} title={selectedMilestone ? `Edit ${selectedMilestone.name}` : ''} description={selectedMilestone?.statusLabel} size="md">
           {selectedMilestone && (
             <div className="space-y-4">
