@@ -51,6 +51,7 @@ function mapTransferRow(row: any) {
     progress: row.progress,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    parties: Array.isArray(row.parties) ? row.parties.map(mapPartyRow) : [],
   }
 }
 
@@ -350,8 +351,9 @@ router.get(
 
     const offset = (filters.page - 1) * filters.limit
     const dataQuery = `
-      SELECT id, transfer_id, property_address, purchase_price, status, current_step, total_steps, progress, created_at, updated_at
-      FROM transfers
+      SELECT t.id, t.transfer_id, t.property_address, t.purchase_price, t.status, t.current_step, t.total_steps, t.progress, t.created_at, t.updated_at,
+        COALESCE((SELECT json_agg(parties.*) FROM parties WHERE parties.transfer_id = t.id), '[]'::json) AS parties
+      FROM transfers t
       ${whereClause}
       ORDER BY ${sortColumn} ${filters.sortOrder.toUpperCase()}
       LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
