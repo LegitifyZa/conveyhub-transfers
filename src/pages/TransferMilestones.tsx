@@ -553,7 +553,7 @@ const TransferMilestones: React.FC = () => {
         <Card className="mb-6">
           <CardContent className="p-4">
             <div className="flex items-center justify-between mb-2">
-              <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Milestone Progress</span>
+              <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Progress Overview</span>
               <span className="text-sm text-gray-600 dark:text-gray-400">{completedCount} of {requiredMilestoneCount} required milestones completed</span>
             </div>
             <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-3">
