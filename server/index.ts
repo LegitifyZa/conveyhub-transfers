@@ -5,6 +5,7 @@ import healthRouter from './routes/health'
 import transfersRouter from './routes/transfers'
 import milestonesRouter from './routes/milestones'
 import documentCatalogueRouter from './routes/documentCatalogue'
+import addressRouter from './routes/address'
 import templateDataFieldsRouter from './routes/templateDataFields'
 import clausesRouter from './routes/clauses'
 import generatedDocumentsRouter from './routes/generatedDocuments'
@@ -25,6 +26,7 @@ app.use('/api/health', healthRouter)
 app.use('/api/transfers', transfersRouter)
 app.use('/api', milestonesRouter)
 app.use('/api/catalogue', documentCatalogueRouter)
+app.use('/api/address', addressRouter)
 app.use('/api/data-fields', templateDataFieldsRouter)
 app.use('/api/clauses', clausesRouter)
 app.use('/api/generated-documents', generatedDocumentsRouter)
