@@ -579,7 +579,6 @@ const TransferMilestones: React.FC = () => {
                   <th className="px-4 py-3">Requirement</th>
                   <th className="px-4 py-3">Status</th>
                   <th className="px-4 py-3">Due Date</th>
-                  <th className="px-4 py-3 w-24">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100 dark:divide-navy-700">
@@ -613,15 +612,6 @@ const TransferMilestones: React.FC = () => {
                       {milestone.dueDate
                         ? new Date(milestone.dueDate).toLocaleString('en-ZA', { dateStyle: 'medium', timeStyle: 'short' })
                         : 'Not set'}
-                    </td>
-                    <td className="px-4 py-3">
-                      <button
-                        type="button"
-                        onClick={(e) => { e.stopPropagation(); setExpandedMilestone(milestone.id) }}
-                        className="text-xs font-medium text-teal-600 hover:text-teal-700 dark:text-teal-400 dark:hover:text-teal-300"
-                      >
-                        Edit
-                      </button>
                     </td>
                   </tr>
                 ))}
