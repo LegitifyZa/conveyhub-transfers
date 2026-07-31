@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react'
-import { DollarSign, Calculator, TrendingUp, FileText } from 'lucide-react'
+import { Calculator, TrendingUp, FileText } from 'lucide-react'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui'
 import { Input } from '@/components/ui'
 import { useTransfer, Financials, calculateSATransferCosts, formatCurrency } from './TransferForm'
@@ -68,7 +68,6 @@ const StepFinancials: React.FC = () => {
         <Card variant="premium" className="lg:col-span-2">
           <CardHeader>
             <CardTitle className="flex items-center space-x-2">
-              <DollarSign className="h-5 w-5 text-teal-600 dark:text-teal-400" />
               <span>Purchase Information</span>
             </CardTitle>
           </CardHeader>
