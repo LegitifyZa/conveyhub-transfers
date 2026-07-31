@@ -358,16 +358,6 @@ const TransferMilestones: React.FC = () => {
     }
   }
 
-  const getRoadmapStatusColor = (status: MilestoneStatus) => {
-    switch (status) {
-      case 'completed': return { node: 'bg-green-500 text-white', stem: 'bg-green-500' }
-      case 'in_progress': return { node: 'bg-blue-500 text-white', stem: 'bg-blue-500' }
-      case 'overdue': return { node: 'bg-red-500 text-white', stem: 'bg-red-500' }
-      case 'not_required': return { node: 'bg-violet-500 text-white', stem: 'bg-violet-500' }
-      default: return { node: 'bg-gray-300 text-gray-700 dark:bg-gray-600 dark:text-gray-100', stem: 'bg-gray-300 dark:bg-gray-600' }
-    }
-  }
-
   const formatCurrency = (amount: number) => {
     return new Intl.NumberFormat('en-ZA', {
       style: 'currency',
@@ -570,35 +560,63 @@ const TransferMilestones: React.FC = () => {
           <CardHeader>
             <CardTitle className="flex items-center space-x-2">
               <Calendar className="h-5 w-5 text-teal-600 dark:text-teal-400" />
-              <span>Milestone Roadmap</span>
+              <span>Milestones</span>
             </CardTitle>
           </CardHeader>
-          <CardContent>
-            <div className="relative grid grid-cols-1 gap-y-5 md:grid-cols-2 xl:grid-cols-3 xl:gap-x-8 xl:gap-y-10">
-              {milestones.map((milestone, index) => {
-                const colors = getRoadmapStatusColor(milestone.status)
-                return (
-                  <div key={milestone.id} className="relative min-h-36">
-                    {index < milestones.length - 1 && <div className="absolute left-7 right-0 top-7 hidden border-t-4 border-dotted border-gray-300 xl:block dark:border-navy-600" />}
-                    <button type="button" onClick={() => setExpandedMilestone(milestone.id)} className="relative z-10 flex w-full items-start gap-4 text-left group">
-                      <div className="flex w-14 shrink-0 flex-col items-center">
-                        <span className={`flex h-14 w-14 items-center justify-center rounded-full text-lg font-semibold shadow-sm ring-4 ring-white transition-transform duration-200 group-hover:scale-110 dark:ring-navy-800 ${colors.node}`}>{index + 1}</span>
-                        <span className={`mt-0.5 h-20 w-1 rounded-full ${colors.stem}`} />
+          <CardContent className="p-0 overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead className="bg-gray-50 dark:bg-navy-800 text-gray-500 dark:text-gray-400 uppercase text-xs tracking-wide">
+                <tr>
+                  <th className="px-4 py-3 w-12">#</th>
+                  <th className="px-4 py-3">Milestone</th>
+                  <th className="px-4 py-3">Requirement</th>
+                  <th className="px-4 py-3">Status</th>
+                  <th className="px-4 py-3">Due Date</th>
+                  <th className="px-4 py-3 w-24">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100 dark:divide-navy-700">
+                {milestones.map((milestone, index) => (
+                  <tr
+                    key={milestone.id}
+                    onClick={() => setExpandedMilestone(milestone.id)}
+                    className="hover:bg-gray-50 dark:hover:bg-navy-800/50 transition-colors cursor-pointer"
+                  >
+                    <td className="px-4 py-3 font-medium text-gray-900 dark:text-gray-100">{index + 1}</td>
+                    <td className="px-4 py-3">
+                      <p className="font-medium text-gray-900 dark:text-gray-100">{milestone.name}</p>
+                    </td>
+                    <td className="px-4 py-3 text-gray-600 dark:text-gray-400">{milestone.statusLabel}</td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-2">
+                        {getStatusIcon(milestone.status)}
+                        <Badge
+                          variant={getStatusBadgeVariant(milestone.status)}
+                          size="sm"
+                          className={milestone.status === 'not_required' ? 'bg-violet-100 text-violet-800 dark:bg-violet-900/20 dark:text-violet-300' : undefined}
+                        >
+                          {getStatusText(milestone.status)}
+                        </Badge>
                       </div>
-                      <div className="min-w-0 rounded-xl bg-white px-3 py-2 transition-shadow duration-200 group-hover:shadow-md dark:bg-navy-800">
-                        <p className="text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">Milestone {index + 1}</p>
-                        <p className="mt-1 font-semibold text-gray-900 dark:text-gray-100">{milestone.name}</p>
-                        <div className="mt-1 flex items-center gap-2"><p className="text-sm text-gray-600 dark:text-gray-400">{milestone.statusLabel}</p>{getStatusIcon(milestone.status)}</div>
-                        <div className="mt-3 flex flex-wrap items-center gap-2">
-                          <Badge variant={getStatusBadgeVariant(milestone.status)} size="sm" className={milestone.status === 'not_required' ? 'bg-violet-100 text-violet-800 dark:bg-violet-900/20 dark:text-violet-300' : undefined}>{getStatusText(milestone.status)}</Badge>
-                          <span className="text-xs text-gray-500 dark:text-gray-400">Due: {milestone.dueDate || 'Not set'}</span>
-                        </div>
-                      </div>
-                    </button>
-                  </div>
-                )
-              })}
-            </div>
+                    </td>
+                    <td className="px-4 py-3 text-gray-600 dark:text-gray-400">
+                      {milestone.dueDate
+                        ? new Date(milestone.dueDate).toLocaleString('en-ZA', { dateStyle: 'medium', timeStyle: 'short' })
+                        : 'Not set'}
+                    </td>
+                    <td className="px-4 py-3">
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); setExpandedMilestone(milestone.id) }}
+                        className="text-xs font-medium text-teal-600 hover:text-teal-700 dark:text-teal-400 dark:hover:text-teal-300"
+                      >
+                        Edit
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </CardContent>
         </Card>
 
