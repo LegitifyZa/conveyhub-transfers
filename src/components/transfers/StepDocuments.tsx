@@ -1,10 +1,18 @@
-import React, { useState } from 'react'
-import { FileText, Upload, CheckCircle, AlertCircle } from 'lucide-react'
+import React, { useEffect, useState } from 'react'
+import { FileText, Upload, CheckCircle, AlertCircle, Plus } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui'
 import { Badge } from '@/components/ui'
 import { useTransfer, Document } from './TransferForm'
 import { TransferApi } from '@/lib/api/transferApi'
+import { apiRequest } from '@/lib/api/http'
 import { cn } from '@/utils/cn'
+
+interface CatalogueItem {
+  id: string
+  name: string
+  module: string
+  status: string
+}
 
 export const DOCUMENT_TYPES = [
   { value: 'identification', label: 'Identification Document' },
@@ -37,6 +45,9 @@ const StepDocuments: React.FC = () => {
   const transferId = transfer_id || id
   const [uploadingIds, setUploadingIds] = useState<Set<string>>(new Set())
   const [errors, setErrors] = useState<Record<string, string>>({})
+  const [catalogue, setCatalogue] = useState<CatalogueItem[]>([])
+  const [selectedCatalogueId, setSelectedCatalogueId] = useState('')
+  const [adding, setAdding] = useState(false)
 
   const updateDocument = (id: string, updates: Partial<Document>) => {
     dispatch({ type: 'UPDATE_DOCUMENT', payload: { id, updates } })
@@ -79,6 +90,42 @@ const StepDocuments: React.FC = () => {
 
   const handleNotesChange = (docId: string, notes: string) => {
     updateDocument(docId, { notes, description: notes })
+  }
+
+  useEffect(() => {
+    const loadCatalogue = async () => {
+      try {
+        const response = await apiRequest<CatalogueItem[]>('/api/catalogue?status=Active')
+        setCatalogue(response || [])
+      } catch (err) {
+        console.error('Failed to load document catalogue:', err)
+      }
+    }
+    loadCatalogue()
+  }, [])
+
+  const availableCatalogue = catalogue.filter(item =>
+    item.status === 'Active' && !documents.some(doc => doc.catalogueDocumentId === item.id)
+  )
+
+  const handleAddDocument = async () => {
+    if (!transferId || !selectedCatalogueId) return
+    setAdding(true)
+    setErrors(prev => ({ ...prev, add: '' }))
+
+    try {
+      const response = await TransferApi.addTransferDocument(transferId, selectedCatalogueId)
+      if (response.success && response.data) {
+        dispatch({ type: 'ADD_DOCUMENT', payload: response.data })
+        setSelectedCatalogueId('')
+      } else {
+        setErrors(prev => ({ ...prev, add: response.error || 'Failed to add document' }))
+      }
+    } catch (err) {
+      setErrors(prev => ({ ...prev, add: err instanceof Error ? err.message : 'Failed to add document' }))
+    } finally {
+      setAdding(false)
+    }
   }
 
   return (
@@ -225,6 +272,50 @@ const StepDocuments: React.FC = () => {
             </Card>
           )
         })}
+
+        {availableCatalogue.length > 0 && (
+          <Card variant="premium" className="hover:shadow-premium transition-all duration-200">
+            <CardContent className="p-4 space-y-4">
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex-1">
+                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                    Add another document from the catalogue
+                  </label>
+                  <div className="flex items-center gap-3">
+                    <select
+                      value={selectedCatalogueId}
+                      onChange={(e) => setSelectedCatalogueId(e.target.value)}
+                      className="flex-1 px-3 py-2 border border-gray-300 dark:border-navy-600 rounded-lg bg-white dark:bg-navy-700 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-teal-500 focus:border-teal-500 transition-all duration-200"
+                    >
+                      <option value="">Select a document</option>
+                      {availableCatalogue.map(item => (
+                        <option key={item.id} value={item.id}>{item.name}</option>
+                      ))}
+                    </select>
+                    <button
+                      onClick={handleAddDocument}
+                      disabled={!selectedCatalogueId || adding}
+                      className={cn(
+                        'inline-flex items-center px-4 py-2 text-sm rounded-lg font-medium transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 btn-primary-premium',
+                        (!selectedCatalogueId || adding) && 'opacity-50 cursor-not-allowed'
+                      )}
+                    >
+                      <Plus className="h-4 w-4 mr-2" />
+                      {adding ? 'Adding...' : 'Add'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {errors.add && (
+                <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400">
+                  <AlertCircle className="h-4 w-4" />
+                  <span>{errors.add}</span>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
       </div>
     </div>
   )
