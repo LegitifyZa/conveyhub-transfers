@@ -575,6 +575,7 @@ const TransferMilestones: React.FC = () => {
                 <tr>
                   <th className="px-4 py-3 w-12">#</th>
                   <th className="px-4 py-3">Milestone</th>
+                  <th className="px-4 py-3">Description</th>
                   <th className="px-4 py-3">Requirement</th>
                   <th className="px-4 py-3">Status</th>
                   <th className="px-4 py-3">Due Date</th>
@@ -591,6 +592,9 @@ const TransferMilestones: React.FC = () => {
                     <td className="px-4 py-3 font-medium text-gray-900 dark:text-gray-100">{index + 1}</td>
                     <td className="px-4 py-3">
                       <p className="font-medium text-gray-900 dark:text-gray-100">{milestone.name}</p>
+                    </td>
+                    <td className="px-4 py-3 text-gray-600 dark:text-gray-400">
+                      {milestone.notes || '-'}
                     </td>
                     <td className="px-4 py-3 text-gray-600 dark:text-gray-400">{milestone.statusLabel}</td>
                     <td className="px-4 py-3">
