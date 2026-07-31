@@ -1,12 +1,12 @@
-import { BrowserRouter as Router, Routes, Route } from 'react-router-dom'
+import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
 import { MainLayout } from '@/layouts'
-import { Landing, Dashboard, Cases, Documents, DocumentCatalogue, DataDictionary, TemplateEngine, ClauseLibrary, DocumentGenerator, Settings, NewTransfer, Transfers, Bonds, Cancellations, TransfersDashboard, TransferMilestones } from '@/pages'
+import { Dashboard, Cases, Documents, DocumentCatalogue, DataDictionary, TemplateEngine, ClauseLibrary, DocumentGenerator, Settings, NewTransfer, Transfers, Bonds, Cancellations, TransfersDashboard, TransferMilestones } from '@/pages'
 
 function App() {
   return (
     <Router>
       <Routes>
-        <Route path="/" element={<Landing />} />
+        <Route path="/" element={<Navigate to="/transfers" replace />} />
         <Route path="/dashboard" element={<MainLayout><Dashboard /></MainLayout>} />
         <Route path="/cases" element={<MainLayout><Cases /></MainLayout>} />
         <Route path="/documents" element={<MainLayout><Documents /></MainLayout>} />
