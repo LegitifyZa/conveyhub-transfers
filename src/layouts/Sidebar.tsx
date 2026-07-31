@@ -20,10 +20,9 @@ interface SidebarItemProps {
   label: string
   href: string
   isActive?: boolean
-  comingSoon?: boolean
 }
 
-const SidebarItem: React.FC<SidebarItemProps> = ({ icon: Icon, label, href, isActive, comingSoon }) => {
+const SidebarItem: React.FC<SidebarItemProps> = ({ icon: Icon, label, href, isActive }) => {
   return (
     <Link
       to={href}
@@ -38,11 +37,6 @@ const SidebarItem: React.FC<SidebarItemProps> = ({ icon: Icon, label, href, isAc
         <Icon className="h-5 w-5" />
         <span className="font-medium">{label}</span>
       </span>
-      {comingSoon && (
-        <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400">
-          Coming soon
-        </span>
-      )}
     </Link>
   )
 }
@@ -109,7 +103,6 @@ const Sidebar: React.FC<SidebarProps> = ({ className }) => {
                 label={item.name}
                 href={item.href}
                 isActive={location.pathname === item.href}
-                comingSoon={item.comingSoon}
               />
             ))}
           </div>
