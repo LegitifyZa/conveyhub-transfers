@@ -1,5 +1,11 @@
 const API_BASE = ((import.meta as unknown as { env?: Record<string, string> }).env?.VITE_API_BASE_URL as string | undefined) ?? ''
 
+function buildUrl(path: string): string {
+  const base = API_BASE.endsWith('/') ? API_BASE.slice(0, -1) : API_BASE
+  const requestPath = base && path.startsWith(base + '/') ? path.slice(base.length) : path
+  return `${base}${requestPath}`
+}
+
 export interface ApiRequestOptions {
   method?: string
   headers?: Record<string, string> | HeadersInit
@@ -35,7 +41,7 @@ export async function apiRequest<T>(path: string, options: ApiRequestOptions = {
     cache: options.cache
   }
 
-  const response = await fetch(`${API_BASE}${path}`, init)
+  const response = await fetch(buildUrl(path), init)
 
   if (!response.ok) {
     const text = await response.text().catch(() => 'Request failed')

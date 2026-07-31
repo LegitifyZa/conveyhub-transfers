@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express'
 import { pool, query, withTransaction } from '../db'
 import { asyncHandler } from '../utils/asyncHandler'
-import { isNonEmptyString, isValidStatus, toNumber } from '../utils/validate'
+import { isNonEmptyString, isSaPostalCode, isValidStatus, toNumber } from '../utils/validate'
 import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
@@ -14,6 +14,15 @@ const router = Router()
 
 const DEFAULT_SORT_COLUMNS = ['created_at', 'updated_at', 'property_address', 'status', 'purchase_price']
 const isUuid = (value: unknown): value is string => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
+
+const VALID_PROPERTY_TYPES = [
+  'Freehold', 'Sectional Title', 'Share Block', 'Life Rights',
+  'Agricultural Holding', 'Farm', 'Commercial', 'Mixed Use', 'Vacant Land'
+]
+const toPropertyType = (value: unknown): string =>
+  isNonEmptyString(value)
+    ? (VALID_PROPERTY_TYPES.find(t => t.toLowerCase() === value.toLowerCase()) ?? 'Freehold')
+    : 'Freehold'
 
 interface TransferFilters {
   status?: string
@@ -505,19 +514,19 @@ router.post(
     const progress = body.progress
 
     const propertyAddress = property && isNonEmptyString(property.address) ? property.address : undefined
-    const purchasePrice = toNumber(financials?.purchasePrice) ?? toNumber(body.purchasePrice)
+    const purchasePrice = toNumber(financials?.purchasePrice) ?? toNumber(body.purchasePrice) ?? 0
 
     if (!propertyAddress) {
       res.status(400).json({ success: false, error: 'Property address is required' })
       return
     }
-    if (purchasePrice === undefined) {
-      res.status(400).json({ success: false, error: 'Purchase price is required' })
-      return
-    }
 
     const newTransfer = await withTransaction(async (client) => {
       const transferId = await generateUniqueTransferId(client)
+
+      const propertyCity = property && isNonEmptyString(property.city) ? property.city : 'Unknown'
+      const propertyProvince = property && isNonEmptyString(property.province) ? property.province : 'Unknown'
+      const propertyType = toPropertyType(property?.propertyType)
 
       let propertyId: string | null = null
       if (property) {
@@ -533,11 +542,11 @@ router.post(
             propertyIdValue,
             propertyAddress,
             isNonEmptyString(property.city) ? property.city : null,
-            isNonEmptyString(property.city) ? property.city : null,
-            isNonEmptyString(property.postalCode) ? property.postalCode : null,
-            isNonEmptyString(property.province) ? property.province : null,
+            propertyCity,
+            isSaPostalCode(property.postalCode) ? property.postalCode : null,
+            propertyProvince,
             isNonEmptyString(property.country) ? property.country : 'South Africa',
-            isNonEmptyString(property.propertyType) ? property.propertyType : 'residential',
+            propertyType,
             isNonEmptyString(property.erfNumber) ? property.erfNumber : null,
             isNonEmptyString(property.titleDeedNumber) ? property.titleDeedNumber : null,
             toNumber(property.extentSqm),
@@ -585,17 +594,17 @@ router.post(
         [
           transferUuid,
           purchasePrice,
-          toNumber(financials?.depositAmount),
-          toNumber(financials?.loanAmount),
+          toNumber(financials?.depositAmount) ?? 0,
+          toNumber(financials?.loanAmount) ?? 0,
           toNumber(financials?.interestRate),
           toNumber(financials?.loanTerm),
-          toNumber(financials?.transferDuty),
-          toNumber(financials?.conveyancingFees),
-          toNumber(financials?.deedsOfficeFees),
-          toNumber(financials?.vat),
-          toNumber(financials?.postAndPetties),
-          toNumber(financials?.clearanceCertificateFee),
-          toNumber(financials?.ratesClearanceAmount),
+          toNumber(financials?.transferDuty) ?? 0,
+          toNumber(financials?.conveyancingFees) ?? 0,
+          toNumber(financials?.deedsOfficeFees) ?? 0,
+          toNumber(financials?.vat) ?? 0,
+          toNumber(financials?.postAndPetties) ?? 0,
+          toNumber(financials?.clearanceCertificateFee) ?? 0,
+          toNumber(financials?.ratesClearanceAmount) ?? 0,
           toNumber(financials?.totalCosts) ?? 0,
           toNumber(financials?.netProceeds),
         ]
@@ -649,8 +658,9 @@ router.post(
         property: mapPropertyRow({
           ...transferRow,
           street_address: propertyAddress,
-          city: property?.city,
-          province: property?.province,
+          city: propertyCity,
+          province: propertyProvince,
+          property_type: propertyType,
         }),
         parties: createdParties,
         financials: mapFinancialRow(financialsResult.rows[0]),
@@ -753,10 +763,10 @@ router.put(
               property.address,
               isNonEmptyString(property.city) ? property.city : null,
               isNonEmptyString(property.city) ? property.city : null,
-              isNonEmptyString(property.postalCode) ? property.postalCode : null,
+              isSaPostalCode(property.postalCode) ? property.postalCode : null,
               isNonEmptyString(property.province) ? property.province : null,
               isNonEmptyString(property.country) ? property.country : 'South Africa',
-              isNonEmptyString(property.propertyType) ? property.propertyType : 'residential',
+              toPropertyType(property.propertyType),
               isNonEmptyString(property.erfNumber) ? property.erfNumber : null,
               isNonEmptyString(property.titleDeedNumber) ? property.titleDeedNumber : null,
               toNumber(property.extentSqm),
@@ -783,9 +793,9 @@ router.put(
           if (isNonEmptyString(property.address)) add('street_address', property.address)
           if (isNonEmptyString(property.city)) add('city', property.city)
           if (isNonEmptyString(property.province)) add('province', property.province)
-          if (isNonEmptyString(property.postalCode)) add('postal_code', property.postalCode)
+          if (isSaPostalCode(property.postalCode)) add('postal_code', property.postalCode)
           if (isNonEmptyString(property.country)) add('country', property.country)
-          if (isNonEmptyString(property.propertyType)) add('property_type', property.propertyType)
+          if (isNonEmptyString(property.propertyType)) add('property_type', toPropertyType(property.propertyType))
           if (isNonEmptyString(property.erfNumber)) add('erf_number', property.erfNumber)
           if (isNonEmptyString(property.titleDeedNumber)) add('title_deed_number', property.titleDeedNumber)
           if (toNumber(property.extentSqm) !== undefined) add('extent_sqm', toNumber(property.extentSqm))

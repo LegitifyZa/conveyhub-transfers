@@ -3,8 +3,6 @@ import { Link, useLocation } from 'react-router-dom'
 import { 
   Home, 
   FileText, 
-  Shield, 
-  RefreshCw,
   FolderOpen,
   BookOpen,
   Braces,
@@ -55,8 +53,6 @@ interface SidebarProps {
 
 const primaryNavigation = [
   { name: 'Transfers', href: '/transfers', icon: FileText },
-  { name: 'Bonds', href: '/bonds', icon: Shield, comingSoon: true },
-  { name: 'Cancellations', href: '/cancellations', icon: RefreshCw, comingSoon: true },
 ]
 
 const otherNavigation = [

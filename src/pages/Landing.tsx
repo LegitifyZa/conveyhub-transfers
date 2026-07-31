@@ -1,5 +1,5 @@
 import React from 'react'
-import { FileText, Shield, RefreshCw } from 'lucide-react'
+import { FileText } from 'lucide-react'
 import { Button, ServiceCard } from '@/components/ui'
 
 const Landing: React.FC = () => {
@@ -9,18 +9,6 @@ const Landing: React.FC = () => {
       description: 'Handle property transfers efficiently with automated workflows and document management.',
       icon: FileText,
       route: '/transfers'
-    },
-    {
-      title: 'Bonds',
-      description: 'Manage property bonds and surety agreements with comprehensive tracking.',
-      icon: Shield,
-      route: '/bonds'
-    },
-    {
-      title: 'Cancellations',
-      description: 'Process cancellations and reversals with proper documentation and compliance.',
-      icon: RefreshCw,
-      route: '/cancellations'
     }
   ]
 
@@ -53,7 +41,7 @@ const Landing: React.FC = () => {
               Modern Conveyancing, Simplified
             </h1>
             <p className="text-xl text-gray-600 dark:text-gray-400 leading-relaxed max-w-2xl mx-auto">
-              Manage transfers, bonds, and cancellations in one unified platform
+              Manage transfers in one unified platform
             </p>
           </div>
         </div>
@@ -62,7 +50,7 @@ const Landing: React.FC = () => {
       {/* Main Action Section */}
       <section className="pb-20 px-6">
         <div className="max-w-7xl mx-auto">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+          <div className="grid grid-cols-1 gap-8 max-w-md mx-auto">
             {serviceCards.map((card) => (
               <ServiceCard
                 key={card.title}

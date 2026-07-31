@@ -17,6 +17,10 @@ export function toNumber(value: unknown): number | undefined {
   return Number.isFinite(num) ? num : undefined
 }
 
+export function isSaPostalCode(value: unknown): value is string {
+  return typeof value === 'string' && /^\d{4}$/.test(value)
+}
+
 export function toDateString(value: unknown): string | undefined {
   if (!isNonEmptyString(value)) return undefined
   const date = new Date(value)

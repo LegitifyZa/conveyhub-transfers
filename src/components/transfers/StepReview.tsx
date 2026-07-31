@@ -107,7 +107,7 @@ const StepReview: React.FC = () => {
           <p className="text-sm font-medium text-gray-900 dark:text-gray-100">{propertyDetails.yearBuilt || '-'}</p>
         </div>
         <div>
-          <p className="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wide">Square Footage</p>
+          <p className="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wide">Square Meterage</p>
           <p className="text-sm font-medium text-gray-900 dark:text-gray-100">{propertyDetails.squareFootage || '-'}</p>
         </div>
       </div>

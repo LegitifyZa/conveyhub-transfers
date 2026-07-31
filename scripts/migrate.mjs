@@ -39,6 +39,8 @@ async function runMigration() {
     } catch (error) {
       if (error.code === '42P04') {
         console.log(`ℹ️ Database '${dbConfig.database}' already exists`)
+      } else if (error.code === '42501') {
+        console.log(`ℹ️ Could not create database '${dbConfig.database}' due to insufficient privileges; will attempt to migrate the existing database`)
       } else {
         console.error('❌ Error creating database:', error.message)
         throw error

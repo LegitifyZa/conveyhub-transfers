@@ -39,13 +39,15 @@ const StepProperty: React.FC = () => {
   }
 
   const propertyTypes = [
-    'Single Family Home',
-    'Condominium',
-    'Townhouse',
-    'Multi-Family',
+    'Freehold',
+    'Sectional Title',
+    'Share Block',
+    'Life Rights',
+    'Agricultural Holding',
+    'Farm',
     'Commercial',
-    'Land',
-    'Other'
+    'Mixed Use',
+    'Vacant Land'
   ]
 
   return (
@@ -115,7 +117,7 @@ const StepProperty: React.FC = () => {
                 </label>
                 <Input
                   variant="premium"
-                  placeholder="10001"
+                  placeholder="2196"
                   value={propertyDetails.zipCode}
                   onChange={(e) => updatePropertyDetails('zipCode', e.target.value)}
                   className="transition-all duration-200 focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
@@ -180,7 +182,7 @@ const StepProperty: React.FC = () => {
 
             <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                Square Footage
+                Square Meterage
               </label>
               <Input
                 variant="premium"
