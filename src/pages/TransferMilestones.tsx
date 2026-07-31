@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { ArrowLeft, CheckCircle2, Clock, Circle, AlertCircle, Calendar, Building, User, ChevronDown, ChevronUp, History } from 'lucide-react'
 import { Card, CardHeader, CardTitle, CardContent, Modal } from '@/components/ui'
@@ -227,10 +227,16 @@ const TransferMilestones: React.FC = () => {
     }
   }, [activity])
 
-  const completedCount = milestones.filter(m => m.status === 'completed').length
-  const inProgressCount = milestones.filter(m => m.status === 'in_progress').length
-  const notRequiredCount = milestones.filter(m => m.status === 'not_required').length
-  const requiredMilestoneCount = milestones.length - notRequiredCount
+  const orderedMilestones = useMemo(() => {
+    const instruction = milestones.find(m => m.name === 'Instruction')
+    const rest = milestones.filter(m => m.name !== 'Instruction')
+    return instruction ? [instruction, ...rest] : milestones
+  }, [milestones])
+
+  const completedCount = orderedMilestones.filter(m => m.status === 'completed').length
+  const inProgressCount = orderedMilestones.filter(m => m.status === 'in_progress').length
+  const notRequiredCount = orderedMilestones.filter(m => m.status === 'not_required').length
+  const requiredMilestoneCount = orderedMilestones.length - notRequiredCount
   const remainingCount = requiredMilestoneCount - completedCount - inProgressCount
   const progress = requiredMilestoneCount > 0 ? Math.round((completedCount / requiredMilestoneCount) * 100) : 0
 
@@ -576,7 +582,7 @@ const TransferMilestones: React.FC = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100 dark:divide-navy-700">
-                {milestones.map((milestone, index) => (
+                {orderedMilestones.map((milestone, index) => (
                   <tr
                     key={milestone.id}
                     onClick={() => setExpandedMilestone(milestone.id)}
