@@ -62,6 +62,7 @@ function mapTransferRow(row: any) {
     progress: milestoneProgress != null ? milestoneProgress : (row.progress != null ? Number(row.progress) : undefined),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    nextDueDate: row.next_due_date,
     parties: Array.isArray(row.parties) ? row.parties.map(mapPartyRow) : [],
   }
 }
@@ -372,7 +373,11 @@ router.get(
            AND COUNT(*) FILTER (WHERE mm.status = 'completed') = COUNT(*) FILTER (WHERE mm.status != 'not_required')
          FROM matter_milestones mm
          JOIN matters m ON m.id = mm.matter_id
-         WHERE m.source_record_id::uuid = t.id) AS milestone_completed
+         WHERE m.source_record_id::uuid = t.id) AS milestone_completed,
+        (SELECT MIN(mm.due_date) FILTER (WHERE mm.due_date IS NOT NULL AND mm.status NOT IN ('completed', 'not_required'))
+         FROM matter_milestones mm
+         JOIN matters m ON m.id = mm.matter_id
+         WHERE m.source_record_id::uuid = t.id) AS next_due_date
       FROM transfers t
       ${whereClause}
       ORDER BY ${sortColumn} ${filters.sortOrder.toUpperCase()}

@@ -83,7 +83,7 @@ const Dashboard: React.FC = () => {
         property: t.propertyDetails?.address || '—',
         status: t.status || 'draft',
         value: formatZAR(parseFloat(t.financials?.purchasePrice || '0') || 0),
-        dueDate: t.created_at ? new Date(t.created_at).toISOString().split('T')[0] : '—'
+        dueDate: t.next_due_date ? new Date(t.next_due_date).toLocaleString('en-ZA', { dateStyle: 'medium' }) : '—'
       }
     })
   }, [transfers])

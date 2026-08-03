@@ -8,6 +8,7 @@ export interface TransferAggregate extends TransferState {
   progress?: number
   created_at?: string
   updated_at?: string
+  next_due_date?: string
 }
 
 export interface Milestone {
@@ -67,6 +68,7 @@ interface ServerAggregate {
   documents?: ServerDocument[]
   createdAt?: string
   updatedAt?: string
+  nextDueDate?: string
 }
 
 function buildQueryString(filters: TransferFilters): string {
@@ -168,6 +170,7 @@ function fromServerAggregate(server: ServerAggregate): TransferAggregate {
     progress: typeof server.progress === 'number' ? server.progress : undefined,
     created_at: server.createdAt,
     updated_at: server.updatedAt,
+    next_due_date: server.nextDueDate,
     currentStep: server.currentStep || 1,
     status,
     propertyDetails: {
