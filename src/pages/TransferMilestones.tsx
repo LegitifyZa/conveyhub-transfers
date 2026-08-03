@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
+import { flushSync } from 'react-dom'
 import { useParams, useNavigate } from 'react-router-dom'
 import { ArrowLeft, CheckCircle2, Clock, Circle, AlertCircle, Calendar, Building, User, ChevronDown, ChevronUp, History } from 'lucide-react'
 import { Card, CardHeader, CardTitle, CardContent, Modal } from '@/components/ui'
@@ -324,7 +325,7 @@ const TransferMilestones: React.FC = () => {
     const updated = milestones.map(m =>
       m.id === id ? { ...m, dueDate } : m
     )
-    setMilestones(updated)
+    flushSync(() => { setMilestones(updated) })
     addAuditEntry(dueDate ? `Set the due date for ${milestone.name} to ${dueDate}.` : `Cleared the due date for ${milestone.name}.`)
     await persistMilestones(updated)
   }
@@ -406,7 +407,7 @@ const TransferMilestones: React.FC = () => {
           <div className="flex items-center justify-between">
             <div>
               <h1 className="text-3xl font-bold text-gray-900 dark:text-gray-100">
-                Transfer Milestones
+                Transfer Overview
               </h1>
               <p className="text-gray-600 dark:text-gray-400">
                 Track progress for {transfer.id}
@@ -492,7 +493,7 @@ const TransferMilestones: React.FC = () => {
                   : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
               )}
             >
-              Milestones
+              Overview
             </button>
             <button
               type="button"
@@ -566,7 +567,7 @@ const TransferMilestones: React.FC = () => {
           <CardHeader>
             <CardTitle className="flex items-center space-x-2">
               <Calendar className="h-5 w-5 text-teal-600 dark:text-teal-400" />
-              <span>Milestones</span>
+              <span>Overview</span>
             </CardTitle>
           </CardHeader>
           <CardContent className="p-0 overflow-x-auto">
@@ -574,11 +575,11 @@ const TransferMilestones: React.FC = () => {
               <thead className="bg-gray-50 dark:bg-navy-800 text-gray-500 dark:text-gray-400 uppercase text-xs tracking-wide">
                 <tr>
                   <th className="px-4 py-3 w-12">#</th>
-                  <th className="px-4 py-3">Milestone</th>
-                  <th className="px-4 py-3">Description</th>
+                  <th className="px-4 py-3 w-[15%]">Milestone</th>
                   <th className="px-4 py-3">Requirement</th>
-                  <th className="px-4 py-3">Status</th>
-                  <th className="px-4 py-3">Due Date</th>
+                  <th className="px-4 py-3">Description</th>
+                  <th className="px-4 py-3 w-[12%]">Status</th>
+                  <th className="px-4 py-3 w-[15%]">Due Date</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100 dark:divide-navy-700">
@@ -589,14 +590,14 @@ const TransferMilestones: React.FC = () => {
                     className="hover:bg-gray-50 dark:hover:bg-navy-800/50 transition-colors cursor-pointer"
                   >
                     <td className="px-4 py-3 font-medium text-gray-900 dark:text-gray-100">{index + 1}</td>
-                    <td className="px-4 py-3">
+                    <td className="px-4 py-3 w-[15%]">
                       <p className="font-medium text-gray-900 dark:text-gray-100">{milestone.name}</p>
                     </td>
+                    <td className="px-4 py-3 text-gray-600 dark:text-gray-400">{milestone.statusLabel}</td>
                     <td className="px-4 py-3 text-gray-600 dark:text-gray-400">
                       {milestone.notes || '-'}
                     </td>
-                    <td className="px-4 py-3 text-gray-600 dark:text-gray-400">{milestone.statusLabel}</td>
-                    <td className="px-4 py-3">
+                    <td className="px-4 py-3 w-[12%]">
                       <div className="flex items-center gap-2">
                         {getStatusIcon(milestone.status)}
                         <Badge
@@ -608,7 +609,7 @@ const TransferMilestones: React.FC = () => {
                         </Badge>
                       </div>
                     </td>
-                    <td className="px-4 py-3 text-gray-600 dark:text-gray-400">
+                    <td className="px-4 py-3 text-gray-600 dark:text-gray-400 w-[15%]">
                       {milestone.dueDate
                         ? new Date(milestone.dueDate).toLocaleString('en-ZA', { dateStyle: 'medium', timeStyle: 'short' })
                         : 'Not set'}

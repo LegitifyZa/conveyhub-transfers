@@ -335,7 +335,7 @@ const TransfersDashboard: React.FC = () => {
                                 }
                               }}
                             >
-                              {display.status === 'in_progress' ? 'Milestones' : 'Details'}
+                              {display.status === 'in_progress' ? 'Overview' : 'Details'}
                             </Button>
                           </div>
                         </div>

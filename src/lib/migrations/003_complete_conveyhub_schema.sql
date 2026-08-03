@@ -650,4 +650,17 @@ BEGIN
 END;
 $$;
 
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'matter_milestones' AND column_name = 'due_date' AND data_type = 'date'
+    ) THEN
+        ALTER TABLE matter_milestones ALTER COLUMN due_date TYPE TIMESTAMPTZ USING due_date::TIMESTAMPTZ;
+        ALTER TABLE matter_milestones ALTER COLUMN completed_date TYPE TIMESTAMPTZ USING completed_date::TIMESTAMPTZ;
+        ALTER TABLE milestone_history ALTER COLUMN old_due_date TYPE TIMESTAMPTZ USING old_due_date::TIMESTAMPTZ;
+        ALTER TABLE milestone_history ALTER COLUMN new_due_date TYPE TIMESTAMPTZ USING new_due_date::TIMESTAMPTZ;
+    END IF;
+END $$;
+
 commit;
