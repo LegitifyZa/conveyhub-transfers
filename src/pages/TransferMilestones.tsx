@@ -1,5 +1,4 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { flushSync } from 'react-dom'
 import { useParams, useNavigate } from 'react-router-dom'
 import { ArrowLeft, CheckCircle2, Clock, Circle, AlertCircle, Calendar, Building, User, ChevronDown, ChevronUp, History } from 'lucide-react'
 import { Card, CardHeader, CardTitle, CardContent, Modal } from '@/components/ui'
@@ -318,6 +317,12 @@ const TransferMilestones: React.FC = () => {
     noteValuesAtFocus.current.delete(id)
   }
 
+  const toLocalInputValue = (value?: string) => {
+    if (!value) return ''
+    const date = new Date(value)
+    return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16)
+  }
+
   const updateMilestoneDueDate = async (id: string, dueDate: string) => {
     const milestone = milestones.find(item => item.id === id)
     if (!milestone || (milestone.dueDate || '') === dueDate) return
@@ -325,7 +330,7 @@ const TransferMilestones: React.FC = () => {
     const updated = milestones.map(m =>
       m.id === id ? { ...m, dueDate } : m
     )
-    flushSync(() => { setMilestones(updated) })
+    setMilestones(updated)
     addAuditEntry(dueDate ? `Set the due date for ${milestone.name} to ${dueDate}.` : `Cleared the due date for ${milestone.name}.`)
     await persistMilestones(updated)
   }
@@ -637,7 +642,7 @@ const TransferMilestones: React.FC = () => {
                 </div>
                 <div>
                   <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Due Date & Time</label>
-                  <input type="datetime-local" value={selectedMilestone.dueDate || ''} onChange={(event) => updateMilestoneDueDate(selectedMilestone.id, event.target.value)} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 transition-all duration-200 focus:border-teal-500 focus:ring-2 focus:ring-teal-500 dark:border-navy-600 dark:bg-navy-700 dark:text-gray-100" />
+                  <input type="datetime-local" value={toLocalInputValue(selectedMilestone.dueDate)} onChange={(event) => updateMilestoneDueDate(selectedMilestone.id, event.target.value)} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 transition-all duration-200 focus:border-teal-500 focus:ring-2 focus:ring-teal-500 dark:border-navy-600 dark:bg-navy-700 dark:text-gray-100" />
                 </div>
               </div>
               <div>
