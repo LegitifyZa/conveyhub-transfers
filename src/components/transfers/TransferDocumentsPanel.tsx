@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
-import { FileText, Upload, CheckCircle, AlertCircle, Plus } from 'lucide-react'
+import { FileText, Upload, AlertCircle, Plus } from 'lucide-react'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui'
-import { Badge } from '@/components/ui'
+
 import { apiRequest } from '@/lib/api/http'
 import { TransferApi } from '@/lib/api/transferApi'
 import { Document as TransferDocument } from './TransferForm'
@@ -233,42 +233,33 @@ const TransferDocumentsPanel: React.FC<TransferDocumentsPanelProps> = ({ transfe
             No documents have been added to this transfer. Use the catalogue selector above to add one.
           </p>
         ) : (
-          <div className="space-y-4">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead className="bg-gray-50 dark:bg-navy-800 text-gray-500 dark:text-gray-400 uppercase text-xs tracking-wide">
+                <tr>
+                  <th className="px-4 py-3">Document</th>
+                  <th className="px-4 py-3">Type</th>
+                  <th className="px-4 py-3">Status</th>
+                  <th className="px-4 py-3 w-[30%]">Notes</th>
+                  <th className="px-4 py-3">File</th>
+                  <th className="px-4 py-3 text-right">Upload</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100 dark:divide-navy-700">
             {documents.map((doc) => {
               const isUploading = uploadingIds.has(doc.id)
               const isSaving = savingIds.has(doc.id)
               const docError = errors[doc.id]
 
               return (
-                <div key={doc.id} className="p-4 border border-gray-200 dark:border-navy-700 rounded-lg space-y-4">
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div className="w-10 h-10 rounded-full bg-teal-50 dark:bg-teal-900/20 flex items-center justify-center flex-shrink-0">
-                        <FileText className="h-5 w-5 text-teal-600 dark:text-teal-400" />
-                      </div>
-                      <div className="min-w-0">
-                        <p className="font-medium text-gray-900 dark:text-gray-100 truncate">
-                          {doc.name}
-                        </p>
-                        <div className="mt-1">
-                          <Badge
-                            variant={
-                              doc.status === 'verified'
-                                ? 'success'
-                                : doc.status === 'uploaded'
-                                  ? 'warning'
-                                  : doc.status === 'not_required'
-                                    ? 'secondary'
-                                    : 'default'
-                            }
-                            size="sm"
-                          >
-                            {doc.status}
-                          </Badge>
-                        </div>
-                      </div>
-                    </div>
-
+                <tr key={doc.id} className="hover:bg-gray-50 dark:hover:bg-navy-800/50 transition-colors">
+                  <td className="px-4 py-3">
+                    <p className="font-medium text-gray-900 dark:text-gray-100">{doc.name}</p>
+                  </td>
+                  <td className="px-4 py-3 text-gray-600 dark:text-gray-400">
+                    {doc.type || doc.fileType || '—'}
+                  </td>
+                  <td className="px-4 py-3">
                     <select
                       value={doc.status}
                       onChange={(e) => handleStatusChange(doc.id, e.target.value as TransferDocument['status'])}
@@ -281,26 +272,25 @@ const TransferDocumentsPanel: React.FC<TransferDocumentsPanelProps> = ({ transfe
                       <option value="not_required">Not Required</option>
                       <option value="rejected">Rejected</option>
                     </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">
-                      Notes
-                    </label>
-                    <textarea
+                    {docError && (
+                      <p className="mt-1 text-xs text-red-600 dark:text-red-400 flex items-center gap-1">
+                        <AlertCircle className="h-3 w-3" />
+                        {docError}
+                      </p>
+                    )}
+                  </td>
+                  <td className="px-4 py-3">
+                    <input
                       value={doc.notes || doc.description || ''}
                       onChange={(e) => handleNotesChange(doc.id, e.target.value)}
                       onBlur={(e) => handleNotesBlur(doc.id, e.target.value)}
                       placeholder="Add notes..."
-                      rows={2}
-                      className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-navy-600 rounded-lg bg-white dark:bg-navy-700 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-teal-500 focus:border-teal-500 transition-all duration-200"
+                      className="w-full px-2 py-1 text-sm border border-gray-300 dark:border-navy-600 rounded-lg bg-white dark:bg-navy-700 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-teal-500 focus:border-teal-500 transition-all duration-200"
                     />
-                  </div>
-
-                  {doc.status === 'uploaded' || doc.status === 'verified' ? (
-                    <div className="flex items-center gap-3 p-3 bg-teal-50 dark:bg-teal-900/20 rounded-lg">
-                      <CheckCircle className="h-5 w-5 text-teal-600 dark:text-teal-400 flex-shrink-0" />
-                      <div className="min-w-0 flex-1">
+                  </td>
+                  <td className="px-4 py-3 text-gray-600 dark:text-gray-400">
+                    {doc.status === 'uploaded' || doc.status === 'verified' ? (
+                      <div className="min-w-0">
                         <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
                           {doc.originalFileName || doc.name}
                         </p>
@@ -309,49 +299,42 @@ const TransferDocumentsPanel: React.FC<TransferDocumentsPanelProps> = ({ transfe
                           {doc.uploadDate && ` · ${new Date(doc.uploadDate).toLocaleDateString()}`}
                         </p>
                       </div>
-                      <label className={cn('cursor-pointer text-xs text-teal-600 dark:text-teal-400 hover:underline', isUploading && 'opacity-50 pointer-events-none')}>
+                    ) : (
+                      '—'
+                    )}
+                  </td>
+                  <td className="px-4 py-3 text-right">
+                    {doc.status === 'uploaded' || doc.status === 'verified' ? (
+                      <label className={cn('cursor-pointer inline-flex items-center text-xs text-teal-600 dark:text-teal-400 hover:underline', isUploading && 'opacity-50 pointer-events-none')}>
                         <input
                           type="file"
                           className="hidden"
                           disabled={isUploading}
                           onChange={(e) => e.target.files && e.target.files[0] && handleFileSelect(doc, e.target.files[0])}
                         />
-                        Replace
+                        <Upload className="h-4 w-4 mr-1" />
+                        {isUploading ? '...' : 'Replace'}
                       </label>
-                    </div>
-                  ) : (
-                    <div className="space-y-2">
-                      <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">
-                        Upload File
-                      </label>
-                      <label
-                        className={cn(
-                          'inline-flex items-center justify-center px-4 py-2 text-sm rounded-lg font-medium transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 cursor-pointer btn-secondary-premium',
-                          isUploading && 'opacity-50 cursor-not-allowed'
-                        )}
-                      >
+                    ) : (
+                      <label className={cn(
+                        'inline-flex items-center justify-center px-3 py-1 text-xs rounded-lg font-medium transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 cursor-pointer btn-secondary-premium',
+                        isUploading && 'opacity-50 cursor-not-allowed'
+                      )}>
                         <input
                           type="file"
                           className="hidden"
                           disabled={isUploading}
                           onChange={(e) => e.target.files && e.target.files[0] && handleFileSelect(doc, e.target.files[0])}
                         />
-                        <Upload className="h-4 w-4 mr-2" />
-                        {isUploading ? 'Uploading...' : 'Choose File'}
+                        <Upload className="h-4 w-4 mr-1" />
+                        {isUploading ? '...' : 'Upload'}
                       </label>
-                    </div>
-                  )}
-
-                  {docError && (
-                    <p className="text-sm text-red-600 dark:text-red-400 flex items-center gap-2">
-                      <AlertCircle className="h-4 w-4" />
-                      {docError}
-                    </p>
-                  )}
-                </div>
+                    )}
+                  </td>
+                </tr>
               )
             })}
-          </div>
+          </tbody></table></div>
         )}
       </CardContent>
     </Card>
