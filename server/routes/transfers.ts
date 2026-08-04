@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express'
-import { pool, query, withTransaction } from '../db'
+import { query, withTransaction } from '../db'
 import { asyncHandler } from '../utils/asyncHandler'
 import { isNonEmptyString, isSaPostalCode, isValidStatus, toNumber } from '../utils/validate'
 import fs from 'fs'
@@ -512,7 +512,6 @@ router.post(
     const property = (body.property ?? undefined) as Record<string, unknown> | undefined
     const parties = (body.parties ?? undefined) as unknown[] | undefined
     const financials = (body.financials ?? undefined) as Record<string, unknown> | undefined
-    const documents = (body.documents ?? undefined) as unknown[] | undefined
     const status = body.status
     const currentStep = body.currentStep
     const totalSteps = body.totalSteps

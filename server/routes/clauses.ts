@@ -209,7 +209,7 @@ router.put(
   '/:id',
   asyncHandler(async (req: Request, res: Response) => {
     const { id } = req.params
-    const { identifier, name, category, version, status, legalAuthority, effectiveDate, content } = req.body as Record<string, unknown>
+    const { name, category, version, status, legalAuthority, effectiveDate, content } = req.body as Record<string, unknown>
 
     const clauseResult = await query(`SELECT id, identifier, name, category FROM clauses WHERE identifier = $1${isUuid(id) ? ' OR id = $1::uuid' : ''}`, [id])
     if (clauseResult.rows.length === 0) {
