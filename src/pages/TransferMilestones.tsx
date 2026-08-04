@@ -317,10 +317,10 @@ const TransferMilestones: React.FC = () => {
     noteValuesAtFocus.current.delete(id)
   }
 
-  const toLocalInputValue = (value?: string) => {
+  const toLocalDateValue = (value?: string) => {
     if (!value) return ''
     const date = new Date(value)
-    return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16)
+    return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 10)
   }
 
   const updateMilestoneDueDate = async (id: string, dueDate: string) => {
@@ -616,7 +616,7 @@ const TransferMilestones: React.FC = () => {
                     </td>
                     <td className="px-4 py-3 text-gray-600 dark:text-gray-400 w-[15%]">
                       {milestone.dueDate
-                        ? new Date(milestone.dueDate).toLocaleString('en-ZA', { dateStyle: 'medium', timeStyle: 'short' })
+                        ? new Date(milestone.dueDate).toLocaleString('en-ZA', { dateStyle: 'medium' })
                         : 'Not set'}
                     </td>
                   </tr>
@@ -641,8 +641,8 @@ const TransferMilestones: React.FC = () => {
                   </select>
                 </div>
                 <div>
-                  <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Due Date & Time</label>
-                  <input type="datetime-local" value={toLocalInputValue(selectedMilestone.dueDate)} onChange={(event) => updateMilestoneDueDate(selectedMilestone.id, event.target.value)} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 transition-all duration-200 focus:border-teal-500 focus:ring-2 focus:ring-teal-500 dark:border-navy-600 dark:bg-navy-700 dark:text-gray-100" />
+                  <label className="mb-1 block text-xs font-medium text-gray-700 dark:text-gray-300">Due Date</label>
+                  <input type="date" value={toLocalDateValue(selectedMilestone.dueDate)} onChange={(event) => updateMilestoneDueDate(selectedMilestone.id, event.target.value)} className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 transition-all duration-200 focus:border-teal-500 focus:ring-2 focus:ring-teal-500 dark:border-navy-600 dark:bg-navy-700 dark:text-gray-100" />
                 </div>
               </div>
               <div>
