@@ -85,19 +85,21 @@ app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
   })
 })
 
-const server = app.listen(PORT, () => {
-  console.log(`Legitify ConveyHub API listening on port ${PORT}`)
-})
-
-const gracefulShutdown = async (signal: string) => {
-  console.log(`Received ${signal}. Shutting down gracefully...`)
-  server.close(async () => {
-    await pool.end()
-    process.exit(0)
+if (!process.env.VERCEL) {
+  const server = app.listen(PORT, () => {
+    console.log(`Legitify ConveyHub API listening on port ${PORT}`)
   })
-}
 
-process.on('SIGTERM', () => gracefulShutdown('SIGTERM'))
-process.on('SIGINT', () => gracefulShutdown('SIGINT'))
+  const gracefulShutdown = async (signal: string) => {
+    console.log(`Received ${signal}. Shutting down gracefully...`)
+    server.close(async () => {
+      await pool.end()
+      process.exit(0)
+    })
+  }
+
+  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'))
+  process.on('SIGINT', () => gracefulShutdown('SIGINT'))
+}
 
 export default app
