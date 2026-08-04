@@ -8,7 +8,7 @@ interface DatabaseConfig extends PoolConfig {
   max?: number
 }
 
-const connectionString = process.env.POSTGRES_URL || process.env.DATABASE_URL
+const connectionString = process.env.ConveyHub_Transfers_POSTGRES_URL || process.env.POSTGRES_URL || process.env.DATABASE_URL
 
 const config: DatabaseConfig = connectionString
   ? {

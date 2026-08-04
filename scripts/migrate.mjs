@@ -9,10 +9,11 @@ config()
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
-const hasPostgresUrl = Boolean(process.env.POSTGRES_URL)
+const postgresUrl = process.env.ConveyHub_Transfers_POSTGRES_URL || process.env.POSTGRES_URL || process.env.DATABASE_URL
+const hasPostgresUrl = Boolean(postgresUrl)
 
 const dbConfig = hasPostgresUrl
-  ? { connectionString: process.env.POSTGRES_URL, ssl: { rejectUnauthorized: false } }
+  ? { connectionString: postgresUrl, ssl: { rejectUnauthorized: false } }
   : {
       host: process.env.DB_HOST || 'localhost',
       port: parseInt(process.env.DB_PORT || '5432'),
