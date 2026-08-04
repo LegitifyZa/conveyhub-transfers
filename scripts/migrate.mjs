@@ -9,48 +9,60 @@ config()
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
-const dbConfig = {
-  host: process.env.DB_HOST || 'localhost',
-  port: parseInt(process.env.DB_PORT || '5432'),
-  database: process.env.DB_NAME || 'goldenrecordstemp',
-  user: process.env.DB_USER || 'postgres',
-  password: process.env.DB_PASSWORD || 'Password@01',
-  ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false,
-}
+const hasPostgresUrl = Boolean(process.env.POSTGRES_URL)
+
+const dbConfig = hasPostgresUrl
+  ? { connectionString: process.env.POSTGRES_URL, ssl: { rejectUnauthorized: false } }
+  : {
+      host: process.env.DB_HOST || 'localhost',
+      port: parseInt(process.env.DB_PORT || '5432'),
+      database: process.env.DB_NAME || 'goldenrecordstemp',
+      user: process.env.DB_USER || 'postgres',
+      password: process.env.DB_PASSWORD || 'Password@01',
+      ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false,
+    }
 
 async function runMigration() {
   console.log('🗄️ Running database migrations...')
 
-  const targetPool = new Pool(dbConfig)
-  const postgresPool = new Pool({
-    host: dbConfig.host,
-    port: dbConfig.port,
-    database: 'postgres',
-    user: dbConfig.user,
-    password: dbConfig.password,
-    ssl: dbConfig.ssl,
-  })
-
   try {
-    const postgresClient = await postgresPool.connect()
+    const targetPool = new Pool(dbConfig)
+
+  if (!hasPostgresUrl) {
+    const postgresPool = new Pool({
+      host: dbConfig.host,
+      port: dbConfig.port,
+      database: 'postgres',
+      user: dbConfig.user,
+      password: dbConfig.password,
+      ssl: dbConfig.ssl,
+    })
+
     try {
-      await postgresClient.query(`CREATE DATABASE ${dbConfig.database}`)
-      console.log(`✅ Database '${dbConfig.database}' created`)
-    } catch (error) {
-      if (error.code === '42P04') {
-        console.log(`ℹ️ Database '${dbConfig.database}' already exists`)
-      } else if (error.code === '42501') {
-        console.log(`ℹ️ Could not create database '${dbConfig.database}' due to insufficient privileges; will attempt to migrate the existing database`)
-      } else {
-        console.error('❌ Error creating database:', error.message)
-        throw error
+      const postgresClient = await postgresPool.connect()
+      try {
+        await postgresClient.query(`CREATE DATABASE ${dbConfig.database}`)
+        console.log(`✅ Database '${dbConfig.database}' created`)
+      } catch (error) {
+        if (error.code === '42P04') {
+          console.log(`ℹ️ Database '${dbConfig.database}' already exists`)
+        } else if (error.code === '42501') {
+          console.log(`ℹ️ Could not create database '${dbConfig.database}' due to insufficient privileges; will attempt to migrate the existing database`)
+        } else {
+          console.error('❌ Error creating database:', error.message)
+          throw error
+        }
+      } finally {
+        await postgresClient.release()
       }
     } finally {
-      await postgresClient.release()
+      await postgresPool.end()
     }
-    await postgresPool.end()
+  } else {
+    console.log('ℹ️ POSTGRES_URL detected, skipping database creation')
+  }
 
-    const migrationsDir = path.join(__dirname, '../src/lib/migrations')
+  const migrationsDir = path.join(__dirname, '../src/lib/migrations')
     const files = fs
       .readdirSync(migrationsDir)
       .filter(file => file.endsWith('.sql'))
