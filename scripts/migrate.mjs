@@ -26,8 +26,9 @@ const dbConfig = hasPostgresUrl
 async function runMigration() {
   console.log('🗄️ Running database migrations...')
 
+  let targetPool
   try {
-    const targetPool = new Pool(dbConfig)
+    targetPool = new Pool(dbConfig)
 
   if (!hasPostgresUrl) {
     const postgresPool = new Pool({
