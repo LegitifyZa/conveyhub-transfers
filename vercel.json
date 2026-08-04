@@ -1,14 +1,14 @@
 {
   "version": 2,
   "framework": "vite",
-  "buildCommand": "npm run build",
+  "buildCommand": "npm run build && npm run build:server",
   "outputDirectory": "dist",
   "rewrites": [
     { "source": "/api/:path*", "destination": "/api" }
   ],
   "functions": {
     "api/index.ts": {
-      "includeFiles": "server/**/*.ts"
+      "includeFiles": "dist/server/**"
     }
   }
 }
