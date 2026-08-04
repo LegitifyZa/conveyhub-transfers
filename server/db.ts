@@ -8,19 +8,31 @@ interface DatabaseConfig extends PoolConfig {
   max?: number
 }
 
-const config: DatabaseConfig = {
-  host: process.env.DB_HOST || 'localhost',
-  port: parseInt(process.env.DB_PORT || '5432', 10),
-  database: process.env.DB_NAME || 'legitify_convey_hub',
-  user: process.env.DB_USER || 'your_username',
-  password: process.env.DB_PASSWORD || 'your_password',
-  ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false,
-  min: parseInt(process.env.DB_MIN_CONNECTIONS || '2', 10),
-  max: parseInt(process.env.DB_MAX_CONNECTIONS || '10', 10),
-  connectionTimeoutMillis: 10000,
-  idleTimeoutMillis: 30000,
-  query_timeout: 30000,
-}
+const connectionString = process.env.POSTGRES_URL || process.env.DATABASE_URL
+
+const config: DatabaseConfig = connectionString
+  ? {
+      connectionString,
+      ssl: { rejectUnauthorized: false },
+      min: parseInt(process.env.DB_MIN_CONNECTIONS || '2', 10),
+      max: parseInt(process.env.DB_MAX_CONNECTIONS || '10', 10),
+      connectionTimeoutMillis: 10000,
+      idleTimeoutMillis: 30000,
+      query_timeout: 30000,
+    }
+  : {
+      host: process.env.DB_HOST || 'localhost',
+      port: parseInt(process.env.DB_PORT || '5432', 10),
+      database: process.env.DB_NAME || 'legitify_convey_hub',
+      user: process.env.DB_USER || 'your_username',
+      password: process.env.DB_PASSWORD || 'your_password',
+      ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false,
+      min: parseInt(process.env.DB_MIN_CONNECTIONS || '2', 10),
+      max: parseInt(process.env.DB_MAX_CONNECTIONS || '10', 10),
+      connectionTimeoutMillis: 10000,
+      idleTimeoutMillis: 30000,
+      query_timeout: 30000,
+    }
 
 const schema = process.env.DB_SCHEMA || 'Transfers'
 if (schema !== 'public') {
