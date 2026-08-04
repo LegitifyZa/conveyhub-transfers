@@ -5,5 +5,10 @@
   "outputDirectory": "dist",
   "rewrites": [
     { "source": "/api/:path*", "destination": "/api" }
-  ]
+  ],
+  "functions": {
+    "api/index.ts": {
+      "includeFiles": "server/**/*.ts"
+    }
+  }
 }
