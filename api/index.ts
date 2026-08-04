@@ -2,9 +2,12 @@ import app from '../server/index'
 
 export default (req: any, res: any) => {
   const url = req.url || '/'
-  const [pathname, ...rest] = url.split('?')
-  const query = rest.length > 0 ? '?' + rest.join('?') : ''
-  const trimmed = pathname === '/' ? '' : (pathname.startsWith('/') ? pathname.slice(1) : pathname)
-  req.url = trimmed ? '/api/' + trimmed + query : '/api' + query
+
+  if (url === '/' || url === '') {
+    req.url = '/api'
+  } else if (!url.startsWith('/api/') && url !== '/api') {
+    req.url = url.startsWith('/') ? '/api' + url : '/api/' + url
+  }
+
   return app(req, res)
 }
