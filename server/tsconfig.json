@@ -10,7 +10,8 @@
     "resolveJsonModule": true,
     "outDir": "../dist/server",
     "rootDir": ".",
-    "noEmit": false
+    "noEmit": false,
+    "declaration": true
   },
   "include": ["./**/*.ts"],
   "exclude": ["node_modules", "dist"]
