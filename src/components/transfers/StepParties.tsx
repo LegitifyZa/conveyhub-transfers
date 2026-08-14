@@ -215,10 +215,13 @@ const StepParties: React.FC = () => {
   const { parties } = state
   const location = useLocation()
   const goldenRecord = location.state?.goldenRecord
+  const goldenRecordSearch = location.state?.goldenRecordSearch
 
   // Auto-populate buyer from golden record if available
   useEffect(() => {
-    if (goldenRecord && parties.filter(p => p.type === 'buyer').length === 0) {
+    if (parties.filter(p => p.type === 'buyer').length > 0) return
+
+    if (goldenRecord) {
       const newParty: Party = {
         id: Date.now().toString(),
         type: 'buyer',
@@ -230,8 +233,22 @@ const StepParties: React.FC = () => {
         isPrimary: true
       }
       dispatch({ type: 'ADD_PARTY', payload: newParty })
+    } else if (goldenRecordSearch) {
+      const { searchType, searchTerm } = goldenRecordSearch as { searchType: 'id' | 'name' | 'registration'; searchTerm: string }
+      const newParty: Party = {
+        id: Date.now().toString(),
+        type: 'buyer',
+        name: searchType === 'name' ? searchTerm : '',
+        idNumber: searchType === 'id' || searchType === 'registration' ? searchTerm : '',
+        email: '',
+        phone: '',
+        address: '',
+        company: searchType === 'registration' ? searchTerm : '',
+        isPrimary: true
+      }
+      dispatch({ type: 'ADD_PARTY', payload: newParty })
     }
-  }, [goldenRecord, dispatch, parties])
+  }, [goldenRecord, goldenRecordSearch, dispatch, parties])
 
   const addParty = (type: 'buyer' | 'seller') => {
     const newParty: Party = {
