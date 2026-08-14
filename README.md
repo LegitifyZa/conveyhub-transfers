@@ -1,15 +1,17 @@
 # Legitify Convey Hub
 
-A modern, production-ready web application for conveyancing and legal document management, built with React, TypeScript, and Tailwind CSS.
+A modern, production-ready web application for conveyancing and legal document management, built with **React, TypeScript, Vite, and Tailwind CSS** on the frontend and **Python, FastAPI, and asyncpg** on the backend.
 
 ## Features
 
 - **Modern Tech Stack**: React 18, TypeScript, Vite, Tailwind CSS
+- **Python/FastAPI Backend**: Async API powered by FastAPI and asyncpg
 - **Enterprise UI**: Clean, professional design with dark/light mode support
 - **Component-Based Architecture**: Reusable UI components with proper TypeScript typing
 - **Responsive Design**: Mobile-first approach with responsive layouts
 - **Dark Mode**: Built-in dark/light theme toggle
 - **Type Safety**: Full TypeScript implementation with strict mode
+- **Golden Records Integration**: Search and pre-fill transfer details from existing records
 
 ## Pages
 
@@ -28,18 +30,22 @@ A modern, production-ready web application for conveyancing and legal document m
 - **TypeScript** - Type-safe JavaScript development
 - **Vite** - Fast build tool and development server
 - **Tailwind CSS** - Utility-first CSS framework
+- **Python 3.12+** - Backend runtime
+- **FastAPI** - Modern, high-performance Python web framework
+- **Uvicorn** - ASGI server for running FastAPI
+- **asyncpg** - High-performance PostgreSQL driver for Python
 
 ### Additional Libraries
 - **React Router DOM** - Client-side routing
 - **Lucide React** - Beautiful icon library
 - **clsx & tailwind-merge** - Utility for conditional CSS classes
-- **PostgreSQL (pg)** - Database connectivity
 - **dotenv** - Environment variable management
+- **httpx, python-dateutil, python-multipart** - Supporting Python utilities
 
 ### Data Layer
-- **Database**: PostgreSQL with connection pooling
+- **Database**: PostgreSQL with asyncpg connection pooling
 - **Migrations**: SQL schema management
-- **Services**: Business logic abstraction
+- **Services**: FastAPI routers for business logic
 - **Hooks**: React state management with data persistence
 
 ## Getting Started
@@ -48,6 +54,7 @@ A modern, production-ready web application for conveyancing and legal document m
 
 - Node.js 18.0.0 or higher
 - npm or yarn package manager
+- Python 3.12 or higher
 - PostgreSQL 12+ (for database features)
 
 ### Installation
@@ -58,28 +65,60 @@ git clone <repository-url>
 cd legitify-convey-hub
 ```
 
-2. Install dependencies:
+2. Install Node.js dependencies:
 ```bash
 npm install
 ```
 
-3. Set up environment variables:
+3. Set up the Python virtual environment and install backend dependencies:
+
+**Windows:**
+```powershell
+cd python_server
+python -m venv .venv
+.venv\Scripts\pip install -r requirements.txt
+cd ..
+```
+
+**macOS/Linux:**
+```bash
+cd python_server
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cd ..
+```
+
+4. Set up environment variables:
 ```bash
 cp .env.example .env
 # Edit .env with your database credentials
 ```
 
-4. Set up database:
+5. Set up the database:
 ```bash
+npm run setup:db
 npm run migrate
 ```
 
-5. Start development server:
+6. Start the Python API server:
 ```bash
-npm run dev
+cd python_server
+.venv\Scripts\python -m uvicorn main:app --host 0.0.0.0 --port 3000
 ```
 
-6. Open your browser and navigate to `http://localhost:5173`
+Or using the built-in entry point with auto-reload:
+```bash
+cd python_server
+.venv\Scripts\python main.py
+```
+
+7. In a second terminal, start the Vite development client:
+```bash
+npm run dev:client
+```
+
+8. Open your browser and navigate to `http://localhost:5173`
 
 ### Build for Production
 
@@ -87,7 +126,7 @@ npm run dev
 npm run build
 ```
 
-The built files will be in the `dist` directory.
+The built client files will be in the `dist` directory.
 
 ### Linting
 
@@ -141,24 +180,57 @@ npm run test:db
 Create a `.env` file in the root directory:
 
 ```env
-# Database Configuration
+# PostgreSQL Database Configuration
 DB_HOST=localhost
 DB_PORT=5432
 DB_NAME=legitify_convey_hub
-DB_USER=postgres
+DB_USER=your_username
 DB_PASSWORD=your_password
+DB_SSL=false
+DB_SCHEMA=Transfers
+
+# Database Connection Pool Settings
+DB_MIN_CONNECTIONS=2
+DB_MAX_CONNECTIONS=10
 
 # Application Configuration
-VITE_API_URL=http://localhost:3000
-VITE_APP_NAME=Legitify ConveyHub
+NODE_ENV=development
+PORT=3000
+API_BASE_URL=http://localhost:3000/api
+VITE_API_BASE_URL=/api
+VITE_API_PORT=3000
+
+# Loqate Address Verification API
+LOQATE_API_KEY=your_loqate_key
 ```
+
+The Python backend uses the same `.env` file and is configured in `python_server/db.py`.
 
 **Note**: Never commit the `.env` file to version control.
 
 ## Project Structure
 
 ```
-src/
+python_server/              # Python/FastAPI backend
+├── main.py                 # FastAPI application and middleware
+├── db.py                   # asyncpg pool and query helpers
+├── requirements.txt        # Python dependencies
+├── utils/                  # Python validation utilities
+│   ├── __init__.py
+│   └── validate.py
+└── routers/                # FastAPI route modules
+    ├── address.py
+    ├── clauses.py
+    ├── document_catalogue.py
+    ├── documents.py
+    ├── generated_documents.py
+    ├── health.py
+    ├── milestones.py
+    ├── template_data_fields.py
+    ├── transfers.py
+    └── users.py
+
+src/                        # React/TypeScript frontend
 ├── components/
 │   ├── ui/                 # Reusable UI components
 │   │   ├── Button.tsx
@@ -167,7 +239,6 @@ src/
 │   │   ├── Modal.tsx
 │   │   └── index.ts
 │   ├── DatabaseStatus.tsx  # Database connection status
-│   ├── GoldenRecordsSearch.tsx # Golden records search modal
 │   └── transfers/          # Transfer workflow components
 │       ├── StepProperty.tsx
 │       ├── StepParties.tsx
@@ -213,25 +284,25 @@ src/
 
 The application uses a layered architecture for data management, providing clean separation between UI, business logic, and data persistence.
 
-### Database Layer
+### API Layer
 
-**PostgreSQL Integration**
-- **Connection**: Managed connection pooling with `pg` library
+**FastAPI Backend**
+- **Connection Pooling**: asyncpg pool managed in `python_server/db.py`
+- **CORS**: Configured to allow the Vite client in development
+- **Routers**: Modular route handlers under `python_server/routers/`
 - **Environment**: Secure configuration via `.env` variables
-- **Migrations**: Version-controlled schema management
-- **Type Safety**: Full TypeScript integration
 
 **Key Files**
-- `src/lib/database.ts` - Database connection and pool management
-- `src/lib/migrations/` - SQL schema files
-- `.env` - Database credentials (never committed)
+- `python_server/main.py` - FastAPI app and middleware
+- `python_server/db.py` - asyncpg pool, query helper, and transaction wrapper
+- `python_server/routers/*.py` - API endpoints
 
-### Service Layer
+### Frontend Service Layer
 
 **Business Logic Abstraction**
 - **Transfer Service**: Handles all transfer-related operations
 - **User Service**: Manages user data and authentication
-- **API Layer**: Clean interface between UI and database
+- **API Layer**: Clean interface between UI and backend
 
 **Key Files**
 - `src/lib/services/transferService.ts` - Transfer business logic
@@ -252,22 +323,22 @@ The application uses a layered architecture for data management, providing clean
 ### Data Flow
 
 ```
-UI Components → React Hooks → Service Layer → Database
-     ↓              ↓              ↓           ↓
-User Actions → State Updates → Business Logic → SQL Queries
+UI Components → React Hooks → Service Layer → FastAPI Router → asyncpg → PostgreSQL
+     ↓              ↓              ↓              ↓              ↓            ↓
+User Actions → State Updates → Business Logic → Validation → SQL Queries → Data
 ```
 
 ### Golden Records Integration
 
 **Search Functionality**
-- **Modal Interface**: User-friendly search component
+- **Inline Search**: ID number, name, or registration number search on the New Transfer page
 - **Mock Data**: Pre-populated golden records for testing
 - **Pre-population**: Auto-fills transfer forms with found records
-- **Skip Option**: Users can bypass search if needed
+- **Manual Entry**: Passes the search term into the workflow when no record is found
 
 **Key Components**
-- `GoldenRecordsSearch.tsx` - Search modal component
-- `NewTransfer.tsx` - Integration page for golden records
+- `src/pages/NewTransfer.tsx` - Golden records search and transfer creation page
+- `src/components/transfers/StepParties.tsx` - Pre-fills party details from a Golden Record
 
 ### Database Schema
 
@@ -277,17 +348,6 @@ User Actions → State Updates → Business Logic → SQL Queries
 - **parties**: Buyer/seller information
 - **documents**: File attachments and metadata
 - **audit_trail**: Change tracking and compliance
-
-### Environment Configuration
-
-**Required Variables**
-```env
-DB_HOST=localhost
-DB_PORT=5432
-DB_NAME=legitify_convey_hub
-DB_USER=postgres
-DB_PASSWORD=your_password
-```
 
 ## Design System
 
