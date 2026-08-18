@@ -2,13 +2,14 @@ import React, { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui'
 import { Button, Input } from '@/components/ui'
-import { Search, User, Building, Folder, ArrowRight, AlertCircle, CheckCircle } from 'lucide-react'
+import { Search, Building, Folder, ArrowRight, AlertCircle, CheckCircle } from 'lucide-react'
 
 interface GoldenRecord {
   id: string
   name: string
   idNumber: string
   registrationNumber?: string
+  passport?: string
   email?: string
   phone?: string
   address?: string
@@ -23,6 +24,7 @@ const mockGoldenRecords: GoldenRecord[] = [
     name: 'John Smith',
     idNumber: '8001015009087',
     registrationNumber: '2020/123456',
+    passport: 'A12345678',
     email: 'john.smith@email.com',
     phone: '+27 12 345 6789',
     address: '123 Main Street, Cape Town, 8001',
@@ -53,7 +55,7 @@ const mockGoldenRecords: GoldenRecord[] = [
   }
 ]
 
-type SearchType = 'id' | 'name' | 'registration'
+type SearchType = 'id' | 'name' | 'registration' | 'passport'
 type MatterCategory = 'transfer' | 'development'
 
 const transferOptions = [
@@ -63,7 +65,8 @@ const transferOptions = [
   'Property in Possession',
   'Deceased Estate - Inheritance',
   'Endorsement - Section 45',
-  'Donation'
+  'Donation',
+  'Not Applicable'
 ]
 
 const developmentOptions = [
@@ -155,6 +158,11 @@ const NewTransfer: React.FC = () => {
             record.registrationNumber?.toLowerCase().includes(term)
           ) || null
           break
+        case 'passport':
+          foundRecord = mockGoldenRecords.find(record =>
+            record.passport?.toLowerCase().includes(term)
+          ) || null
+          break
       }
 
       if (foundRecord) {
@@ -200,6 +208,8 @@ const NewTransfer: React.FC = () => {
         return 'Enter full name...'
       case 'registration':
         return 'Enter registration number...'
+      case 'passport':
+        return 'Enter passport number...'
     }
   }
 
@@ -211,6 +221,8 @@ const NewTransfer: React.FC = () => {
         return 'Name'
       case 'registration':
         return 'Registration Number'
+      case 'passport':
+        return 'Passport Number'
     }
   }
 
@@ -223,12 +235,12 @@ const NewTransfer: React.FC = () => {
             <Building className="w-10 h-10 text-teal-600" />
           </div>
           <h1 className="text-4xl font-bold text-gray-900 dark:text-gray-100 mb-4">
-            Create New Transfer
+            Create New Matter
           </h1>
           <p className="text-xl text-gray-600 dark:text-gray-400 max-w-2xl mx-auto">
             {step === 'matter'
               ? 'Enter the matter details before searching Golden Records.'
-              : 'Search Golden Records by ID number, name, or registration number.'}
+              : 'Search Golden Records'}
           </p>
         </div>
 
@@ -257,23 +269,7 @@ const NewTransfer: React.FC = () => {
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                    Transfer From
-                  </label>
-                  <select
-                    value={transferFrom}
-                    onChange={(e) => setTransferFrom(e.target.value)}
-                    className="flex h-10 w-full rounded-lg border border-gray-300 dark:border-navy-600 bg-white dark:bg-navy-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-teal-500"
-                  >
-                    <option value="">Select transfer from...</option>
-                    {transferFromOptions.map(option => (
-                      <option key={option} value={option}>{option}</option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                    Matter Category
+                    Matter Type
                   </label>
                   <select
                     value={matterCategory}
@@ -303,6 +299,24 @@ const NewTransfer: React.FC = () => {
                     ))}
                   </select>
                 </div>
+
+                {matterCategory === 'development' && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                      Transfer From
+                    </label>
+                    <select
+                      value={transferFrom}
+                      onChange={(e) => setTransferFrom(e.target.value)}
+                      className="flex h-10 w-full rounded-lg border border-gray-300 dark:border-navy-600 bg-white dark:bg-navy-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-teal-500"
+                    >
+                      <option value="">Select transfer from...</option>
+                      {transferFromOptions.map(option => (
+                        <option key={option} value={option}>{option}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
 
                 {error && step === 'matter' && (
                   <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
@@ -335,7 +349,7 @@ const NewTransfer: React.FC = () => {
                     Search By
                   </label>
                   <div className="flex flex-wrap gap-3">
-                    {(['id', 'name', 'registration'] as SearchType[]).map((type) => (
+                    {(['id', 'name', 'registration', 'passport'] as SearchType[]).map((type) => (
                       <button
                         key={type}
                         onClick={() => {
@@ -352,6 +366,7 @@ const NewTransfer: React.FC = () => {
                         {type === 'id' && 'ID Number'}
                         {type === 'name' && 'Name'}
                         {type === 'registration' && 'Registration Number'}
+                        {type === 'passport' && 'Passport'}
                       </button>
                     ))}
                   </div>
@@ -362,25 +377,25 @@ const NewTransfer: React.FC = () => {
                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                     {getSearchTypeLabel()}
                   </label>
-                  <Input
-                    type="text"
-                    placeholder={getPlaceholder()}
-                    value={searchTerm}
-                    onChange={(e) => setSearchTerm(e.target.value)}
-                    onKeyPress={(e) => e.key === 'Enter' && handleSearch()}
-                    className="w-full"
-                  />
+                  <div className="flex items-center gap-2">
+                    <Input
+                      type="text"
+                      placeholder={getPlaceholder()}
+                      value={searchTerm}
+                      onChange={(e) => setSearchTerm(e.target.value)}
+                      onKeyPress={(e) => e.key === 'Enter' && handleSearch()}
+                      className="flex-1"
+                    />
+                    <Button
+                      onClick={handleSearch}
+                      disabled={isSearching}
+                      aria-label="Search"
+                      className="!p-0 h-10 w-10 flex items-center justify-center"
+                    >
+                      <Search className="w-5 h-5" />
+                    </Button>
+                  </div>
                 </div>
-
-                {/* Search / Create Button */}
-                <Button
-                  onClick={handleSearch}
-                  disabled={isSearching}
-                  className="w-full flex items-center justify-center space-x-2"
-                >
-                  <User className="w-5 h-5" />
-                  <span>{isSearching ? 'Searching...' : 'Create New Transfer'}</span>
-                </Button>
 
                 {/* Error / Not Found */}
                 {error && (
@@ -397,7 +412,7 @@ const NewTransfer: React.FC = () => {
                           variant="outline"
                           className="w-full flex items-center justify-center space-x-2"
                         >
-                          <span>Continue to Create Transfer</span>
+                          <span>Continue to Create Matter</span>
                           <ArrowRight className="w-4 h-4" />
                         </Button>
                       </div>
