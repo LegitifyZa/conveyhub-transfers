@@ -34,7 +34,7 @@ const config: DatabaseConfig = connectionString
       query_timeout: 30000,
     }
 
-const schema = process.env.DB_SCHEMA || 'Transfers'
+const schema = process.env.DB_SCHEMA || 'transfers'
 if (schema !== 'public') {
   config.options = `--search_path=${escapeIdentifier(schema)},public`
 }

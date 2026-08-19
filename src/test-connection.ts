@@ -15,9 +15,9 @@ async function testDatabaseConnection() {
     
     console.log('✅ Database connection successful')
     
-    // Test table creation
+    // Verify database connectivity (migrations are now the only DDL path)
     await initializeDatabase()
-    console.log('✅ Database tables created successfully')
+    console.log('✅ Database connection initialized successfully')
     
     // Test utilities
     const transferId = await DatabaseUtils.generateUniqueTransferId()

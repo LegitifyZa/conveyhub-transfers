@@ -1,5 +1,3 @@
-import asyncio
-import os
 import re
 import ssl
 import time
@@ -8,9 +6,8 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, List, Optional, TypeVar
 
 import asyncpg
-from dotenv import load_dotenv
 
-load_dotenv()
+from config import Settings
 
 T = TypeVar("T")
 
@@ -32,23 +29,14 @@ class QueryResult:
 
 
 _pool: Optional[asyncpg.Pool] = None
+_settings: Optional[Settings] = None
 
 
-def _get_dsn() -> str:
-    return (
-        os.getenv("ConveyHub_Transfers_POSTGRES_URL_NON_POOLING")
-        or os.getenv("POSTGRES_URL_NON_POOLING")
-        or os.getenv("ConveyHub_Transfers_POSTGRES_URL")
-        or os.getenv("POSTGRES_URL")
-        or os.getenv("DATABASE_URL")
-    )
-
-
-def _build_pool_kwargs() -> dict:
-    dsn = _get_dsn()
-    min_size = int(os.getenv("DB_MIN_CONNECTIONS", "2"))
-    max_size = int(os.getenv("DB_MAX_CONNECTIONS", "10"))
-    schema = os.getenv("DB_SCHEMA", "Transfers")
+def _build_pool_kwargs(settings: Settings) -> dict:
+    dsn = settings.database_url
+    min_size = settings.db_min_connections
+    max_size = settings.db_max_connections
+    schema = settings.db_schema
 
     kwargs = {
         "min_size": min_size,
@@ -59,7 +47,7 @@ def _build_pool_kwargs() -> dict:
 
     needs_ssl = (
         (dsn and "sslmode=require" in dsn)
-        or os.getenv("DB_SSL") == "true"
+        or settings.db_ssl
     )
     if needs_ssl:
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
@@ -70,11 +58,11 @@ def _build_pool_kwargs() -> dict:
     if dsn:
         kwargs["dsn"] = dsn
     else:
-        kwargs["host"] = os.getenv("DB_HOST", "localhost")
-        kwargs["port"] = int(os.getenv("DB_PORT", "5432"))
-        kwargs["database"] = os.getenv("DB_NAME", "legitify_convey_hub")
-        kwargs["user"] = os.getenv("DB_USER", "your_username")
-        kwargs["password"] = os.getenv("DB_PASSWORD", "your_password")
+        kwargs["host"] = settings.db_host
+        kwargs["port"] = settings.db_port
+        kwargs["database"] = settings.db_name
+        kwargs["user"] = settings.db_user
+        kwargs["password"] = settings.db_password
 
     if schema != "public":
         kwargs["server_settings"]["search_path"] = f'"{schema}", public'
@@ -82,10 +70,14 @@ def _build_pool_kwargs() -> dict:
     return kwargs
 
 
-async def get_pool() -> asyncpg.Pool:
-    global _pool
+async def get_pool(settings: Optional[Settings] = None) -> asyncpg.Pool:
+    global _pool, _settings
+    if settings is not None:
+        _settings = settings
+    if _settings is None:
+        raise RuntimeError("Database settings have not been configured.")
     if _pool is None:
-        _pool = await asyncpg.create_pool(**_build_pool_kwargs())
+        _pool = await asyncpg.create_pool(**_build_pool_kwargs(_settings))
     return _pool
 
 
@@ -114,7 +106,8 @@ async def query(text: str, params: Optional[List[Any]] = None, *, connection: Op
                 result = QueryResult(rows=[], row_count=_parse_command_tag(tag))
 
         duration = (time.time() - start) * 1000
-        if os.getenv("NODE_ENV") != "production":
+        node_env = _settings.node_env if _settings is not None else "development"
+        if node_env != "production":
             print("Executed query", {"text": text[:200], "duration": round(duration), "rows": result.row_count})
         return result
     except Exception as error:

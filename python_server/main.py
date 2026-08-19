@@ -1,4 +1,5 @@
 import os
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -6,10 +7,25 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from config import load_settings
 from db import close_pool, get_pool
 from routers import address, clauses, document_catalogue, documents, generated_documents, health, milestones, template_data_fields, transfers, users
 
-app = FastAPI(title="Legitify ConveyHub API", version="1.0.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    app.state.settings = load_settings()
+    await get_pool(app.state.settings)
+    yield
+    await close_pool()
+
+
+app = FastAPI(
+    title="Legitify ConveyHub API",
+    version="1.0.0",
+    lifespan=lifespan,
+    redirect_slashes=False,
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -94,24 +110,16 @@ async def generic_exception_handler(request: Request, exc: Exception):
     print("Unhandled error:", exc)
     traceback.print_exc()
     status_code = getattr(exc, "status_code", 500)
-    message = "Internal server error" if os.getenv("NODE_ENV") == "production" else str(exc)
+    settings = getattr(request.app.state, "settings", None)
+    node_env = settings.node_env if settings is not None else "development"
+    message = "Internal server error" if node_env == "production" else str(exc)
     return JSONResponse(
         status_code=status_code,
         content={"success": False, "error": message},
     )
 
 
-@app.on_event("startup")
-async def startup():
-    await get_pool()
-
-
-@app.on_event("shutdown")
-async def shutdown():
-    await close_pool()
-
-
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.getenv("PORT", "3000"))
-    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
+    settings = load_settings()
+    uvicorn.run("main:app", host="0.0.0.0", port=settings.port, reload=True)
