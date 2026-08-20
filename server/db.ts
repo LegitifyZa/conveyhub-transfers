@@ -36,7 +36,7 @@ const config: DatabaseConfig = connectionString
 
 const schema = process.env.DB_SCHEMA || 'transfers'
 if (schema !== 'public') {
-  config.options = `--search_path=${schema},public`
+  config.options = `-c search_path=${schema},public`
 }
 
 export const pool = new Pool(config)

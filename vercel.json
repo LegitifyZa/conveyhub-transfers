@@ -1,7 +1,7 @@
 {
   "version": 2,
   "framework": "vite",
-  "buildCommand": "npm run build && npm run build:server && node scripts/fix-server-imports.mjs",
+  "buildCommand": "npm run build && rm -rf dist/server && npm run build:server && node scripts/fix-server-imports.mjs",
   "outputDirectory": "dist",
   "rewrites": [
     { "source": "/api", "destination": "/api" },
