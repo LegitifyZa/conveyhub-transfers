@@ -3,8 +3,16 @@
   "framework": "vite",
   "buildCommand": "npm run build && npm run build:server && node scripts/fix-server-imports.mjs",
   "outputDirectory": "dist",
+  "rewrites": [
+    { "source": "/api", "destination": "/api" },
+    { "source": "/api/:path*", "destination": "/api/[...path]" },
+    { "source": "/:path*", "destination": "/index.html" }
+  ],
   "functions": {
-    "api/[[...path]].ts": {
+    "api/[...path].ts": {
+      "includeFiles": "dist/server/**"
+    },
+    "api/index.ts": {
       "includeFiles": "dist/server/**"
     }
   }
