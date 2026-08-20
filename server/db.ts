@@ -35,11 +35,12 @@ const config: DatabaseConfig = connectionString
     }
 
 const schema = process.env.DB_SCHEMA || 'transfers'
-if (schema !== 'public') {
-  config.options = `-c search_path=${schema},public`
-}
 
 export const pool = new Pool(config)
+
+pool.on('connect', (client) => {
+  client.query(`SET search_path = ${schema}, public`)
+})
 
 pool.on('error', (err) => {
   console.error('Unexpected error on idle client', err)
