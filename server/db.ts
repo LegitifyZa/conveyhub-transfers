@@ -1,4 +1,4 @@
-import { Pool, PoolConfig, QueryResultRow, escapeIdentifier } from 'pg'
+import { Pool, PoolConfig, QueryResultRow } from 'pg'
 import dotenv from 'dotenv'
 
 dotenv.config()
@@ -36,7 +36,7 @@ const config: DatabaseConfig = connectionString
 
 const schema = process.env.DB_SCHEMA || 'transfers'
 if (schema !== 'public') {
-  config.options = `--search_path=${escapeIdentifier(schema)},public`
+  config.options = `--search_path=${schema},public`
 }
 
 export const pool = new Pool(config)
