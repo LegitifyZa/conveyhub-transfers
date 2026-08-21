@@ -31,6 +31,7 @@ class Settings:
     entities_service_url: str
     redis_url: str
     audit_database_url: Optional[str]
+    jwt_secret: Optional[str] = None
 
 
 def _resolve_database_url() -> Optional[str]:
@@ -72,6 +73,7 @@ def load_settings() -> Settings:
         db_ssl=os.getenv("DB_SSL", "").lower() == "true",
         node_env=node_env,
         secret_key=secret_key,
+        jwt_secret=os.getenv("JWT_SECRET"),
         entities_service_url=os.getenv("ENTITIES_SERVICE_URL", "http://localhost:8003"),
         redis_url=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
         audit_database_url=os.getenv("AUDIT_DATABASE_URL"),
