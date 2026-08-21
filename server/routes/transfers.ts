@@ -539,8 +539,8 @@ router.post(
           `INSERT INTO properties (
             property_id, street_address, suburb, city, postal_code, province,
             country, property_type, erf_number, title_deed_number, extent_sqm, description,
-            legal_description, lot_number, year_built, square_footage
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+            legal_description, lot_number, year_built, square_footage, created_for_transfer_id
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
           RETURNING id`,
           [
             propertyIdValue,
@@ -559,6 +559,7 @@ router.post(
             isNonEmptyString(property.lotNumber) ? property.lotNumber : null,
             toNumber(property.yearBuilt),
             toNumber(property.squareFootage),
+            transferId,
           ]
         )
         propertyId = propertyResult.rows[0].id
