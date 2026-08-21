@@ -112,7 +112,7 @@ class PropertyCreatedForTransferIdMigrationTests(unittest.TestCase):
         # The provenance column is populated with the current transferId.
         self.assertIn("transferId,", post_body)
 
-    def test_ts_delete_is_unchanged(self):
+    def test_ts_delete_performs_guarded_cleanup(self):
         ts = self._load_ts_transfers()
         delete_block = re.search(
             r"router\.delete\(\s*'/:id',.*\}\)",
@@ -122,9 +122,9 @@ class PropertyCreatedForTransferIdMigrationTests(unittest.TestCase):
         self.assertIsNotNone(delete_block)
         body = delete_block.group(0)
         self.assertIn("DELETE FROM transfers", body)
-        self.assertNotIn("created_for_transfer_id", body)
-        self.assertNotIn("DELETE FROM matters", body)
-        self.assertNotIn("DELETE FROM properties", body)
+        self.assertIn("created_for_transfer_id", body)
+        self.assertIn("DELETE FROM matters", body)
+        self.assertIn("DELETE FROM properties", body)
 
     def test_py_post_sets_created_for_transfer_id(self):
         py = self._load_py_transfers()
@@ -142,19 +142,19 @@ class PropertyCreatedForTransferIdMigrationTests(unittest.TestCase):
         )
         self.assertIsNotNone(params_match)
 
-    def test_py_delete_is_unchanged(self):
+    def test_py_delete_performs_guarded_cleanup(self):
         py = self._load_py_transfers()
         delete_block = re.search(
-            r"@router\.delete\(\"/\{id\}\"\)\s*async def delete_transfer.*?\n\n",
+            r"@router\.delete\(\"/\{id\}\"\)\s*async def delete_transfer\(id: str\):.*?(?=\n@router\.|\Z)",
             py,
             re.DOTALL,
         )
         self.assertIsNotNone(delete_block)
         body = delete_block.group(0)
         self.assertIn("DELETE FROM transfers", body)
-        self.assertNotIn("created_for_transfer_id", body)
-        self.assertNotIn("DELETE FROM matters", body)
-        self.assertNotIn("DELETE FROM properties", body)
+        self.assertIn("created_for_transfer_id", body)
+        self.assertIn("DELETE FROM matters", body)
+        self.assertIn("DELETE FROM properties", body)
 
 
 if __name__ == "__main__":

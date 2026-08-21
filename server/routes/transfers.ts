@@ -1048,12 +1048,110 @@ router.delete(
   '/:id',
   asyncHandler(async (req: Request, res: Response) => {
     const { id } = req.params
-    const result = await query(`DELETE FROM transfers WHERE transfer_id = $1${isUuid(id) ? ' OR id = $1::uuid' : ''}`, [id])
-    if ((result.rowCount ?? 0) === 0) {
-      res.status(404).json({ success: false, error: 'Transfer not found' })
-      return
-    }
-    res.json({ success: true, data: true, message: 'Transfer deleted successfully' })
+
+    await withTransaction(async (client) => {
+      const transferResult = await client.query(
+        `SELECT id, transfer_id, matter_id, property_id
+         FROM transfers
+         WHERE transfer_id = $1${isUuid(id) ? ' OR id = $1::uuid' : ''}
+         FOR UPDATE`,
+        [id]
+      )
+      if ((transferResult.rowCount ?? 0) === 0) {
+        res.status(404).json({ success: false, error: 'Transfer not found' })
+        return
+      }
+
+      const transferRow = transferResult.rows[0]
+      const transferUuid = transferRow.id as string
+      const transferRef = transferRow.transfer_id as string
+      const matterId = transferRow.matter_id as string | null
+      const propertyId = transferRow.property_id as string | null
+
+      await client.query(
+        `DELETE FROM transfers WHERE id = $1`,
+        [transferUuid]
+      )
+
+      if (matterId) {
+        const matterResult = await client.query(
+          `SELECT matter_type, source_record_id FROM matters WHERE id = $1 FOR UPDATE`,
+          [matterId]
+        )
+        const matterRow = matterResult.rows[0]
+        const canDeleteMatter =
+          matterRow &&
+          matterRow.matter_type === 'transfer' &&
+          matterRow.source_record_id === transferRef
+
+        if (canDeleteMatter) {
+          const otherTransferCount = await client.query(
+            `SELECT COUNT(*) as count FROM transfers WHERE matter_id = $1 AND id != $2`,
+            [matterId, transferUuid]
+          )
+          const hasOtherTransfers = parseInt(otherTransferCount.rows[0].count, 10) > 0
+
+          const blockingQueries = [
+            `SELECT COUNT(*) as count FROM bonds WHERE matter_id = $1`,
+            `SELECT COUNT(*) as count FROM clearance_records WHERE matter_id = $1`,
+            `SELECT COUNT(*) as count FROM compliance_certificates WHERE matter_id = $1`,
+            `SELECT COUNT(*) as count FROM fica_verifications WHERE matter_id = $1`,
+            `SELECT COUNT(*) as count FROM matter_accounts WHERE matter_id = $1`,
+            `SELECT COUNT(*) as count FROM matter_parties WHERE matter_id = $1`,
+            `SELECT COUNT(*) as count FROM parties WHERE matter_id = $1`,
+          ]
+
+          let hasBlockingChildren = false
+          for (const text of blockingQueries) {
+            const countResult = await client.query(text, [matterId])
+            if (parseInt(countResult.rows[0].count, 10) > 0) {
+              hasBlockingChildren = true
+              break
+            }
+          }
+
+          if (!hasOtherTransfers && !hasBlockingChildren) {
+            await client.query(`DELETE FROM matters WHERE id = $1`, [matterId])
+          }
+        }
+      }
+
+      if (propertyId) {
+        const propertyResult = await client.query(
+          `SELECT created_for_transfer_id FROM properties WHERE id = $1 FOR UPDATE`,
+          [propertyId]
+        )
+        const propertyRow = propertyResult.rows[0]
+        const isAutoCreated = propertyRow && propertyRow.created_for_transfer_id === transferRef
+
+        if (isAutoCreated) {
+          const refQueries = [
+            `SELECT COUNT(*) as count FROM transfers WHERE property_id = $1 AND id != $2`,
+            `SELECT COUNT(*) as count FROM matters WHERE property_id = $1`,
+            `SELECT COUNT(*) as count FROM municipal_accounts WHERE property_id = $1`,
+            `SELECT COUNT(*) as count FROM compliance_certificates WHERE property_id = $1`,
+          ]
+
+          let hasReferences = false
+          for (const text of refQueries) {
+            // The transfers query needs the deleted transfer id excluded;
+            // the other reference checks only need the property id.
+            const refParams = text.includes('FROM transfers') ? [propertyId, transferUuid] : [propertyId]
+            const countResult = await client.query(text, refParams)
+            if (parseInt(countResult.rows[0].count, 10) > 0) {
+              hasReferences = true
+              break
+            }
+          }
+
+          if (!hasReferences) {
+            await client.query(`DELETE FROM properties WHERE id = $1`, [propertyId])
+          }
+        }
+      }
+
+      res.json({ success: true, data: true, message: 'Transfer deleted successfully' })
+    })
   })
 )
 

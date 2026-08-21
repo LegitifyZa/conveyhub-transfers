@@ -1098,16 +1098,116 @@ async def update_transfer(id: str, body: dict):
 
 @router.delete("/{id}")
 async def delete_transfer(id: str):
-    result = await query(
-        f"DELETE FROM transfers WHERE transfer_id = $1{' OR id = $1::uuid' if is_uuid(id) else ''}",
-        [id],
-    )
-    if (result.row_count or 0) == 0:
-        return JSONResponse(
-            status_code=404,
-            content={"success": False, "error": "Transfer not found"},
+    async def _delete(conn):
+        transfer_result = await query(
+            f"""SELECT id, transfer_id, matter_id, property_id
+                  FROM transfers
+                 WHERE transfer_id = $1{' OR id = $1::uuid' if is_uuid(id) else ''}
+                   FOR UPDATE""",
+            [id],
+            connection=conn,
         )
-    return {"success": True, "data": True, "message": "Transfer deleted successfully"}
+        if not transfer_result.rows:
+            return JSONResponse(
+                status_code=404,
+                content={"success": False, "error": "Transfer not found"},
+            )
+
+        transfer_row = transfer_result.rows[0]
+        transfer_uuid = transfer_row["id"]
+        transfer_ref = transfer_row["transfer_id"]
+        matter_id = transfer_row["matter_id"]
+        property_id = transfer_row["property_id"]
+
+        await query(
+            "DELETE FROM transfers WHERE id = $1",
+            [transfer_uuid],
+            connection=conn,
+        )
+
+        if matter_id:
+            matter_result = await query(
+                "SELECT matter_type, source_record_id FROM matters WHERE id = $1 FOR UPDATE",
+                [matter_id],
+                connection=conn,
+            )
+            if matter_result.rows:
+                matter_row = matter_result.rows[0]
+                can_delete_matter = (
+                    matter_row["matter_type"] == "transfer"
+                    and matter_row["source_record_id"] == transfer_ref
+                )
+
+                if can_delete_matter:
+                    other_transfers = await query(
+                        "SELECT COUNT(*) as count FROM transfers WHERE matter_id = $1 AND id != $2",
+                        [matter_id, transfer_uuid],
+                        connection=conn,
+                    )
+                    has_other_transfers = int(other_transfers.rows[0]["count"]) > 0
+
+                    blocking_queries = [
+                        "SELECT COUNT(*) as count FROM bonds WHERE matter_id = $1",
+                        "SELECT COUNT(*) as count FROM clearance_records WHERE matter_id = $1",
+                        "SELECT COUNT(*) as count FROM compliance_certificates WHERE matter_id = $1",
+                        "SELECT COUNT(*) as count FROM fica_verifications WHERE matter_id = $1",
+                        "SELECT COUNT(*) as count FROM matter_accounts WHERE matter_id = $1",
+                        "SELECT COUNT(*) as count FROM matter_parties WHERE matter_id = $1",
+                        "SELECT COUNT(*) as count FROM parties WHERE matter_id = $1",
+                    ]
+
+                    has_blocking_children = False
+                    for text in blocking_queries:
+                        count_result = await query(text, [matter_id], connection=conn)
+                        if int(count_result.rows[0]["count"]) > 0:
+                            has_blocking_children = True
+                            break
+
+                    if not has_other_transfers and not has_blocking_children:
+                        await query(
+                            "DELETE FROM matters WHERE id = $1",
+                            [matter_id],
+                            connection=conn,
+                        )
+
+        if property_id:
+            property_result = await query(
+                "SELECT created_for_transfer_id FROM properties WHERE id = $1 FOR UPDATE",
+                [property_id],
+                connection=conn,
+            )
+            if property_result.rows:
+                property_row = property_result.rows[0]
+                is_auto_created = property_row["created_for_transfer_id"] == transfer_ref
+
+                if is_auto_created:
+                    ref_queries = [
+                        "SELECT COUNT(*) as count FROM transfers WHERE property_id = $1 AND id != $2",
+                        "SELECT COUNT(*) as count FROM matters WHERE property_id = $1",
+                        "SELECT COUNT(*) as count FROM municipal_accounts WHERE property_id = $1",
+                        "SELECT COUNT(*) as count FROM compliance_certificates WHERE property_id = $1",
+                    ]
+
+                    has_references = False
+                    for text in ref_queries:
+                        # The transfers query needs the deleted transfer id excluded;
+                        # the other reference checks only need the property id.
+                        ref_params = [property_id, transfer_uuid] if "FROM transfers" in text else [property_id]
+                        count_result = await query(text, ref_params, connection=conn)
+                        if int(count_result.rows[0]["count"]) > 0:
+                            has_references = True
+                            break
+
+                    if not has_references:
+                        await query(
+                            "DELETE FROM properties WHERE id = $1",
+                            [property_id],
+                            connection=conn,
+                        )
+
+        return {"success": True, "data": True, "message": "Transfer deleted successfully"}
+
+    return await with_transaction(_delete)
 
 
 @router.get("/{id}/parties")
