@@ -27,7 +27,7 @@ def verify_jwt(token: str, jwt_secret: Optional[str]) -> CurrentUser:
         )
     except jwt.ExpiredSignatureError as exc:
         raise JWTVerificationError("JWT has expired") from exc
-    except jwt.InvalidTokenError as exc:
+    except jwt.PyJWTError as exc:
         raise JWTVerificationError("Invalid JWT") from exc
 
     if not isinstance(payload, dict):

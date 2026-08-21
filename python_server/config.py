@@ -57,6 +57,8 @@ def load_settings() -> Settings:
         if node_env == "production" and (not secret_key or secret_key == "dev-secret-change-me"):
             raise ValueError("The default development SECRET_KEY cannot be used in production")
 
+    raw_jwt_secret = os.getenv("JWT_SECRET")
+
     return Settings(
         app_name=os.getenv("APP_NAME", "Legitify ConveyHub API"),
         app_version=os.getenv("APP_VERSION", "1.0.0"),
@@ -73,7 +75,7 @@ def load_settings() -> Settings:
         db_ssl=os.getenv("DB_SSL", "").lower() == "true",
         node_env=node_env,
         secret_key=secret_key,
-        jwt_secret=os.getenv("JWT_SECRET"),
+        jwt_secret=raw_jwt_secret,
         entities_service_url=os.getenv("ENTITIES_SERVICE_URL", "http://localhost:8003"),
         redis_url=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
         audit_database_url=os.getenv("AUDIT_DATABASE_URL"),

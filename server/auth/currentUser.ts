@@ -30,20 +30,18 @@ export class CurrentUser {
     return roles.includes(this.user_roles_id)
   }
 
+  /**
+   * user_roles_id === 1 (Super Admin) — documented in Transfers handover §4.3.
+   */
   get isSuperAdmin(): boolean {
     return this.user_roles_id === 1
   }
 
+  /**
+   * user_roles_id === 4 (Client) — documented in Transfers handover §4.3.
+   */
   get isClient(): boolean {
     return this.user_roles_id === 4
-  }
-
-  get isAgentOrAbove(): boolean {
-    return [1, 2, 3, 5, 6].includes(this.user_roles_id)
-  }
-
-  get canApproveHighRisk(): boolean {
-    return [1, 2, 5].includes(this.user_roles_id)
   }
 
   toJSON() {

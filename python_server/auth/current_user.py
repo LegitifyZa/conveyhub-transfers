@@ -20,19 +20,13 @@ class CurrentUser:
 
     @property
     def is_super_admin(self) -> bool:
+        """user_roles_id == 1 (Super Admin) — documented in Transfers handover §4.3."""
         return self.user_roles_id == 1
 
     @property
     def is_client(self) -> bool:
+        """user_roles_id == 4 (Client) — documented in Transfers handover §4.3."""
         return self.user_roles_id == 4
-
-    @property
-    def is_agent_or_above(self) -> bool:
-        return self.user_roles_id in (1, 2, 3, 5, 6)
-
-    @property
-    def can_approve_high_risk(self) -> bool:
-        return self.user_roles_id in (1, 2, 5)
 
     def __repr__(self) -> str:
         return (

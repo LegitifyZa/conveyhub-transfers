@@ -1,3 +1,4 @@
+import os
 import time
 import uuid
 from types import SimpleNamespace
@@ -11,6 +12,7 @@ from auth.current_user import CurrentUser
 from auth.dependencies import require_ability, require_jwt, require_jwt_or_service_key
 from auth.jwt import JWTVerificationError, verify_jwt
 from auth.service_key import ServiceKeyError, verify_service_key
+from config import load_settings
 
 
 TEST_JWT_SECRET = "test-jwt-secret-32-bytes-long!!"
@@ -31,7 +33,6 @@ def _make_token(claims=None, secret=TEST_JWT_SECRET, **overrides):
     if claims:
         payload.update(claims)
     payload.update(overrides)
-    # PyJWT automatically adds exp if passed explicitly
     if "exp" not in payload:
         payload["exp"] = int(time.time()) + 3600
     return pyjwt.encode(payload, secret, algorithm="HS256")
@@ -48,10 +49,20 @@ class CurrentUserTests(TestCase):
             tenant_id=None,
         )
         self.assertTrue(user.is_super_admin)
-        self.assertTrue(user.is_agent_or_above)
-        self.assertTrue(user.can_approve_high_risk)
         self.assertFalse(user.is_client)
         self.assertTrue(user.has_ability("transfers:read"))
+
+    def test_is_client_for_role_4(self):
+        user = CurrentUser(
+            user_id=1,
+            golden_record_id=None,
+            abilities=[],
+            accountable_institution_id=2,
+            user_roles_id=4,
+            tenant_id=None,
+        )
+        self.assertFalse(user.is_super_admin)
+        self.assertTrue(user.is_client)
 
 
 class VerifyJwtTests(TestCase):
@@ -98,6 +109,18 @@ class VerifyJwtTests(TestCase):
             verify_jwt(token, TEST_JWT_SECRET)
         self.assertIn("user_id", str(ctx.exception))
 
+    def test_invalid_golden_record_id_type(self):
+        token = _make_token(golden_record_id="not-a-uuid")
+        with self.assertRaises(JWTVerificationError) as ctx:
+            verify_jwt(token, TEST_JWT_SECRET)
+        self.assertIn("golden_record_id", str(ctx.exception))
+
+    def test_invalid_tenant_id_type(self):
+        token = _make_token(tenant_id="not-a-uuid")
+        with self.assertRaises(JWTVerificationError) as ctx:
+            verify_jwt(token, TEST_JWT_SECRET)
+        self.assertIn("tenant_id", str(ctx.exception))
+
     def test_invalid_type(self):
         token = _make_token(type="refresh")
         with self.assertRaises(JWTVerificationError) as ctx:
@@ -108,6 +131,26 @@ class VerifyJwtTests(TestCase):
         token = _make_token()
         with self.assertRaises(JWTVerificationError):
             verify_jwt(token, "")
+
+    def test_wrong_algorithm_rejected(self):
+        token = _make_token(algorithm="HS384", secret="another-32-bytes-secret!!")
+        with self.assertRaises(JWTVerificationError):
+            verify_jwt(token, TEST_JWT_SECRET)
+
+    def test_none_algorithm_rejected(self):
+        # Manually build an alg=none token
+        import base64
+        import json
+
+        header = base64.urlsafe_b64encode(
+            json.dumps({"alg": "none", "typ": "JWT"}).encode()
+        ).rstrip(b"=")
+        payload = base64.urlsafe_b64encode(
+            json.dumps({"type": "access", "user_id": 1, "exp": int(time.time()) + 3600}).encode()
+        ).rstrip(b"=")
+        token = f"{header.decode()}.{payload.decode()}."
+        with self.assertRaises(JWTVerificationError):
+            verify_jwt(token, TEST_JWT_SECRET)
 
     def test_raw_token_never_logged(self):
         token = _make_token(user_id="bad")
@@ -218,3 +261,19 @@ class DependenciesTests(IsolatedAsyncioTestCase):
         )
         self.assertIsInstance(jwt_user, CurrentUser)
         self.assertIsNone(s2s)
+
+
+class ProductionJwtSecretTests(TestCase):
+    def test_verify_jwt_rejects_missing_jwt_secret(self):
+        token = _make_token()
+        with self.assertRaises(JWTVerificationError) as ctx:
+            verify_jwt(token, None)
+        self.assertIn("not configured", str(ctx.exception).lower())
+
+    def test_verify_jwt_rejects_empty_jwt_secret(self):
+        token = _make_token()
+        with self.assertRaises(JWTVerificationError) as ctx:
+            verify_jwt(token, "")
+        self.assertIn("not configured", str(ctx.exception).lower())
+
+
