@@ -32,6 +32,9 @@ class Settings:
     redis_url: str
     audit_database_url: Optional[str]
     jwt_secret: Optional[str] = None
+    # TEMPORARY: server-controlled tenant for the unauthenticated legacy POST /api/transfers.
+    # This bridge is deleted once the legacy write path is retired or JWT auth is added.
+    legacy_accountable_institution_id: Optional[int] = None
 
 
 def _resolve_database_url() -> Optional[str]:
@@ -59,6 +62,17 @@ def load_settings() -> Settings:
 
     raw_jwt_secret = os.getenv("JWT_SECRET")
 
+    # TEMPORARY: parse the legacy tenant bridge without any production default.
+    legacy_ai: Optional[int] = None
+    raw_legacy_ai = os.getenv("LEGACY_ACCOUNTABLE_INSTITUTION_ID")
+    if raw_legacy_ai is not None and raw_legacy_ai.strip() != "":
+        try:
+            parsed_legacy_ai = int(raw_legacy_ai)
+            if parsed_legacy_ai > 0:
+                legacy_ai = parsed_legacy_ai
+        except ValueError:
+            legacy_ai = None
+
     return Settings(
         app_name=os.getenv("APP_NAME", "Legitify ConveyHub API"),
         app_version=os.getenv("APP_VERSION", "1.0.0"),
@@ -79,4 +93,5 @@ def load_settings() -> Settings:
         entities_service_url=os.getenv("ENTITIES_SERVICE_URL", "http://localhost:8003"),
         redis_url=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
         audit_database_url=os.getenv("AUDIT_DATABASE_URL"),
+        legacy_accountable_institution_id=legacy_ai,
     )

@@ -261,7 +261,8 @@ async function saveTransferDocumentUpload(
 async function getOrCreateMatterForTransfer(
   client: import('pg').PoolClient,
   transferId: string,
-  transferReference: string
+  transferReference: string,
+  accountableInstitutionId: number
 ): Promise<string> {
   const matterResult = await client.query(
     'SELECT id FROM matters WHERE source_record_id = $1 AND matter_type = $2 LIMIT 1',
@@ -270,10 +271,17 @@ async function getOrCreateMatterForTransfer(
   if (matterResult.rows[0]) return matterResult.rows[0].id
 
   const insertResult = await client.query(
-    `INSERT INTO matters (reference_number, matter_type, title, status, source_record_id)
-     VALUES ($1, $2, $3, $4, $5)
+    `INSERT INTO matters (reference_number, matter_type, title, status, source_record_id, accountable_institution_id)
+     VALUES ($1, $2, $3, $4, $5, $6)
      RETURNING id`,
-    [transferReference, 'transfer', `Transfer ${transferReference}`, 'draft', transferId]
+    [
+      transferReference,
+      'transfer',
+      `Transfer ${transferReference}`,
+      'draft',
+      transferId,
+      accountableInstitutionId,
+    ]
   )
   return insertResult.rows[0].id
 }
@@ -517,6 +525,20 @@ router.post(
     const totalSteps = body.totalSteps
     const progress = body.progress
 
+    // TEMPORARY: unauthenticated legacy create path controlled by server-side
+    // configuration.  Cannot be overridden by the request body.  Delete once the
+    // legacy write path is retired.
+    const rawLegacyAI = process.env.LEGACY_ACCOUNTABLE_INSTITUTION_ID
+    if (!rawLegacyAI || rawLegacyAI.trim() === '') {
+      res.status(500).json({ success: false, error: 'Server configuration error' })
+      return
+    }
+    const legacyAI = Number(rawLegacyAI)
+    if (!Number.isInteger(legacyAI) || legacyAI <= 0) {
+      res.status(500).json({ success: false, error: 'Server configuration error' })
+      return
+    }
+
     const propertyAddress = property && isNonEmptyString(property.address) ? property.address : undefined
     const purchasePrice = toNumber(financials?.purchasePrice) ?? toNumber(body.purchasePrice) ?? 0
 
@@ -573,8 +595,8 @@ router.post(
       const transferResult = await client.query(
         `INSERT INTO transfers (
           transfer_id, property_id, property_address, purchase_price, status,
-          current_step, total_steps, progress
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+          current_step, total_steps, progress, accountable_institution_id
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         RETURNING *`,
         [
           transferId,
@@ -585,6 +607,7 @@ router.post(
           currentStepValue,
           totalStepsValue,
           progressValue,
+          legacyAI,
         ]
       )
       const transferRow = transferResult.rows[0]
@@ -644,7 +667,7 @@ router.post(
         }
       }
 
-      const matterId = await getOrCreateMatterForTransfer(client, transferUuid, transferId)
+      const matterId = await getOrCreateMatterForTransfer(client, transferUuid, transferId, legacyAI)
       await createDefaultMilestones(client, matterId)
       await seedTransferDocuments(client, transferUuid)
 
@@ -681,13 +704,14 @@ router.put(
   '/:id',
   asyncHandler(async (req: Request, res: Response) => {
     const { id } = req.params
-    const transferResult = await query(`SELECT id, transfer_id FROM transfers WHERE transfer_id = $1${isUuid(id) ? ' OR id = $1::uuid' : ''}`, [id])
+    const transferResult = await query(`SELECT id, transfer_id, accountable_institution_id FROM transfers WHERE transfer_id = $1${isUuid(id) ? ' OR id = $1::uuid' : ''}`, [id])
     if (transferResult.rows.length === 0) {
       res.status(404).json({ success: false, error: 'Transfer not found' })
       return
     }
     const transferUuid = transferResult.rows[0].id
     const transferReference = transferResult.rows[0].transfer_id
+    const transferAi = transferResult.rows[0].accountable_institution_id
 
     const body = req.body as Record<string, unknown>
     const property = (body.property ?? undefined) as Record<string, unknown> | undefined
@@ -986,7 +1010,7 @@ router.put(
         }
       }
 
-      await getOrCreateMatterForTransfer(client, transferUuid, transferReference)
+      await getOrCreateMatterForTransfer(client, transferUuid, transferReference, transferAi)
 
       const finalTransfer = await client.query(
         `SELECT t.*, p.id as property_row_id, p.property_id, p.erf_number, p.street_address, p.suburb, p.city,

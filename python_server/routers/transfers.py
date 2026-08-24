@@ -7,8 +7,10 @@ import string
 import time
 
 from fastapi import APIRouter, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 
+from config import load_settings
 from db import query, with_transaction
 from utils.validate import is_non_empty_string, is_sa_postal_code, is_uuid, is_valid_status, to_number
 
@@ -117,33 +119,33 @@ def map_property_row(row):
     if not row:
         return None
     return {
-        "id": row["id"],
-        "propertyId": row["property_id"],
-        "erfNumber": row["erf_number"],
-        "streetAddress": row["street_address"],
-        "suburb": row["suburb"],
-        "city": row["city"],
-        "postalCode": row["postal_code"],
-        "province": row["province"],
-        "country": row["country"],
-        "propertyType": row["property_type"],
-        "titleDeedNumber": row["title_deed_number"],
-        "extentSqm": _num(row["extent_sqm"]),
-        "description": row["description"],
-        "legalDescription": row["legal_description"],
-        "lotNumber": row["lot_number"],
-        "yearBuilt": _num(row["year_built"]),
-        "squareFootage": _num(row["square_footage"]),
-        "status": row["status"],
-        "createdAt": row["created_at"],
-        "updatedAt": row["updated_at"],
+        "id": row.get("id"),
+        "propertyId": row.get("property_id"),
+        "erfNumber": row.get("erf_number"),
+        "streetAddress": row.get("street_address"),
+        "suburb": row.get("suburb"),
+        "city": row.get("city"),
+        "postalCode": row.get("postal_code"),
+        "province": row.get("province"),
+        "country": row.get("country"),
+        "propertyType": row.get("property_type"),
+        "titleDeedNumber": row.get("title_deed_number"),
+        "extentSqm": _num(row.get("extent_sqm")),
+        "description": row.get("description"),
+        "legalDescription": row.get("legal_description"),
+        "lotNumber": row.get("lot_number"),
+        "yearBuilt": _num(row.get("year_built")),
+        "squareFootage": _num(row.get("square_footage")),
+        "status": row.get("status"),
+        "createdAt": row.get("created_at"),
+        "updatedAt": row.get("updated_at"),
     }
 
 
 def map_transfer_row(row):
-    milestone_progress = row["milestone_progress"]
-    milestone_completed = row["milestone_completed"]
-    parties = row["parties"]
+    milestone_progress = row.get("milestone_progress")
+    milestone_completed = row.get("milestone_completed")
+    parties = row.get("parties", [])
     if isinstance(parties, str):
         try:
             parties = json.loads(parties)
@@ -162,7 +164,7 @@ def map_transfer_row(row):
         "progress": _num(milestone_progress) if milestone_progress is not None else _num(row["progress"]),
         "createdAt": row["created_at"],
         "updatedAt": row["updated_at"],
-        "nextDueDate": row["next_due_date"],
+        "nextDueDate": row.get("next_due_date"),
         "parties": [map_party_row(p) for p in parties],
     }
 
@@ -281,7 +283,7 @@ async def save_transfer_document_upload(conn, transfer_uuid, transfer_document_i
     return result.rows[0] if result.rows else None
 
 
-async def get_or_create_matter_for_transfer(conn, transfer_id, transfer_reference):
+async def get_or_create_matter_for_transfer(conn, transfer_id, transfer_reference, accountable_institution_id):
     matter_result = await query(
         "SELECT id FROM matters WHERE source_record_id = $1 AND matter_type = $2 LIMIT 1",
         [transfer_id, "transfer"],
@@ -291,10 +293,17 @@ async def get_or_create_matter_for_transfer(conn, transfer_id, transfer_referenc
         return matter_result.rows[0]["id"]
 
     insert_result = await query(
-        """INSERT INTO matters (reference_number, matter_type, title, status, source_record_id)
-         VALUES ($1, $2, $3, $4, $5)
+        """INSERT INTO matters (reference_number, matter_type, title, status, source_record_id, accountable_institution_id)
+         VALUES ($1, $2, $3, $4, $5, $6)
          RETURNING id""",
-        [transfer_reference, "transfer", f"Transfer {transfer_reference}", "draft", transfer_id],
+        [
+            transfer_reference,
+            "transfer",
+            f"Transfer {transfer_reference}",
+            "draft",
+            transfer_id,
+            accountable_institution_id,
+        ],
         connection=conn,
     )
     return insert_result.rows[0]["id"]
@@ -559,6 +568,17 @@ async def create_transfer(body: dict):
             content={"success": False, "error": "Property address is required"},
         )
 
+    # TEMPORARY: the unauthenticated legacy create path is a bridge.  It is
+    # controlled entirely by server-side configuration and cannot be overridden
+    # by request body values.  Delete once the legacy write path is retired.
+    settings = load_settings()
+    legacy_ai = settings.legacy_accountable_institution_id
+    if legacy_ai is None or not isinstance(legacy_ai, int) or legacy_ai <= 0:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": "Server configuration error"},
+        )
+
     async def _create(conn):
         transfer_id = await generate_unique_transfer_id(conn)
 
@@ -607,8 +627,8 @@ async def create_transfer(body: dict):
         transfer_result = await query(
             """INSERT INTO transfers (
               transfer_id, property_id, property_address, purchase_price, status,
-              current_step, total_steps, progress
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+              current_step, total_steps, progress, accountable_institution_id
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             RETURNING *""",
             [
                 transfer_id,
@@ -619,6 +639,7 @@ async def create_transfer(body: dict):
                 current_step_value,
                 total_steps_value,
                 progress_value,
+                legacy_ai,
             ],
             connection=conn,
         )
@@ -680,7 +701,7 @@ async def create_transfer(body: dict):
             )
             created_parties.append(map_party_row(party_result.rows[0]))
 
-        matter_id = await get_or_create_matter_for_transfer(conn, transfer_uuid, transfer_id)
+        matter_id = await get_or_create_matter_for_transfer(conn, transfer_uuid, transfer_id, legacy_ai)
         await create_default_milestones(conn, matter_id)
         await seed_transfer_documents(conn, transfer_uuid)
 
@@ -712,14 +733,18 @@ async def create_transfer(body: dict):
     new_transfer = await with_transaction(_create)
     return JSONResponse(
         status_code=201,
-        content={"success": True, "data": new_transfer, "message": "Transfer created successfully"},
+        content=jsonable_encoder({
+            "success": True,
+            "data": new_transfer,
+            "message": "Transfer created successfully",
+        }),
     )
 
 
 @router.put("/{id}")
 async def update_transfer(id: str, body: dict):
     transfer_result = await query(
-        f"SELECT id, transfer_id FROM transfers WHERE transfer_id = $1{' OR id = $1::uuid' if is_uuid(id) else ''}",
+        f"SELECT id, transfer_id, accountable_institution_id FROM transfers WHERE transfer_id = $1{' OR id = $1::uuid' if is_uuid(id) else ''}",
         [id],
     )
     if not transfer_result.rows:
@@ -729,6 +754,7 @@ async def update_transfer(id: str, body: dict):
         )
     transfer_uuid = transfer_result.rows[0]["id"]
     transfer_reference = transfer_result.rows[0]["transfer_id"]
+    transfer_ai = transfer_result.rows[0]["accountable_institution_id"]
 
     property_data = body.get("property") or {}
     parties = _resolve_parties(body.get("parties"))
@@ -1037,7 +1063,7 @@ async def update_transfer(id: str, body: dict):
                         connection=conn,
                     )
 
-        await get_or_create_matter_for_transfer(conn, transfer_uuid, transfer_reference)
+        await get_or_create_matter_for_transfer(conn, transfer_uuid, transfer_reference, transfer_ai)
 
         final_transfer = await query(
             """SELECT t.*, p.id as property_row_id, p.property_id, p.erf_number, p.street_address, p.suburb, p.city,
