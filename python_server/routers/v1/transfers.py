@@ -14,6 +14,12 @@ router = APIRouter()
 DEFAULT_SORT_COLUMNS = ["created_at", "updated_at", "property_address", "status", "purchase_price"]
 
 
+SELECT_TRANSFER_COLUMNS = """
+    SELECT t.id, t.transfer_id, t.property_address, t.purchase_price, t.status,
+           t.current_step, t.total_steps, t.progress, t.created_at, t.updated_at
+"""
+
+
 def _map_transfer(row: dict) -> dict:
     return {
         "id": row["id"],
@@ -28,6 +34,68 @@ def _map_transfer(row: dict) -> dict:
         "updatedAt": row["updated_at"],
         "parties": [],
     }
+
+
+def _map_transfer_party(row: dict) -> dict:
+    return {
+        "id": row["id"],
+        "transferId": row["transfer_id"],
+        "goldenRecordId": row["golden_record_id"],
+        "entityType": row["entity_type"],
+        "role": row["role"],
+        "accountableInstitutionId": row["accountable_institution_id"],
+        "cachedName": row["cached_name"],
+        "cachedIdNumber": row["cached_id_number"],
+        "cachedEmail": row["cached_email"],
+        "syncedAt": row["synced_at"],
+    }
+
+
+def _is_valid_uuid(value: str) -> bool:
+    return bool(re.match(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", value, re.IGNORECASE))
+
+
+async def _authorize_transfer(user: CurrentUser, id: str):
+    """Return the authorised transfer row, or None if not accessible."""
+
+    if not _is_valid_uuid(id):
+        return None
+
+    if user.is_client:
+        if not user.golden_record_id:
+            return None
+
+        client_sql = f"""
+            {SELECT_TRANSFER_COLUMNS}
+            FROM transfers t
+            WHERE t.id = $1
+              AND EXISTS (
+                SELECT 1 FROM transfer_parties tp
+                WHERE tp.transfer_id = t.id AND tp.golden_record_id = $2::uuid
+              )
+        """
+        client_result = await query(client_sql, [id, user.golden_record_id])
+        return client_result.rows[0] if client_result.rows else None
+
+    cross_tenant = is_cross_tenant(user)
+
+    if cross_tenant:
+        detail_sql = f"""
+            {SELECT_TRANSFER_COLUMNS}
+            FROM transfers t
+            WHERE t.id = $1
+        """
+        detail_params = [id]
+    else:
+        detail_sql = f"""
+            {SELECT_TRANSFER_COLUMNS}
+            FROM transfers t
+            WHERE t.id = $1 AND t.accountable_institution_id = $2
+        """
+        detail_params = [id, user.accountable_institution_id]
+
+    detail_result = await query(detail_sql, detail_params)
+    return detail_result.rows[0] if detail_result.rows else None
 
 
 def _parse_pagination_params(request: Request):
@@ -116,8 +184,51 @@ async def list_transfers(
     }
 
 
-def _is_valid_uuid(value: str) -> bool:
-    return bool(re.match(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", value, re.IGNORECASE))
+@router.get("/{id}/parties")
+async def get_transfer_parties(
+    id: str,
+    user: CurrentUser = Depends(require_jwt),
+):
+    """List parties for a transfer, scoped to the authorised tenant."""
+
+    # Staff must hold the documented transfers:read ability (handover §4.5).
+    # Role 4 (Client) is not in the canonical transfers:read assignment; client
+    # access is governed by the GR party rule implemented in _authorize_transfer.
+    if not user.is_client and not user.has_ability("transfers:read"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    transfer = await _authorize_transfer(user, id)
+    if not transfer:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    cross_tenant = is_cross_tenant(user)
+
+    # Tenant-defence in depth: ordinary staff only see parties for their AI.
+    # Cross-tenant staff see all parties for the already-authorised transfer.
+    # Clients see all parties for the transfer they have a Golden Record stake in.
+    if cross_tenant:
+        parties_sql = """
+            SELECT id, transfer_id, golden_record_id, entity_type, role,
+                   accountable_institution_id, cached_name, cached_id_number, cached_email, synced_at
+            FROM transfer_parties
+            WHERE transfer_id = $1
+            ORDER BY cached_name
+        """
+        parties_params = [id]
+    else:
+        parties_sql = """
+            SELECT id, transfer_id, golden_record_id, entity_type, role,
+                   accountable_institution_id, cached_name, cached_id_number, cached_email, synced_at
+            FROM transfer_parties
+            WHERE transfer_id = $1 AND accountable_institution_id = $2
+            ORDER BY cached_name
+        """
+        parties_params = [id, user.accountable_institution_id]
+
+    parties_result = await query(parties_sql, parties_params)
+    parties = [_map_transfer_party(row) for row in parties_result.rows]
+
+    return {"message": "OK", "data": {"parties": parties}}
 
 
 @router.get("/{id}")
@@ -127,58 +238,14 @@ async def get_transfer(
 ):
     """Retrieve a single transfer by ID, scoped to the authorised tenant."""
 
-    if not _is_valid_uuid(id):
-        raise HTTPException(status_code=404, detail="Not found")
-
-    if user.is_client:
-        if not user.golden_record_id:
-            raise HTTPException(status_code=404, detail="Not found")
-
-        client_sql = """
-            SELECT t.id, t.transfer_id, t.property_address, t.purchase_price, t.status,
-                   t.current_step, t.total_steps, t.progress, t.created_at, t.updated_at
-            FROM transfers t
-            WHERE t.id = $1
-              AND EXISTS (
-                SELECT 1 FROM transfer_parties tp
-                WHERE tp.transfer_id = t.id AND tp.golden_record_id = $2::uuid
-              )
-        """
-        client_result = await query(client_sql, [id, user.golden_record_id])
-
-        if not client_result.rows:
-            raise HTTPException(status_code=404, detail="Not found")
-
-        return {"message": "OK", "data": _map_transfer(client_result.rows[0])}
-
     # Staff must hold the documented transfers:read ability (handover §4.5).
     # Role 4 (Client) is not in the canonical transfers:read assignment; client
-    # access is governed by the GR party rule implemented above.
-    if not user.has_ability("transfers:read"):
+    # access is governed by the GR party rule implemented in _authorize_transfer.
+    if not user.is_client and not user.has_ability("transfers:read"):
         raise HTTPException(status_code=403, detail="Forbidden")
 
-    cross_tenant = is_cross_tenant(user)
-
-    if cross_tenant:
-        detail_sql = """
-            SELECT t.id, t.transfer_id, t.property_address, t.purchase_price, t.status,
-                   t.current_step, t.total_steps, t.progress, t.created_at, t.updated_at
-            FROM transfers t
-            WHERE t.id = $1
-        """
-        detail_params = [id]
-    else:
-        detail_sql = """
-            SELECT t.id, t.transfer_id, t.property_address, t.purchase_price, t.status,
-                   t.current_step, t.total_steps, t.progress, t.created_at, t.updated_at
-            FROM transfers t
-            WHERE t.id = $1 AND t.accountable_institution_id = $2
-        """
-        detail_params = [id, user.accountable_institution_id]
-
-    detail_result = await query(detail_sql, detail_params)
-
-    if not detail_result.rows:
+    transfer = await _authorize_transfer(user, id)
+    if not transfer:
         raise HTTPException(status_code=404, detail="Not found")
 
-    return {"message": "OK", "data": _map_transfer(detail_result.rows[0])}
+    return {"message": "OK", "data": _map_transfer(transfer)}

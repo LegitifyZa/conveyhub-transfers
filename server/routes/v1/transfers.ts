@@ -3,6 +3,7 @@ import { query } from '../../db'
 import { requireJwt } from '../../auth/requireJwt'
 import { asyncHandler } from '../../utils/asyncHandler'
 import { isCrossTenant } from '../../auth/policy'
+import { CurrentUser } from '../../auth/currentUser'
 
 const router = Router()
 
@@ -39,7 +40,60 @@ function mapTransferRow(row: any) {
   }
 }
 
+function mapTransferParty(row: any) {
+  return {
+    id: row.id,
+    transferId: row.transfer_id,
+    goldenRecordId: row.golden_record_id,
+    entityType: row.entity_type,
+    role: row.role,
+    accountableInstitutionId: row.accountable_institution_id,
+    cachedName: row.cached_name,
+    cachedIdNumber: row.cached_id_number,
+    cachedEmail: row.cached_email,
+    syncedAt: row.synced_at,
+  }
+}
+
 const isUuid = (value: string): boolean => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
+
+const SELECT_TRANSFER_COLUMNS = `
+  SELECT t.id, t.transfer_id, t.property_address, t.purchase_price, t.status,
+         t.current_step, t.total_steps, t.progress, t.created_at, t.updated_at
+`
+
+async function authorizeTransfer(user: CurrentUser, id: string): Promise<any | null> {
+  if (!isUuid(id)) {
+    return null
+  }
+
+  if (user.isClient) {
+    if (!user.golden_record_id) {
+      return null
+    }
+
+    const clientQuery = `${SELECT_TRANSFER_COLUMNS}
+      FROM transfers t
+      WHERE t.id = $1
+        AND EXISTS (
+          SELECT 1 FROM transfer_parties tp
+          WHERE tp.transfer_id = t.id AND tp.golden_record_id = $2::uuid
+        )
+    `
+    const clientResult = await query(clientQuery, [id, user.golden_record_id])
+    return clientResult.rows[0] || null
+  }
+
+  // Staff ability check is performed by the caller.
+  const crossTenant = isCrossTenant(user)
+  const detailQuery = crossTenant
+    ? `${SELECT_TRANSFER_COLUMNS} FROM transfers t WHERE t.id = $1`
+    : `${SELECT_TRANSFER_COLUMNS} FROM transfers t WHERE t.id = $1 AND t.accountable_institution_id = $2`
+
+  const detailParams = crossTenant ? [id] : [id, user.accountable_institution_id]
+  const detailResult = await query(detailQuery, detailParams)
+  return detailResult.rows[0] || null
+}
 
 router.get(
   '/',
@@ -109,79 +163,83 @@ router.get(
 )
 
 router.get(
+  '/:id/parties',
+  requireJwt,
+  asyncHandler(async (req: Request, res: Response) => {
+    const user = req.currentUser!
+    const { id } = req.params
+
+    // Staff must hold the documented transfers:read ability (handover §4.5).
+    // Role 4 (Client) is not in the canonical transfers:read assignment; client
+    // access is governed by the GR party rule implemented in authorizeTransfer.
+    if (!user.isClient && !user.hasAbility('transfers:read')) {
+      res.status(403).json({ success: false, error: 'Forbidden' })
+      return
+    }
+
+    const transfer = await authorizeTransfer(user, id)
+    if (!transfer) {
+      res.status(404).json({ success: false, error: 'Not found' })
+      return
+    }
+
+    const crossTenant = isCrossTenant(user)
+
+    // Tenant-defence in depth: ordinary staff only see parties for their AI.
+    // Cross-tenant staff see all parties for the already-authorised transfer.
+    // Clients see all parties for the transfer they have a Golden Record stake in.
+    const partiesQuery = crossTenant
+      ? `
+        SELECT id, transfer_id, golden_record_id, entity_type, role,
+               accountable_institution_id, cached_name, cached_id_number, cached_email, synced_at
+        FROM transfer_parties
+        WHERE transfer_id = $1
+        ORDER BY cached_name
+      `
+      : `
+        SELECT id, transfer_id, golden_record_id, entity_type, role,
+               accountable_institution_id, cached_name, cached_id_number, cached_email, synced_at
+        FROM transfer_parties
+        WHERE transfer_id = $1 AND accountable_institution_id = $2
+        ORDER BY cached_name
+      `
+
+    const partiesParams = crossTenant ? [id] : [id, user.accountable_institution_id]
+    const partiesResult = await query(partiesQuery, partiesParams)
+
+    res.json({
+      message: 'OK',
+      data: {
+        parties: partiesResult.rows.map(mapTransferParty),
+      },
+    })
+  })
+)
+
+router.get(
   '/:id',
   requireJwt,
   asyncHandler(async (req: Request, res: Response) => {
     const user = req.currentUser!
     const { id } = req.params
 
-    if (!isUuid(id)) {
-      res.status(404).json({ success: false, error: 'Not found' })
-      return
-    }
-
-    if (user.isClient) {
-      if (!user.golden_record_id) {
-        res.status(404).json({ success: false, error: 'Not found' })
-        return
-      }
-
-      const clientQuery = `
-        SELECT t.id, t.transfer_id, t.property_address, t.purchase_price, t.status,
-               t.current_step, t.total_steps, t.progress, t.created_at, t.updated_at
-        FROM transfers t
-        WHERE t.id = $1
-          AND EXISTS (
-            SELECT 1 FROM transfer_parties tp
-            WHERE tp.transfer_id = t.id AND tp.golden_record_id = $2::uuid
-          )
-      `
-      const clientResult = await query(clientQuery, [id, user.golden_record_id])
-
-      if (clientResult.rows.length === 0) {
-        res.status(404).json({ success: false, error: 'Not found' })
-        return
-      }
-
-      res.json({
-        message: 'OK',
-        data: mapTransferRow(clientResult.rows[0]),
-      })
-      return
-    }
-
     // Staff must hold the documented transfers:read ability (handover §4.5).
-    if (!user.hasAbility('transfers:read')) {
+    // Role 4 (Client) is not in the canonical transfers:read assignment; client
+    // access is governed by the GR party rule implemented in authorizeTransfer.
+    if (!user.isClient && !user.hasAbility('transfers:read')) {
       res.status(403).json({ success: false, error: 'Forbidden' })
       return
     }
 
-    const crossTenant = isCrossTenant(user)
-    const detailQuery = crossTenant
-      ? `
-        SELECT t.id, t.transfer_id, t.property_address, t.purchase_price, t.status,
-               t.current_step, t.total_steps, t.progress, t.created_at, t.updated_at
-        FROM transfers t
-        WHERE t.id = $1
-      `
-      : `
-        SELECT t.id, t.transfer_id, t.property_address, t.purchase_price, t.status,
-               t.current_step, t.total_steps, t.progress, t.created_at, t.updated_at
-        FROM transfers t
-        WHERE t.id = $1 AND t.accountable_institution_id = $2
-      `
-
-    const detailParams = crossTenant ? [id] : [id, user.accountable_institution_id]
-    const detailResult = await query(detailQuery, detailParams)
-
-    if (detailResult.rows.length === 0) {
+    const transfer = await authorizeTransfer(user, id)
+    if (!transfer) {
       res.status(404).json({ success: false, error: 'Not found' })
       return
     }
 
     res.json({
       message: 'OK',
-      data: mapTransferRow(detailResult.rows[0]),
+      data: mapTransferRow(transfer),
     })
   })
 )
