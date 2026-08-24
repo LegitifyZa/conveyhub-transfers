@@ -67,6 +67,11 @@ def _build_pool_kwargs(settings: Settings) -> dict:
     if schema != "public":
         kwargs["server_settings"]["search_path"] = f'"{schema}", public'
 
+        async def _set_search_path(conn):
+            await conn.execute(f'SET search_path = "{schema}", public')
+
+        kwargs["setup"] = _set_search_path
+
     return kwargs
 
 
