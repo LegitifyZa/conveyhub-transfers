@@ -1,4 +1,7 @@
-from fastapi import APIRouter, Depends, Request
+import re
+import uuid
+
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from auth.current_user import CurrentUser
@@ -111,3 +114,71 @@ async def list_transfers(
             },
         },
     }
+
+
+def _is_valid_uuid(value: str) -> bool:
+    return bool(re.match(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", value, re.IGNORECASE))
+
+
+@router.get("/{id}")
+async def get_transfer(
+    id: str,
+    user: CurrentUser = Depends(require_jwt),
+):
+    """Retrieve a single transfer by ID, scoped to the authorised tenant."""
+
+    if not _is_valid_uuid(id):
+        raise HTTPException(status_code=404, detail="Not found")
+
+    if user.is_client:
+        if not user.golden_record_id:
+            raise HTTPException(status_code=404, detail="Not found")
+
+        client_sql = """
+            SELECT t.id, t.transfer_id, t.property_address, t.purchase_price, t.status,
+                   t.current_step, t.total_steps, t.progress, t.created_at, t.updated_at
+            FROM transfers t
+            WHERE t.id = $1
+              AND EXISTS (
+                SELECT 1 FROM transfer_parties tp
+                WHERE tp.transfer_id = t.id AND tp.golden_record_id = $2::uuid
+              )
+        """
+        client_result = await query(client_sql, [id, user.golden_record_id])
+
+        if not client_result.rows:
+            raise HTTPException(status_code=404, detail="Not found")
+
+        return {"message": "OK", "data": _map_transfer(client_result.rows[0])}
+
+    # Staff must hold the documented transfers:read ability (handover §4.5).
+    # Role 4 (Client) is not in the canonical transfers:read assignment; client
+    # access is governed by the GR party rule implemented above.
+    if not user.has_ability("transfers:read"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    cross_tenant = is_cross_tenant(user)
+
+    if cross_tenant:
+        detail_sql = """
+            SELECT t.id, t.transfer_id, t.property_address, t.purchase_price, t.status,
+                   t.current_step, t.total_steps, t.progress, t.created_at, t.updated_at
+            FROM transfers t
+            WHERE t.id = $1
+        """
+        detail_params = [id]
+    else:
+        detail_sql = """
+            SELECT t.id, t.transfer_id, t.property_address, t.purchase_price, t.status,
+                   t.current_step, t.total_steps, t.progress, t.created_at, t.updated_at
+            FROM transfers t
+            WHERE t.id = $1 AND t.accountable_institution_id = $2
+        """
+        detail_params = [id, user.accountable_institution_id]
+
+    detail_result = await query(detail_sql, detail_params)
+
+    if not detail_result.rows:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    return {"message": "OK", "data": _map_transfer(detail_result.rows[0])}

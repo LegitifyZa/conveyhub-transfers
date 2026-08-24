@@ -131,5 +131,169 @@ class V1TransfersAuthTests(unittest.TestCase):
         self.assertEqual(body["data"]["pagination"]["total"], 8)
 
 
+class V1TransferDetailTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        os.environ["POSTGRES_URL"] = TEST_POSTGRES_URL
+        os.environ["JWT_SECRET"] = TEST_JWT_SECRET
+        os.environ["DB_SCHEMA"] = "transfers"
+
+    def setUp(self):
+        self.client = TestClient(app).__enter__()
+
+    def tearDown(self):
+        self.client.__exit__(None, None, None)
+
+    def _first_transfer_id(self) -> str:
+        r = self.client.get("/api/v1/transfers/", headers=_auth_header(3, 5))
+        return r.json()["data"]["transfers"][0]["id"]
+
+    def test_detail_no_token_401(self):
+        r = self.client.get("/api/v1/transfers/5b308008-719b-4c1e-b8ff-e239ecc2a35e")
+        self.assertEqual(r.status_code, 401)
+
+    def test_detail_invalid_token_401(self):
+        r = self.client.get(
+            "/api/v1/transfers/5b308008-719b-4c1e-b8ff-e239ecc2a35e",
+            headers={"Authorization": "Bearer not-a-jwt"},
+        )
+        self.assertEqual(r.status_code, 401)
+
+    def test_detail_service_key_401(self):
+        r = self.client.get(
+            "/api/v1/transfers/5b308008-719b-4c1e-b8ff-e239ecc2a35e",
+            headers={"X-Service-Key": "any-service-key"},
+        )
+        self.assertEqual(r.status_code, 401)
+
+    def test_detail_staff_ai_5_ok(self):
+        transfer_id = self._first_transfer_id()
+        r = self.client.get(f"/api/v1/transfers/{transfer_id}", headers=_auth_header(3, 5))
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("message", r.json())
+        self.assertIn("data", r.json())
+        self.assertEqual(r.json()["data"]["id"], transfer_id)
+
+    def test_detail_staff_foreign_tenant_404(self):
+        transfer_id = self._first_transfer_id()
+        r = self.client.get(f"/api/v1/transfers/{transfer_id}", headers=_auth_header(3, 999))
+        self.assertEqual(r.status_code, 404)
+
+    def test_detail_nonexistent_uuid_404(self):
+        r = self.client.get(f"/api/v1/transfers/{uuid.uuid4()}", headers=_auth_header(3, 5))
+        self.assertEqual(r.status_code, 404)
+
+    def test_detail_malformed_id_404(self):
+        r = self.client.get("/api/v1/transfers/not-a-uuid", headers=_auth_header(3, 5))
+        self.assertEqual(r.status_code, 404)
+
+    def test_detail_role_1_ok(self):
+        transfer_id = self._first_transfer_id()
+        r = self.client.get(f"/api/v1/transfers/{transfer_id}", headers=_auth_header(1, 999))
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["data"]["id"], transfer_id)
+
+    def test_detail_role_6_ok(self):
+        transfer_id = self._first_transfer_id()
+        r = self.client.get(f"/api/v1/transfers/{transfer_id}", headers=_auth_header(6, 999))
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["data"]["id"], transfer_id)
+
+    def test_detail_missing_ability_403(self):
+        transfer_id = self._first_transfer_id()
+        r = self.client.get(
+            f"/api/v1/transfers/{transfer_id}",
+            headers=_auth_header(3, 5, abilities=["api"]),
+        )
+        self.assertEqual(r.status_code, 403)
+
+    def test_detail_client_no_golden_record_404(self):
+        transfer_id = self._first_transfer_id()
+        r = self.client.get(
+            f"/api/v1/transfers/{transfer_id}",
+            headers=_auth_header(4, 5, abilities=["api"], golden=None),
+        )
+        self.assertEqual(r.status_code, 404)
+
+    def test_detail_client_no_party_match_404(self):
+        transfer_id = self._first_transfer_id()
+        r = self.client.get(
+            f"/api/v1/transfers/{transfer_id}",
+            headers=_auth_header(4, 5, abilities=["api"], golden=str(uuid.uuid4())),
+        )
+        self.assertEqual(r.status_code, 404)
+
+    def test_detail_client_tenant_match_does_not_grant(self):
+        transfer_id = self._first_transfer_id()
+        r = self.client.get(
+            f"/api/v1/transfers/{transfer_id}",
+            headers=_auth_header(4, 5, abilities=["api"], golden=str(uuid.uuid4())),
+        )
+        self.assertEqual(r.status_code, 404)
+
+    def test_legacy_detail_unchanged(self):
+        transfer_id = self._first_transfer_id()
+        r = self.client.get(f"/api/transfers/{transfer_id}")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("success", r.json())
+        self.assertEqual(r.json()["data"]["id"], transfer_id)
+
+
+from config import load_settings
+from db import get_pool, query as db_query, with_transaction
+
+
+class ClientPartyPolicyTests(unittest.IsolatedAsyncioTestCase):
+    """Isolated transaction fixture verifying the client-party SQL EXISTS policy."""
+
+    @classmethod
+    def setUpClass(cls):
+        os.environ["POSTGRES_URL"] = TEST_POSTGRES_URL
+        os.environ["DB_SCHEMA"] = "transfers"
+
+    async def asyncSetUp(self):
+        await get_pool(load_settings())
+
+    async def asyncTearDown(self):
+        from db import close_pool
+        await close_pool()
+
+    async def test_client_party_sql_returns_only_matching_transfer(self):
+        async def _tx(conn):
+            transfer_row = await db_query("SELECT id FROM transfers LIMIT 1", connection=conn)
+            transfer_id = str(transfer_row.rows[0]["id"])
+            golden_record_id = str(uuid.uuid4())
+
+            await db_query(
+                """
+                INSERT INTO transfer_parties
+                (transfer_id, golden_record_id, entity_type, role, accountable_institution_id)
+                VALUES ($1, $2::uuid, $3, $4, $5)
+                """,
+                [transfer_id, golden_record_id, "person", "buyer", 5],
+                connection=conn,
+            )
+
+            client_sql = """
+                SELECT t.id, t.transfer_id
+                FROM transfers t
+                WHERE t.id = $1
+                  AND EXISTS (
+                    SELECT 1 FROM transfer_parties tp
+                    WHERE tp.transfer_id = t.id AND tp.golden_record_id = $2::uuid
+                  )
+            """
+
+            match = await db_query(client_sql, [transfer_id, golden_record_id], connection=conn)
+            non_match = await db_query(client_sql, [transfer_id, str(uuid.uuid4())], connection=conn)
+
+            return match.rows, non_match.rows
+
+        match_rows, non_match_rows = await with_transaction(_tx)
+
+        self.assertEqual(len(match_rows), 1)
+        self.assertEqual(len(non_match_rows), 0)
+
+
 if __name__ == "__main__":
     unittest.main()
