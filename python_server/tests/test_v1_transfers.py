@@ -507,6 +507,127 @@ class TransferPartiesPolicyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(client), 3)
 
 
+class V1TransferDocumentsTests(unittest.TestCase):
+    """HTTP tests for GET /api/v1/transfers/:id/documents."""
+
+    @classmethod
+    def setUpClass(cls):
+        os.environ["POSTGRES_URL"] = TEST_POSTGRES_URL
+        os.environ["JWT_SECRET"] = TEST_JWT_SECRET
+        os.environ["DB_SCHEMA"] = "transfers"
+
+    def setUp(self):
+        self.client = TestClient(app).__enter__()
+
+    def tearDown(self):
+        self.client.__exit__(None, None, None)
+
+    def _first_transfer_id(self):
+        r = self.client.get("/api/v1/transfers/", headers={"Authorization": f"Bearer {_token(3, 5)}"})
+        self.assertEqual(r.status_code, 200, r.text)
+        return r.json()["data"]["transfers"][0]["id"]
+
+    def test_documents_no_token_401(self):
+        r = self.client.get(f"/api/v1/transfers/{self._first_transfer_id()}/documents")
+        self.assertEqual(r.status_code, 401)
+
+    def test_documents_invalid_token_401(self):
+        r = self.client.get(
+            f"/api/v1/transfers/{self._first_transfer_id()}/documents",
+            headers={"Authorization": "Bearer not-a-token"},
+        )
+        self.assertEqual(r.status_code, 401)
+
+    def test_documents_service_key_401(self):
+        r = self.client.get(
+            f"/api/v1/transfers/{self._first_transfer_id()}/documents",
+            headers={"X-Service-Key": "some-key"},
+        )
+        self.assertEqual(r.status_code, 401)
+
+    def test_documents_staff_ai_5_200(self):
+        transfer_id = self._first_transfer_id()
+        r = self.client.get(
+            f"/api/v1/transfers/{transfer_id}/documents",
+            headers={"Authorization": f"Bearer {_token(3, 5)}"},
+        )
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(body["message"], "OK")
+        self.assertIn("documents", body["data"])
+        self.assertIsInstance(body["data"]["documents"], list)
+        for doc in body["data"]["documents"]:
+            self.assertIn("id", doc)
+            self.assertIn("status", doc)
+            self.assertNotIn("filePath", doc)
+            self.assertNotIn("uploadedBy", doc)
+
+    def test_documents_staff_foreign_tenant_404(self):
+        transfer_id = self._first_transfer_id()
+        r = self.client.get(
+            f"/api/v1/transfers/{transfer_id}/documents",
+            headers={"Authorization": f"Bearer {_token(3, 99)}"},
+        )
+        self.assertEqual(r.status_code, 404)
+
+    def test_documents_nonexistent_uuid_404(self):
+        r = self.client.get(
+            f"/api/v1/transfers/{uuid.uuid4()}/documents",
+            headers={"Authorization": f"Bearer {_token(3, 5)}"},
+        )
+        self.assertEqual(r.status_code, 404)
+
+    def test_documents_malformed_id_404(self):
+        r = self.client.get(
+            "/api/v1/transfers/not-a-uuid/documents",
+            headers={"Authorization": f"Bearer {_token(3, 5)}"},
+        )
+        self.assertEqual(r.status_code, 404)
+
+    def test_documents_role_1_200(self):
+        transfer_id = self._first_transfer_id()
+        r = self.client.get(
+            f"/api/v1/transfers/{transfer_id}/documents",
+            headers={"Authorization": f"Bearer {_token(1, 5)}"},
+        )
+        self.assertEqual(r.status_code, 200)
+
+    def test_documents_role_6_200(self):
+        transfer_id = self._first_transfer_id()
+        r = self.client.get(
+            f"/api/v1/transfers/{transfer_id}/documents",
+            headers={"Authorization": f"Bearer {_token(6, 5)}"},
+        )
+        self.assertEqual(r.status_code, 200)
+
+    def test_documents_missing_ability_403(self):
+        transfer_id = self._first_transfer_id()
+        r = self.client.get(
+            f"/api/v1/transfers/{transfer_id}/documents",
+            headers={"Authorization": f"Bearer {_token(3, 5, abilities=['api'])}"},
+        )
+        self.assertEqual(r.status_code, 403)
+
+    def test_documents_client_404(self):
+        transfer_id = self._first_transfer_id()
+        r = self.client.get(
+            f"/api/v1/transfers/{transfer_id}/documents",
+            headers={"Authorization": f"Bearer {_token(4, 5, golden=str(uuid.uuid4()))}"},
+        )
+        self.assertEqual(r.status_code, 404)
+
+    def test_legacy_documents_embedded_unchanged(self):
+        transfer_id = self._first_transfer_id()
+        r = self.client.get(
+            f"/api/transfers/{transfer_id}",
+            headers={"Authorization": f"Bearer {_token(3, 5)}"},
+        )
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertTrue(body["success"])
+        self.assertIn("documents", body["data"])
+
+
 class V1TransferFinancialsTests(unittest.TestCase):
     """HTTP tests for GET /api/v1/transfers/:id/financials."""
 
@@ -623,6 +744,62 @@ class V1TransferFinancialsTests(unittest.TestCase):
         body = r.json()
         self.assertTrue(body["success"])
         self.assertIn("financials", body["data"])
+
+
+class TransferDocumentsPolicyTests(unittest.IsolatedAsyncioTestCase):
+    """Isolated transaction fixture verifying no-documents returns empty list."""
+
+    @classmethod
+    def setUpClass(cls):
+        os.environ["POSTGRES_URL"] = TEST_POSTGRES_URL
+        os.environ["DB_SCHEMA"] = "transfers"
+
+    async def asyncSetUp(self):
+        await get_pool(load_settings())
+
+    async def asyncTearDown(self):
+        from db import close_pool
+        await close_pool()
+
+    async def test_authorised_transfer_with_no_documents_returns_empty_list(self):
+        import python_server.routers.v1.transfers as v1_transfers
+
+        async def _tx(conn):
+            transfer_id = str(uuid.uuid4())
+            await db_query(
+                """
+                INSERT INTO transfers (id, transfer_id, property_address, purchase_price, accountable_institution_id)
+                VALUES ($1::uuid, $2, $3, $4, $5)
+                """,
+                [transfer_id, "TP-DOC-TEST", "Document test address", 100000, 5],
+                connection=conn,
+            )
+
+            original_query = v1_transfers.query
+
+            async def patched_query(sql, params, **kwargs):
+                return await db_query(sql, params, connection=conn)
+
+            try:
+                v1_transfers.query = patched_query
+                user = CurrentUser(
+                    user_id=1,
+                    golden_record_id=None,
+                    abilities=["api", "transfers:read"],
+                    accountable_institution_id=5,
+                    user_roles_id=3,
+                    tenant_id=None,
+                )
+                result = await v1_transfers.get_transfer_documents(transfer_id, user)
+            finally:
+                v1_transfers.query = original_query
+
+            return result
+
+        result = await _with_rollback(_tx)
+
+        self.assertEqual(result["message"], "OK")
+        self.assertEqual(result["data"]["documents"], [])
 
 
 class TransferFinancialsPolicyTests(unittest.IsolatedAsyncioTestCase):

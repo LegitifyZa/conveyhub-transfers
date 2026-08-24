@@ -72,6 +72,23 @@ function mapClientTransferParty(row: any) {
   }
 }
 
+function mapTransferDocument(row: any) {
+  return {
+    id: row.id,
+    transferId: row.transfer_id,
+    catalogueDocumentId: row.catalogue_document_id,
+    name: row.name,
+    status: row.status,
+    notes: row.notes,
+    fileSize: row.file_size,
+    fileType: row.file_type,
+    originalFileName: row.original_file_name,
+    uploadedAt: row.uploaded_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }
+}
+
 function mapTransferFinancials(row: any) {
   if (!row) {
     return null
@@ -282,6 +299,49 @@ router.get(
       message: 'OK',
       data: {
         parties: partiesResult.rows.map(mapTransferParty),
+      },
+    })
+  })
+)
+
+router.get(
+  '/:id/documents',
+  requireJwt,
+  asyncHandler(async (req: Request, res: Response) => {
+    const user = req.currentUser!
+    const { id } = req.params
+
+    // Client document visibility is not documented. Fail closed.
+    if (user.isClient) {
+      res.status(404).json({ success: false, error: 'Not found' })
+      return
+    }
+
+    // No separate documents:read ability is documented; reuse transfers:read.
+    if (!user.hasAbility('transfers:read')) {
+      res.status(403).json({ success: false, error: 'Forbidden' })
+      return
+    }
+
+    const transfer = await authorizeTransfer(user, id)
+    if (!transfer) {
+      res.status(404).json({ success: false, error: 'Not found' })
+      return
+    }
+
+    const documentsQuery = `
+      SELECT id, transfer_id, catalogue_document_id, name, status, notes,
+             file_size, file_type, original_file_name, uploaded_at, created_at, updated_at
+      FROM transfer_documents
+      WHERE transfer_id = $1
+      ORDER BY created_at
+    `
+    const documentsResult = await query(documentsQuery, [id])
+
+    res.json({
+      message: 'OK',
+      data: {
+        documents: documentsResult.rows.map(mapTransferDocument),
       },
     })
   })

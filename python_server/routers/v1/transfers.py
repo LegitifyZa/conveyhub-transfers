@@ -72,6 +72,23 @@ def _to_number(value):
     return float(value) if value is not None else None
 
 
+def _map_transfer_document(row: dict) -> dict:
+    return {
+        "id": row["id"],
+        "transferId": row["transfer_id"],
+        "catalogueDocumentId": row["catalogue_document_id"],
+        "name": row["name"],
+        "status": row["status"],
+        "notes": row["notes"],
+        "fileSize": row["file_size"],
+        "fileType": row["file_type"],
+        "originalFileName": row["original_file_name"],
+        "uploadedAt": row["uploaded_at"],
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+    }
+
+
 def _map_transfer_financials(row: dict) -> dict:
     return {
         "transferId": row["transfer_id"],
@@ -297,6 +314,41 @@ async def get_transfer_parties(
     parties = [_map_transfer_party(row) for row in parties_result.rows]
 
     return {"message": "OK", "data": {"parties": parties}}
+
+
+@router.get("/{id}/documents")
+async def get_transfer_documents(
+    id: str,
+    user: CurrentUser = Depends(require_jwt),
+):
+    """List document metadata for a transfer, scoped to the authorised tenant."""
+
+    # Client document visibility is not documented. Fail closed.
+    if user.is_client:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    # No separate documents:read ability is documented; reuse transfers:read.
+    if not user.has_ability("transfers:read"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    transfer = await _authorize_transfer(user, id)
+    if not transfer:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    # Metadata-only query. Avoid file_path and uploaded_by.
+    documents_result = await query(
+        """
+        SELECT id, transfer_id, catalogue_document_id, name, status, notes,
+               file_size, file_type, original_file_name, uploaded_at, created_at, updated_at
+        FROM transfer_documents
+        WHERE transfer_id = $1
+        ORDER BY created_at
+        """,
+        [id],
+    )
+    documents = [_map_transfer_document(row) for row in documents_result.rows]
+
+    return {"message": "OK", "data": {"documents": documents}}
 
 
 @router.get("/{id}/financials")
