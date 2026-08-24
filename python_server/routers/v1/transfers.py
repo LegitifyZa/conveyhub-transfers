@@ -68,6 +68,38 @@ def _map_client_transfer_party(row: dict) -> dict:
     }
 
 
+def _to_number(value):
+    return float(value) if value is not None else None
+
+
+def _map_transfer_financials(row: dict) -> dict:
+    return {
+        "transferId": row["transfer_id"],
+        "purchasePrice": _to_number(row["purchase_price"]),
+        "depositAmount": _to_number(row["deposit_amount"]),
+        "loanAmount": _to_number(row["loan_amount"]),
+        "interestRate": _to_number(row["interest_rate"]),
+        "loanTerm": _to_number(row["loan_term_years"]),
+        "transferDuty": _to_number(row["transfer_duty"]),
+        "conveyancingFees": _to_number(row["conveyancing_fees"]),
+        "deedsOfficeFees": _to_number(row["deeds_office_fees"]),
+        "vat": _to_number(row["vat"]),
+        "postAndPetties": _to_number(row["post_and_petties"]),
+        "clearanceCertificateFee": _to_number(row["clearance_certificate_fee"]),
+        "ratesClearanceAmount": _to_number(row["rates_clearance_amount"]),
+        "totalCosts": _to_number(row["total_costs"]),
+        "netProceeds": _to_number(row["net_proceeds"]),
+        "effectiveRate": _to_number(row["effective_rate"]),
+        "loanToValueRatio": _to_number(row["loan_to_value_ratio"]),
+        "currencyCode": row["currency_code"],
+        "calculationVersion": row["calculation_version"],
+        "calculationDetails": row["calculation_details"],
+        "calculatedAt": row["calculated_at"],
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+    }
+
+
 def _is_valid_uuid(value: str) -> bool:
     return bool(re.match(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", value, re.IGNORECASE))
 
@@ -265,6 +297,40 @@ async def get_transfer_parties(
     parties = [_map_transfer_party(row) for row in parties_result.rows]
 
     return {"message": "OK", "data": {"parties": parties}}
+
+
+@router.get("/{id}/financials")
+async def get_transfer_financials(
+    id: str,
+    user: CurrentUser = Depends(require_jwt),
+):
+    """Retrieve financials for a transfer, scoped to the authorised tenant."""
+
+    # Client financial visibility is not documented. Fail closed.
+    if user.is_client:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    # No separate financials:read ability is documented; reuse transfers:read.
+    if not user.has_ability("transfers:read"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    transfer = await _authorize_transfer(user, id)
+    if not transfer:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    # Anchor the query to the authorised transfer. Do not add
+    # accountable_institution_id to transfer_financials in this step.
+    financials_result = await query(
+        "SELECT * FROM transfer_financials WHERE transfer_id = $1",
+        [id],
+    )
+    financials = (
+        _map_transfer_financials(financials_result.rows[0])
+        if financials_result.rows
+        else None
+    )
+
+    return {"message": "OK", "data": {"financials": financials}}
 
 
 @router.get("/{id}")

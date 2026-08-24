@@ -72,6 +72,37 @@ function mapClientTransferParty(row: any) {
   }
 }
 
+function mapTransferFinancials(row: any) {
+  if (!row) {
+    return null
+  }
+  return {
+    transferId: row.transfer_id,
+    purchasePrice: row.purchase_price != null ? Number(row.purchase_price) : undefined,
+    depositAmount: row.deposit_amount != null ? Number(row.deposit_amount) : undefined,
+    loanAmount: row.loan_amount != null ? Number(row.loan_amount) : undefined,
+    interestRate: row.interest_rate != null ? Number(row.interest_rate) : undefined,
+    loanTerm: row.loan_term_years != null ? Number(row.loan_term_years) : undefined,
+    transferDuty: row.transfer_duty != null ? Number(row.transfer_duty) : undefined,
+    conveyancingFees: row.conveyancing_fees != null ? Number(row.conveyancing_fees) : undefined,
+    deedsOfficeFees: row.deeds_office_fees != null ? Number(row.deeds_office_fees) : undefined,
+    vat: row.vat != null ? Number(row.vat) : undefined,
+    postAndPetties: row.post_and_petties != null ? Number(row.post_and_petties) : undefined,
+    clearanceCertificateFee: row.clearance_certificate_fee != null ? Number(row.clearance_certificate_fee) : undefined,
+    ratesClearanceAmount: row.rates_clearance_amount != null ? Number(row.rates_clearance_amount) : undefined,
+    totalCosts: row.total_costs != null ? Number(row.total_costs) : undefined,
+    netProceeds: row.net_proceeds != null ? Number(row.net_proceeds) : undefined,
+    effectiveRate: row.effective_rate != null ? Number(row.effective_rate) : undefined,
+    loanToValueRatio: row.loan_to_value_ratio != null ? Number(row.loan_to_value_ratio) : undefined,
+    currencyCode: row.currency_code,
+    calculationVersion: row.calculation_version,
+    calculationDetails: row.calculation_details,
+    calculatedAt: row.calculated_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }
+}
+
 const isUuid = (value: string): boolean => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
 
 const SELECT_TRANSFER_COLUMNS = `
@@ -251,6 +282,50 @@ router.get(
       message: 'OK',
       data: {
         parties: partiesResult.rows.map(mapTransferParty),
+      },
+    })
+  })
+)
+
+router.get(
+  '/:id/financials',
+  requireJwt,
+  asyncHandler(async (req: Request, res: Response) => {
+    const user = req.currentUser!
+    const { id } = req.params
+
+    // Client financial visibility is not documented. Fail closed.
+    if (user.isClient) {
+      res.status(404).json({ success: false, error: 'Not found' })
+      return
+    }
+
+    // No separate financials:read ability is documented; reuse transfers:read.
+    if (!user.hasAbility('transfers:read')) {
+      res.status(403).json({ success: false, error: 'Forbidden' })
+      return
+    }
+
+    const transfer = await authorizeTransfer(user, id)
+    if (!transfer) {
+      res.status(404).json({ success: false, error: 'Not found' })
+      return
+    }
+
+    const financialsQuery = `
+      SELECT tf.*
+      FROM transfer_financials tf
+      WHERE tf.transfer_id = $1
+    `
+    const financialsResult = await query(financialsQuery, [id])
+    const financials = financialsResult.rows[0]
+      ? mapTransferFinancials(financialsResult.rows[0])
+      : null
+
+    res.json({
+      message: 'OK',
+      data: {
+        financials,
       },
     })
   })

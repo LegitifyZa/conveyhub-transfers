@@ -5,10 +5,12 @@ import unittest
 import uuid
 
 import jwt as pyjwt
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from auth.current_user import CurrentUser
 from main import app
 
 
@@ -503,6 +505,217 @@ class TransferPartiesPolicyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(staff), 2)
         self.assertTrue(all(row["accountable_institution_id"] == 5 for row in staff))
         self.assertEqual(len(client), 3)
+
+
+class V1TransferFinancialsTests(unittest.TestCase):
+    """HTTP tests for GET /api/v1/transfers/:id/financials."""
+
+    @classmethod
+    def setUpClass(cls):
+        os.environ["POSTGRES_URL"] = TEST_POSTGRES_URL
+        os.environ["JWT_SECRET"] = TEST_JWT_SECRET
+        os.environ["DB_SCHEMA"] = "transfers"
+
+    def setUp(self):
+        self.client = TestClient(app).__enter__()
+
+    def tearDown(self):
+        self.client.__exit__(None, None, None)
+
+    def _first_transfer_id(self):
+        r = self.client.get("/api/v1/transfers/", headers={"Authorization": f"Bearer {_token(3, 5)}"})
+        self.assertEqual(r.status_code, 200, r.text)
+        return r.json()["data"]["transfers"][0]["id"]
+
+    def test_financials_no_token_401(self):
+        r = self.client.get(f"/api/v1/transfers/{self._first_transfer_id()}/financials")
+        self.assertEqual(r.status_code, 401)
+
+    def test_financials_invalid_token_401(self):
+        r = self.client.get(
+            f"/api/v1/transfers/{self._first_transfer_id()}/financials",
+            headers={"Authorization": "Bearer not-a-token"},
+        )
+        self.assertEqual(r.status_code, 401)
+
+    def test_financials_service_key_401(self):
+        r = self.client.get(
+            f"/api/v1/transfers/{self._first_transfer_id()}/financials",
+            headers={"X-Service-Key": "some-key"},
+        )
+        self.assertEqual(r.status_code, 401)
+
+    def test_financials_staff_ai_5_200(self):
+        transfer_id = self._first_transfer_id()
+        r = self.client.get(
+            f"/api/v1/transfers/{transfer_id}/financials",
+            headers={"Authorization": f"Bearer {_token(3, 5)}"},
+        )
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(body["message"], "OK")
+        self.assertIn("financials", body["data"])
+        self.assertEqual(body["data"]["financials"]["transferId"], transfer_id)
+        self.assertIn("purchasePrice", body["data"]["financials"])
+        self.assertIn("currencyCode", body["data"]["financials"])
+
+    def test_financials_staff_foreign_tenant_404(self):
+        transfer_id = self._first_transfer_id()
+        r = self.client.get(
+            f"/api/v1/transfers/{transfer_id}/financials",
+            headers={"Authorization": f"Bearer {_token(3, 99)}"},
+        )
+        self.assertEqual(r.status_code, 404)
+
+    def test_financials_nonexistent_uuid_404(self):
+        r = self.client.get(
+            f"/api/v1/transfers/{uuid.uuid4()}/financials",
+            headers={"Authorization": f"Bearer {_token(3, 5)}"},
+        )
+        self.assertEqual(r.status_code, 404)
+
+    def test_financials_malformed_id_404(self):
+        r = self.client.get(
+            "/api/v1/transfers/not-a-uuid/financials",
+            headers={"Authorization": f"Bearer {_token(3, 5)}"},
+        )
+        self.assertEqual(r.status_code, 404)
+
+    def test_financials_role_1_200(self):
+        transfer_id = self._first_transfer_id()
+        r = self.client.get(
+            f"/api/v1/transfers/{transfer_id}/financials",
+            headers={"Authorization": f"Bearer {_token(1, 5)}"},
+        )
+        self.assertEqual(r.status_code, 200)
+
+    def test_financials_role_6_200(self):
+        transfer_id = self._first_transfer_id()
+        r = self.client.get(
+            f"/api/v1/transfers/{transfer_id}/financials",
+            headers={"Authorization": f"Bearer {_token(6, 5)}"},
+        )
+        self.assertEqual(r.status_code, 200)
+
+    def test_financials_missing_ability_403(self):
+        transfer_id = self._first_transfer_id()
+        r = self.client.get(
+            f"/api/v1/transfers/{transfer_id}/financials",
+            headers={"Authorization": f"Bearer {_token(3, 5, abilities=['api'])}"},
+        )
+        self.assertEqual(r.status_code, 403)
+
+    def test_financials_client_404(self):
+        transfer_id = self._first_transfer_id()
+        r = self.client.get(
+            f"/api/v1/transfers/{transfer_id}/financials",
+            headers={"Authorization": f"Bearer {_token(4, 5, golden=str(uuid.uuid4()))}"},
+        )
+        self.assertEqual(r.status_code, 404)
+
+    def test_legacy_financials_embedded_unchanged(self):
+        transfer_id = self._first_transfer_id()
+        r = self.client.get(
+            f"/api/transfers/{transfer_id}",
+            headers={"Authorization": f"Bearer {_token(3, 5)}"},
+        )
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertTrue(body["success"])
+        self.assertIn("financials", body["data"])
+
+
+class TransferFinancialsPolicyTests(unittest.IsolatedAsyncioTestCase):
+    """Isolated transaction fixture verifying authorised transfer with no financials."""
+
+    @classmethod
+    def setUpClass(cls):
+        os.environ["POSTGRES_URL"] = TEST_POSTGRES_URL
+        os.environ["DB_SCHEMA"] = "transfers"
+
+    async def asyncSetUp(self):
+        await get_pool(load_settings())
+
+    async def asyncTearDown(self):
+        from db import close_pool
+        await close_pool()
+
+    async def test_authorised_transfer_with_no_financials_returns_null(self):
+        import python_server.routers.v1.transfers as v1_transfers
+
+        async def _tx(conn):
+            transfer_id = str(uuid.uuid4())
+            await db_query(
+                """
+                INSERT INTO transfers (id, transfer_id, property_address, purchase_price, accountable_institution_id)
+                VALUES ($1::uuid, $2, $3, $4, $5)
+                """,
+                [transfer_id, "TP-FIN-TEST", "Financial test address", 100000, 5],
+                connection=conn,
+            )
+
+            original_query = v1_transfers.query
+
+            async def patched_query(sql, params, **kwargs):
+                return await db_query(sql, params, connection=conn)
+
+            try:
+                v1_transfers.query = patched_query
+                user = CurrentUser(
+                    user_id=1,
+                    golden_record_id=None,
+                    abilities=["api", "transfers:read"],
+                    accountable_institution_id=5,
+                    user_roles_id=3,
+                    tenant_id=None,
+                )
+                result = await v1_transfers.get_transfer_financials(transfer_id, user)
+            finally:
+                v1_transfers.query = original_query
+
+            return result
+
+        result = await _with_rollback(_tx)
+
+        self.assertEqual(result["message"], "OK")
+        self.assertEqual(result["data"]["financials"], None)
+
+    async def test_unauthorised_transfer_returns_404(self):
+        import python_server.routers.v1.transfers as v1_transfers
+
+        async def _tx(conn):
+            transfer_id = str(uuid.uuid4())
+            await db_query(
+                """
+                INSERT INTO transfers (id, transfer_id, property_address, purchase_price, accountable_institution_id)
+                VALUES ($1::uuid, $2, $3, $4, $5)
+                """,
+                [transfer_id, "TP-FIN-UNAUTH", "Unauth address", 100000, 5],
+                connection=conn,
+            )
+
+            original_query = v1_transfers.query
+
+            async def patched_query(sql, params, **kwargs):
+                return await db_query(sql, params, connection=conn)
+
+            try:
+                v1_transfers.query = patched_query
+                user = CurrentUser(
+                    user_id=1,
+                    golden_record_id=None,
+                    abilities=["api", "transfers:read"],
+                    accountable_institution_id=99,
+                    user_roles_id=3,
+                    tenant_id=None,
+                )
+                await v1_transfers.get_transfer_financials(transfer_id, user)
+            finally:
+                v1_transfers.query = original_query
+
+        with self.assertRaises(HTTPException) as ctx:
+            await _with_rollback(_tx)
+        self.assertEqual(ctx.exception.status_code, 404)
 
 
 class ClientPartiesPolicyTests(unittest.IsolatedAsyncioTestCase):
