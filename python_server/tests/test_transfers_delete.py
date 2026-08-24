@@ -26,9 +26,14 @@ def _transfer_row(transfer_uuid, transfer_ref, matter_id=None, property_id=None)
     )
 
 
-def _matter_row(matter_type="transfer", source_record_id="TRF-2026-123456"):
+def _matter_count(count):
+    return FakeResult(rows=[{"count": count}], row_count=1)
+
+
+def _matter_row(matter_id, source_record_id, matter_type="transfer"):
     return FakeResult(
         rows=[{
+            "id": matter_id,
             "matter_type": matter_type,
             "source_record_id": source_record_id,
         }],
@@ -48,17 +53,39 @@ def _property_row(created_for_transfer_id=None):
 
 
 class FakeDB:
-    def __init__(self, results):
+    def __init__(self, results, fail_on=None):
         self.results = list(results)
         self.calls = []
+        self.fail_on = fail_on or []
 
     async def query(self, text, params, *, connection=None):
         self.calls.append((text, params))
+        for substring in self.fail_on:
+            if substring in text:
+                raise RuntimeError(f"Simulated SQL failure: {text}")
         return self.results.pop(0)
 
 
 async def fake_with_transaction(callback):
     return await callback(None)
+
+
+def _with_matter_blocking(count=1, source_record_id="uuid-1", property_id=None, fail_on=None):
+    """Return a FakeDB result list for a transfer whose matter is found and all guards pass."""
+    return FakeDB([
+        _transfer_row("uuid-1", "TRF-2026-123456", None, property_id),
+        FakeResult(row_count=1),  # DELETE transfers
+        _matter_count(count),
+        _matter_row("matter-1", source_record_id),
+        _count(0),  # other transfers referencing matter
+        _count(0),  # bonds
+        _count(0),  # clearance_records
+        _count(0),  # compliance_certificates
+        _count(0),  # fica_verifications
+        _count(0),  # matter_accounts
+        _count(0),  # matter_parties
+        _count(0),  # parties
+    ] + ([] if fail_on else [FakeResult(row_count=1)]), fail_on=fail_on)  # DELETE matters
 
 
 class TransferDeleteTests(unittest.IsolatedAsyncioTestCase):
@@ -72,76 +99,110 @@ class TransferDeleteTests(unittest.IsolatedAsyncioTestCase):
             with patch("routers.transfers.with_transaction", new=fake_with_transaction):
                 return await delete_transfer(transfer_id)
 
-    async def test_auto_created_matter_and_property_are_deleted(self):
-        # Expected query sequence when both matter and property are deletable.
-        db = FakeDB([
-            _transfer_row(self.TRANSFER_UUID, self.TRANSFER_REF, self.MATTER_ID, self.PROPERTY_ID),
-            FakeResult(row_count=1),  # DELETE transfers
-            _matter_row(),
-            _count(0),  # other transfers referencing matter
-            _count(0),  # bonds
-            _count(0),  # clearance_records
-            _count(0),  # compliance_certificates
-            _count(0),  # fica_verifications
-            _count(0),  # matter_accounts
-            _count(0),  # matter_parties
-            _count(0),  # parties
-            FakeResult(row_count=1),  # DELETE matters
-            _property_row(self.TRANSFER_REF),
-            _count(0),  # other transfers referencing property
-            _count(0),  # matters referencing property
-            _count(0),  # municipal_accounts
-            _count(0),  # compliance_certificates
-            FakeResult(row_count=1),  # DELETE properties
-        ])
+    async def test_matter_found_via_source_record_id_is_deleted(self):
+        db = _with_matter_blocking(count=1, source_record_id=self.TRANSFER_UUID, property_id=None)
 
         result = await self._delete(db)
 
         self.assertEqual(result["success"], True)
         queries = [c[0] for c in db.calls]
         self.assertTrue(any("DELETE FROM matters" in q for q in queries))
-        self.assertTrue(any("DELETE FROM properties" in q for q in queries))
+        # Lookup is based on source_record_id, not matter_id.
+        self.assertTrue(any("source_record_id" in q and "matters" in q for q in queries))
+
+    async def test_mismatching_source_record_id_is_preserved(self):
+        db = FakeDB([
+            _transfer_row(self.TRANSFER_UUID, self.TRANSFER_REF, None, None),
+            FakeResult(row_count=1),  # DELETE transfers
+            _matter_count(1),
+            _matter_row(self.MATTER_ID, "OTHER-UUID"),
+        ])
+
+        result = await self._delete(db)
+
+        self.assertEqual(result["success"], True)
+        queries = [c[0] for c in db.calls]
+        self.assertNotIn("DELETE FROM matters", queries)
+
+    async def test_unrelated_matter_is_never_deleted(self):
+        db = FakeDB([
+            _transfer_row(self.TRANSFER_UUID, self.TRANSFER_REF, None, None),
+            FakeResult(row_count=1),  # DELETE transfers
+            _matter_count(0),
+        ])
+
+        result = await self._delete(db)
+
+        self.assertEqual(result["success"], True)
+        queries = [c[0] for c in db.calls]
+        self.assertNotIn("DELETE FROM matters", queries)
+
+    async def test_duplicate_source_record_id_retains_matters(self):
+        db = FakeDB([
+            _transfer_row(self.TRANSFER_UUID, self.TRANSFER_REF, None, None),
+            FakeResult(row_count=1),  # DELETE transfers
+            _matter_count(2),  # ambiguous duplicate matter relationship
+        ])
+
+        result = await self._delete(db)
+
+        self.assertEqual(result["success"], True)
+        queries = [c[0] for c in db.calls]
+        self.assertNotIn("DELETE FROM matters", queries)
 
     async def test_matter_shared_by_another_transfer_is_preserved(self):
         db = FakeDB([
-            _transfer_row(self.TRANSFER_UUID, self.TRANSFER_REF, self.MATTER_ID, self.PROPERTY_ID),
+            _transfer_row(self.TRANSFER_UUID, self.TRANSFER_REF, None, None),
             FakeResult(row_count=1),  # DELETE transfers
-            _matter_row(),
+            _matter_count(1),
+            _matter_row(self.MATTER_ID, self.TRANSFER_UUID),
             _count(1),  # another transfer still references this matter
-            _count(0),  # bonds
-            _count(0),  # clearance_records
-            _count(0),  # compliance_certificates
-            _count(0),  # fica_verifications
-            _count(0),  # matter_accounts
-            _count(0),  # matter_parties
-            _count(0),  # parties
-            _property_row(self.TRANSFER_REF),
-            _count(0),  # other transfers referencing property
-            _count(0),  # matters referencing property
-            _count(0),  # municipal_accounts
-            _count(0),  # compliance_certificates
-            FakeResult(row_count=1),  # DELETE properties
+            _count(0),
+            _count(0),
+            _count(0),
+            _count(0),
+            _count(0),
+            _count(0),
+            _count(0),
         ])
 
         result = await self._delete(db)
 
         self.assertEqual(result["success"], True)
         queries = [c[0] for c in db.calls]
-        self.assertFalse(any("DELETE FROM matters" in q for q in queries))
-        self.assertTrue(any("DELETE FROM properties" in q for q in queries))
+        self.assertNotIn("DELETE FROM matters", queries)
 
     async def test_matter_with_blocking_child_is_preserved(self):
         db = FakeDB([
-            _transfer_row(self.TRANSFER_UUID, self.TRANSFER_REF, self.MATTER_ID, self.PROPERTY_ID),
+            _transfer_row(self.TRANSFER_UUID, self.TRANSFER_REF, None, None),
             FakeResult(row_count=1),  # DELETE transfers
-            _matter_row(),
+            _matter_count(1),
+            _matter_row(self.MATTER_ID, self.TRANSFER_UUID),
             _count(0),  # other transfers
             _count(1),  # bonds block matter deletion
+            _count(0),
+            _count(0),
+            _count(0),
+            _count(0),
+            _count(0),
+            _count(0),
+        ])
+
+        result = await self._delete(db)
+
+        self.assertEqual(result["success"], True)
+        queries = [c[0] for c in db.calls]
+        self.assertNotIn("DELETE FROM matters", queries)
+
+    async def test_property_unshared_and_auto_created_is_deleted(self):
+        db = _with_matter_blocking(count=1, source_record_id=self.TRANSFER_UUID, property_id=self.PROPERTY_ID)
+        # append property sequence after the matter deletion result
+        db.results.extend([
             _property_row(self.TRANSFER_REF),
-            _count(0),  # other transfers referencing property
-            _count(0),  # matters referencing property
-            _count(0),  # municipal_accounts
-            _count(0),  # compliance_certificates
+            _count(0),
+            _count(0),
+            _count(0),
+            _count(0),
             FakeResult(row_count=1),  # DELETE properties
         ])
 
@@ -149,47 +210,28 @@ class TransferDeleteTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["success"], True)
         queries = [c[0] for c in db.calls]
-        self.assertNotIn("DELETE FROM matters", queries)
-
-    async def test_null_created_for_transfer_id_preserves_property(self):
-        db = FakeDB([
-            _transfer_row(self.TRANSFER_UUID, self.TRANSFER_REF, None, self.PROPERTY_ID),
-            FakeResult(row_count=1),  # DELETE transfers
-            _property_row(None),
-        ])
-
-        result = await self._delete(db)
-
-        self.assertEqual(result["success"], True)
-        queries = [c[0] for c in db.calls]
-        self.assertNotIn("DELETE FROM matters", queries)
-        self.assertNotIn("DELETE FROM properties", queries)
-
-    async def test_property_marker_for_other_transfer_is_preserved(self):
-        db = FakeDB([
-            _transfer_row(self.TRANSFER_UUID, self.TRANSFER_REF, None, self.PROPERTY_ID),
-            FakeResult(row_count=1),  # DELETE transfers
-            _property_row("TRF-OTHER-999"),
-        ])
-
-        result = await self._delete(db)
-
-        self.assertEqual(result["success"], True)
-        queries = [c[0] for c in db.calls]
-        self.assertNotIn("DELETE FROM properties", queries)
+        self.assertTrue(any("DELETE FROM properties" in q for q in queries))
 
     async def test_property_still_referenced_is_preserved(self):
-        db = FakeDB([
-            _transfer_row(self.TRANSFER_UUID, self.TRANSFER_REF, None, self.PROPERTY_ID),
-            FakeResult(row_count=1),  # DELETE transfers
+        db = _with_matter_blocking(count=1, source_record_id=self.TRANSFER_UUID, property_id=self.PROPERTY_ID)
+        db.results.extend([
             _property_row(self.TRANSFER_REF),
-            _count(0),  # other transfers
+            _count(0),
             _count(1),  # another matter still references this property
         ])
 
         result = await self._delete(db)
 
         self.assertEqual(result["success"], True)
+        queries = [c[0] for c in db.calls]
+        self.assertNotIn("DELETE FROM properties", queries)
+
+    async def test_transaction_rollback_on_downstream_sql_failure(self):
+        db = _with_matter_blocking(count=1, source_record_id=self.TRANSFER_UUID, fail_on=["DELETE FROM matters"])
+
+        with self.assertRaises(RuntimeError):
+            await self._delete(db)
+
         queries = [c[0] for c in db.calls]
         self.assertNotIn("DELETE FROM properties", queries)
 

@@ -1140,7 +1140,7 @@ async def delete_transfer(id: str):
             )
 
         transfer_row = transfer_result.rows[0]
-        transfer_uuid = transfer_row["id"]
+        transfer_uuid = str(transfer_row["id"])
         transfer_ref = transfer_row["transfer_id"]
         matter_id = transfer_row["matter_id"]
         property_id = transfer_row["property_id"]
@@ -1151,23 +1151,36 @@ async def delete_transfer(id: str):
             connection=conn,
         )
 
-        if matter_id:
+        # Identify the matter by the actual relationship: matters.source_record_id = transfers.id.
+        # Do not rely solely on transfers.matter_id, which the legacy create path does not populate.
+        matter_count_result = await query(
+            "SELECT COUNT(*) as count FROM matters WHERE source_record_id = $1 AND matter_type = 'transfer'",
+            [transfer_uuid],
+            connection=conn,
+        )
+        matter_count = int(matter_count_result.rows[0]["count"])
+
+        # Only proceed with a single, unambiguous matter. Duplicate/corrupt source_record_ids
+        # fail safely by retaining the matter rows.
+        if matter_count == 1:
             matter_result = await query(
-                "SELECT matter_type, source_record_id FROM matters WHERE id = $1 FOR UPDATE",
-                [matter_id],
+                "SELECT id, matter_type, source_record_id FROM matters WHERE source_record_id = $1 AND matter_type = 'transfer' FOR UPDATE",
+                [transfer_uuid],
                 connection=conn,
             )
             if matter_result.rows:
                 matter_row = matter_result.rows[0]
                 can_delete_matter = (
                     matter_row["matter_type"] == "transfer"
-                    and matter_row["source_record_id"] == transfer_ref
+                    and matter_row["source_record_id"] == transfer_uuid
                 )
 
                 if can_delete_matter:
+                    linked_matter_id = matter_row["id"]
+
                     other_transfers = await query(
                         "SELECT COUNT(*) as count FROM transfers WHERE matter_id = $1 AND id != $2",
-                        [matter_id, transfer_uuid],
+                        [linked_matter_id, transfer_uuid],
                         connection=conn,
                     )
                     has_other_transfers = int(other_transfers.rows[0]["count"]) > 0
@@ -1184,7 +1197,7 @@ async def delete_transfer(id: str):
 
                     has_blocking_children = False
                     for text in blocking_queries:
-                        count_result = await query(text, [matter_id], connection=conn)
+                        count_result = await query(text, [linked_matter_id], connection=conn)
                         if int(count_result.rows[0]["count"]) > 0:
                             has_blocking_children = True
                             break
@@ -1192,7 +1205,7 @@ async def delete_transfer(id: str):
                     if not has_other_transfers and not has_blocking_children:
                         await query(
                             "DELETE FROM matters WHERE id = $1",
-                            [matter_id],
+                            [linked_matter_id],
                             connection=conn,
                         )
 

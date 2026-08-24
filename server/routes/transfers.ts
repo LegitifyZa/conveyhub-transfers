@@ -1097,21 +1097,33 @@ router.delete(
         [transferUuid]
       )
 
-      if (matterId) {
+      // Identify the matter by the actual relationship: matters.source_record_id = transfers.id.
+      // Do not rely solely on transfers.matter_id, which the legacy create path does not populate.
+      const matterCountResult = await client.query(
+        `SELECT COUNT(*) as count FROM matters WHERE source_record_id = $1 AND matter_type = 'transfer'`,
+        [transferUuid]
+      )
+      const matterCount = parseInt(matterCountResult.rows[0].count, 10)
+
+      // Only proceed with a single, unambiguous matter. Duplicate/corrupt source_record_ids
+      // fail safely by retaining the matter rows.
+      if (matterCount === 1) {
         const matterResult = await client.query(
-          `SELECT matter_type, source_record_id FROM matters WHERE id = $1 FOR UPDATE`,
-          [matterId]
+          `SELECT id, matter_type, source_record_id FROM matters WHERE source_record_id = $1 AND matter_type = 'transfer' FOR UPDATE`,
+          [transferUuid]
         )
         const matterRow = matterResult.rows[0]
         const canDeleteMatter =
           matterRow &&
           matterRow.matter_type === 'transfer' &&
-          matterRow.source_record_id === transferRef
+          matterRow.source_record_id === transferUuid
 
         if (canDeleteMatter) {
+          const linkedMatterId = matterRow.id as string
+
           const otherTransferCount = await client.query(
             `SELECT COUNT(*) as count FROM transfers WHERE matter_id = $1 AND id != $2`,
-            [matterId, transferUuid]
+            [linkedMatterId, transferUuid]
           )
           const hasOtherTransfers = parseInt(otherTransferCount.rows[0].count, 10) > 0
 
@@ -1127,7 +1139,7 @@ router.delete(
 
           let hasBlockingChildren = false
           for (const text of blockingQueries) {
-            const countResult = await client.query(text, [matterId])
+            const countResult = await client.query(text, [linkedMatterId])
             if (parseInt(countResult.rows[0].count, 10) > 0) {
               hasBlockingChildren = true
               break
@@ -1135,7 +1147,7 @@ router.delete(
           }
 
           if (!hasOtherTransfers && !hasBlockingChildren) {
-            await client.query(`DELETE FROM matters WHERE id = $1`, [matterId])
+            await client.query(`DELETE FROM matters WHERE id = $1`, [linkedMatterId])
           }
         }
       }
