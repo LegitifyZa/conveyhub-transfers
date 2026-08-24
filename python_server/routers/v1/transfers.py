@@ -51,6 +51,23 @@ def _map_transfer_party(row: dict) -> dict:
     }
 
 
+# Client party projection is intentionally conservative. The handover defines that
+# a client may only see matters where their golden_record_id is a party, but it
+# does not document which fields or other parties a client may view. Until that
+# contract is explicit, the client receives only their own row and a minimal
+# cache subset.
+def _map_client_transfer_party(row: dict) -> dict:
+    return {
+        "id": row["id"],
+        "transferId": row["transfer_id"],
+        "goldenRecordId": row["golden_record_id"],
+        "entityType": row["entity_type"],
+        "role": row["role"],
+        "cachedName": row["cached_name"],
+        "syncedAt": row["synced_at"],
+    }
+
+
 def _is_valid_uuid(value: str) -> bool:
     return bool(re.match(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", value, re.IGNORECASE))
 
@@ -201,11 +218,30 @@ async def get_transfer_parties(
     if not transfer:
         raise HTTPException(status_code=404, detail="Not found")
 
+    # Clients are restricted to their own transfer_parties row.
+    # The client projection is intentionally conservative: the handover does not
+    # define which party fields or other parties a client may view, so we return
+    # only the matching row and a minimal cache subset until that platform
+    # contract exists.
+    if user.is_client:
+        client_parties_sql = """
+            SELECT id, transfer_id, golden_record_id, entity_type, role, cached_name, synced_at
+            FROM transfer_parties
+            WHERE transfer_id = $1
+              AND golden_record_id = $2::uuid
+              AND accountable_institution_id = (
+                SELECT accountable_institution_id FROM transfers WHERE id = $1
+              )
+            ORDER BY cached_name
+        """
+        client_parties_result = await query(client_parties_sql, [id, user.golden_record_id])
+        parties = [_map_client_transfer_party(row) for row in client_parties_result.rows]
+        return {"message": "OK", "data": {"parties": parties}}
+
     cross_tenant = is_cross_tenant(user)
 
     # Tenant-defence in depth: ordinary staff only see parties for their AI.
     # Cross-tenant staff see all parties for the already-authorised transfer.
-    # Clients see all parties for the transfer they have a Golden Record stake in.
     if cross_tenant:
         parties_sql = """
             SELECT id, transfer_id, golden_record_id, entity_type, role,

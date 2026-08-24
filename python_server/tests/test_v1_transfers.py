@@ -505,5 +505,134 @@ class TransferPartiesPolicyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(client), 3)
 
 
+class ClientPartiesPolicyTests(unittest.IsolatedAsyncioTestCase):
+    """Isolated transaction fixture verifying the hardened client party projection."""
+
+    @classmethod
+    def setUpClass(cls):
+        os.environ["POSTGRES_URL"] = TEST_POSTGRES_URL
+        os.environ["DB_SCHEMA"] = "transfers"
+
+    async def asyncSetUp(self):
+        await get_pool(load_settings())
+
+    async def asyncTearDown(self):
+        from db import close_pool
+        await close_pool()
+
+    async def test_client_only_sees_own_row_and_minimal_fields(self):
+        async def _tx(conn):
+            transfer_id = str(uuid.uuid4())
+            client_golden = str(uuid.uuid4())
+            other_golden = str(uuid.uuid4())
+
+            await db_query(
+                """
+                INSERT INTO transfers (id, transfer_id, property_address, purchase_price, accountable_institution_id)
+                VALUES ($1::uuid, $2, $3, $4, $5)
+                """,
+                [transfer_id, "TP-CLIENT-TEST", "Client test address", 100000, 5],
+                connection=conn,
+            )
+
+            await db_query(
+                """
+                INSERT INTO transfer_parties
+                (transfer_id, golden_record_id, entity_type, role, accountable_institution_id,
+                 cached_name, cached_id_number, cached_email, synced_at)
+                VALUES ($1, $2::uuid, $3, $4, $5, $6, $7, $8, NOW())
+                """,
+                [transfer_id, client_golden, "person", "buyer", 5, "Client Person", "1234567890123", "client@example.com"],
+                connection=conn,
+            )
+
+            await db_query(
+                """
+                INSERT INTO transfer_parties
+                (transfer_id, golden_record_id, entity_type, role, accountable_institution_id,
+                 cached_name, cached_id_number, cached_email, synced_at)
+                VALUES ($1, $2::uuid, $3, $4, $5, $6, $7, $8, NOW())
+                """,
+                [transfer_id, other_golden, "person", "seller", 5, "Other Person", "9876543210987", "other@example.com"],
+                connection=conn,
+            )
+
+            client_sql = """
+                SELECT id, transfer_id, golden_record_id, entity_type, role, cached_name, synced_at
+                FROM transfer_parties
+                WHERE transfer_id = $1
+                  AND golden_record_id = $2::uuid
+                  AND accountable_institution_id = (
+                    SELECT accountable_institution_id FROM transfers WHERE id = $1
+                  )
+            """
+            client_rows = await db_query(client_sql, [transfer_id, client_golden], connection=conn)
+
+            # Simulate the route mapping
+            mapped = [
+                {
+                    "id": row["id"],
+                    "transferId": row["transfer_id"],
+                    "goldenRecordId": row["golden_record_id"],
+                    "entityType": row["entity_type"],
+                    "role": row["role"],
+                    "cachedName": row["cached_name"],
+                    "syncedAt": row["synced_at"],
+                }
+                for row in client_rows.rows
+            ]
+
+            return client_rows.rows, mapped
+
+        raw, mapped = await _with_rollback(_tx)
+
+        self.assertEqual(len(raw), 1)
+        self.assertEqual(len(mapped), 1)
+        self.assertEqual(str(mapped[0]["goldenRecordId"]), str(raw[0]["golden_record_id"]))
+        self.assertEqual(mapped[0]["cachedName"], "Client Person")
+        self.assertNotIn("cachedIdNumber", mapped[0])
+        self.assertNotIn("cachedEmail", mapped[0])
+        self.assertNotIn("accountableInstitutionId", mapped[0])
+
+    async def test_client_no_match_returns_empty(self):
+        async def _tx(conn):
+            transfer_id = str(uuid.uuid4())
+            client_golden = str(uuid.uuid4())
+
+            await db_query(
+                """
+                INSERT INTO transfers (id, transfer_id, property_address, purchase_price, accountable_institution_id)
+                VALUES ($1::uuid, $2, $3, $4, $5)
+                """,
+                [transfer_id, "TP-CLIENT-NO-MATCH", "No match address", 100000, 5],
+                connection=conn,
+            )
+
+            await db_query(
+                """
+                INSERT INTO transfer_parties
+                (transfer_id, golden_record_id, entity_type, role, accountable_institution_id)
+                VALUES ($1, $2::uuid, $3, $4, $5)
+                """,
+                [transfer_id, str(uuid.uuid4()), "person", "buyer", 5],
+                connection=conn,
+            )
+
+            client_sql = """
+                SELECT id, transfer_id, golden_record_id, entity_type, role, cached_name, synced_at
+                FROM transfer_parties
+                WHERE transfer_id = $1
+                  AND golden_record_id = $2::uuid
+                  AND accountable_institution_id = (
+                    SELECT accountable_institution_id FROM transfers WHERE id = $1
+                  )
+            """
+            client_rows = await db_query(client_sql, [transfer_id, client_golden], connection=conn)
+            return client_rows.rows
+
+        rows = await _with_rollback(_tx)
+        self.assertEqual(len(rows), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

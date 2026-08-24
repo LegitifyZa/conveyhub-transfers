@@ -55,6 +55,23 @@ function mapTransferParty(row: any) {
   }
 }
 
+// Client party projection is intentionally conservative. The handover defines
+// that a client may only see matters where their golden_record_id is a party
+// (server/auth/policy.ts), but it does not define what party fields or rows
+// a client may view. Until that contract is documented, the client receives
+// only their own transfer_parties row and a minimal set of cached display fields.
+function mapClientTransferParty(row: any) {
+  return {
+    id: row.id,
+    transferId: row.transfer_id,
+    goldenRecordId: row.golden_record_id,
+    entityType: row.entity_type,
+    role: row.role,
+    cachedName: row.cached_name,
+    syncedAt: row.synced_at,
+  }
+}
+
 const isUuid = (value: string): boolean => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
 
 const SELECT_TRANSFER_COLUMNS = `
@@ -185,9 +202,32 @@ router.get(
 
     const crossTenant = isCrossTenant(user)
 
+    // Clients are restricted to their own transfer_parties row.
+    // The client projection is intentionally conservative: the handover does not
+    // define which party fields/rows a client may view, so we return only the
+    // matching row and a minimal cache subset until that platform contract exists.
+    if (user.isClient) {
+      const clientPartiesQuery = `
+        SELECT id, transfer_id, golden_record_id, entity_type, role, cached_name, synced_at
+        FROM transfer_parties
+        WHERE transfer_id = $1
+          AND golden_record_id = $2::uuid
+          AND accountable_institution_id = (
+            SELECT accountable_institution_id FROM transfers WHERE id = $1
+          )
+      `
+      const clientPartiesResult = await query(clientPartiesQuery, [id, user.golden_record_id])
+      res.json({
+        message: 'OK',
+        data: {
+          parties: clientPartiesResult.rows.map(mapClientTransferParty),
+        },
+      })
+      return
+    }
+
     // Tenant-defence in depth: ordinary staff only see parties for their AI.
     // Cross-tenant staff see all parties for the already-authorised transfer.
-    // Clients see all parties for the transfer they have a Golden Record stake in.
     const partiesQuery = crossTenant
       ? `
         SELECT id, transfer_id, golden_record_id, entity_type, role,
