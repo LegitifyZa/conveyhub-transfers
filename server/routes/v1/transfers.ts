@@ -350,18 +350,35 @@ router.get(
 
     // The verified transfer-to-matter relationship is matters.source_record_id = transfers.id::text.
     // transfers.matter_id is not populated in the prototype dataset.
-    const milestonesQuery = `
-      SELECT mm.id, mm.matter_id, mm.definition_id, md.code,
-             md.name AS definition_name, mm.name, mm.status_label, mm.status,
-             mm.sequence_number, mm.due_date, mm.completed_date, mm.notes,
-             mm.created_at, mm.updated_at
-      FROM matter_milestones mm
-      JOIN matters m ON m.id = mm.matter_id
-      LEFT JOIN milestone_definitions md ON md.id = mm.definition_id
-      WHERE m.source_record_id = $1
-      ORDER BY mm.sequence_number
-    `
-    const milestonesResult = await query(milestonesQuery, [id])
+    // matters.source_record_id has no DB UNIQUE constraint, so ordinary staff
+    // also anchor to m.accountable_institution_id as defence in depth.
+    const crossTenant = user.isSuperAdmin || user.user_roles_id === 6
+    const milestonesQuery = crossTenant
+      ? `
+        SELECT mm.id, mm.matter_id, mm.definition_id, md.code,
+               md.name AS definition_name, mm.name, mm.status_label, mm.status,
+               mm.sequence_number, mm.due_date, mm.completed_date, mm.notes,
+               mm.created_at, mm.updated_at
+        FROM matter_milestones mm
+        JOIN matters m ON m.id = mm.matter_id
+        LEFT JOIN milestone_definitions md ON md.id = mm.definition_id
+        WHERE m.source_record_id = $1
+        ORDER BY mm.sequence_number
+      `
+      : `
+        SELECT mm.id, mm.matter_id, mm.definition_id, md.code,
+               md.name AS definition_name, mm.name, mm.status_label, mm.status,
+               mm.sequence_number, mm.due_date, mm.completed_date, mm.notes,
+               mm.created_at, mm.updated_at
+        FROM matter_milestones mm
+        JOIN matters m ON m.id = mm.matter_id
+        LEFT JOIN milestone_definitions md ON md.id = mm.definition_id
+        WHERE m.source_record_id = $1
+          AND m.accountable_institution_id = $2
+        ORDER BY mm.sequence_number
+      `
+    const milestonesParams = crossTenant ? [id] : [id, user.accountable_institution_id]
+    const milestonesResult = await query(milestonesQuery, milestonesParams)
 
     res.json({
       message: 'OK',

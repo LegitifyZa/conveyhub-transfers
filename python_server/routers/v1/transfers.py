@@ -356,8 +356,11 @@ async def get_transfer_milestones(
 
     # The verified transfer-to-matter relationship is matters.source_record_id = transfers.id::text.
     # transfers.matter_id is not populated in the prototype dataset.
-    milestones_result = await query(
-        """
+    # matters.source_record_id has no DB UNIQUE constraint, so ordinary staff
+    # also anchor to m.accountable_institution_id as defence in depth.
+    cross_tenant = user.is_super_admin or user.user_roles_id == 6
+    if cross_tenant:
+        milestones_sql = """
         SELECT mm.id, mm.matter_id, mm.definition_id, md.code,
                md.name AS definition_name, mm.name, mm.status_label, mm.status,
                mm.sequence_number, mm.due_date, mm.completed_date, mm.notes,
@@ -367,9 +370,24 @@ async def get_transfer_milestones(
         LEFT JOIN milestone_definitions md ON md.id = mm.definition_id
         WHERE m.source_record_id = $1
         ORDER BY mm.sequence_number
-        """,
-        [id],
-    )
+        """
+        milestones_params = [id]
+    else:
+        milestones_sql = """
+        SELECT mm.id, mm.matter_id, mm.definition_id, md.code,
+               md.name AS definition_name, mm.name, mm.status_label, mm.status,
+               mm.sequence_number, mm.due_date, mm.completed_date, mm.notes,
+               mm.created_at, mm.updated_at
+        FROM matter_milestones mm
+        JOIN matters m ON m.id = mm.matter_id
+        LEFT JOIN milestone_definitions md ON md.id = mm.definition_id
+        WHERE m.source_record_id = $1
+          AND m.accountable_institution_id = $2
+        ORDER BY mm.sequence_number
+        """
+        milestones_params = [id, user.accountable_institution_id]
+
+    milestones_result = await query(milestones_sql, milestones_params)
     milestones = [_map_milestone(row) for row in milestones_result.rows]
 
     return {"message": "OK", "data": {"milestones": milestones}}

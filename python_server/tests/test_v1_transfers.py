@@ -1000,6 +1000,77 @@ class TransferMilestonesPolicyTests(unittest.IsolatedAsyncioTestCase):
         result = await _with_rollback(_tx)
         self.assertEqual(result["data"]["milestones"], [])
 
+    async def test_corrupt_duplicate_source_record_id_still_isolated(self):
+        import python_server.routers.v1.transfers as v1_transfers
+
+        async def _tx(conn):
+            transfer_id = str(uuid.uuid4())
+            local_matter_id = str(uuid.uuid4())
+            foreign_matter_id = str(uuid.uuid4())
+
+            await db_query(
+                """
+                INSERT INTO transfers (id, transfer_id, property_address, purchase_price, accountable_institution_id)
+                VALUES ($1::uuid, $2, $3, $4, $5)
+                """,
+                [transfer_id, "TP-MS-DUP", "Duplicate source address", 100000, 5],
+                connection=conn,
+            )
+
+            # Authorised AI 5 matter
+            await db_query(
+                """
+                INSERT INTO matters (id, reference_number, matter_type, title, status, source_record_id, accountable_institution_id)
+                VALUES ($1::uuid, $2, $3, $4, $5, $6, $7)
+                """,
+                [local_matter_id, "REF-DUP-LOCAL", "transfer", "Local matter", "draft", transfer_id, 5],
+                connection=conn,
+            )
+
+            # Foreign AI 99 matter with the same source_record_id (simulated corruption)
+            await db_query(
+                """
+                INSERT INTO matters (id, reference_number, matter_type, title, status, source_record_id, accountable_institution_id)
+                VALUES ($1::uuid, $2, $3, $4, $5, $6, $7)
+                """,
+                [foreign_matter_id, "REF-DUP-FOR", "transfer", "Foreign matter", "draft", transfer_id, 99],
+                connection=conn,
+            )
+
+            # Milestone only on the foreign matter
+            await db_query(
+                """
+                INSERT INTO matter_milestones (matter_id, name, status, sequence_number)
+                VALUES ($1, $2, $3, $4)
+                """,
+                [foreign_matter_id, "Foreign milestone", "not_started", 1],
+                connection=conn,
+            )
+
+            original_query = v1_transfers.query
+
+            async def patched_query(sql, params, **kwargs):
+                return await db_query(sql, params, connection=conn)
+
+            try:
+                v1_transfers.query = patched_query
+                user = CurrentUser(
+                    user_id=1,
+                    golden_record_id=None,
+                    abilities=["api", "transfers:read"],
+                    accountable_institution_id=5,
+                    user_roles_id=3,
+                    tenant_id=None,
+                )
+                result = await v1_transfers.get_transfer_milestones(transfer_id, user)
+            finally:
+                v1_transfers.query = original_query
+
+            return result
+
+        result = await _with_rollback(_tx)
+        self.assertEqual(result["data"]["milestones"], [])
+
 
 class TransferDocumentsPolicyTests(unittest.IsolatedAsyncioTestCase):
     """Isolated transaction fixture verifying no-documents returns empty list."""
