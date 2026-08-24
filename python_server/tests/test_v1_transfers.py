@@ -507,6 +507,116 @@ class TransferPartiesPolicyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(client), 3)
 
 
+class V1TransferMilestonesTests(unittest.TestCase):
+    """HTTP tests for GET /api/v1/transfers/:id/milestones."""
+
+    @classmethod
+    def setUpClass(cls):
+        os.environ["POSTGRES_URL"] = TEST_POSTGRES_URL
+        os.environ["JWT_SECRET"] = TEST_JWT_SECRET
+        os.environ["DB_SCHEMA"] = "transfers"
+
+    def setUp(self):
+        self.client = TestClient(app).__enter__()
+
+    def tearDown(self):
+        self.client.__exit__(None, None, None)
+
+    def _first_transfer_id(self):
+        r = self.client.get("/api/v1/transfers/", headers={"Authorization": f"Bearer {_token(3, 5)}"})
+        self.assertEqual(r.status_code, 200, r.text)
+        return r.json()["data"]["transfers"][0]["id"]
+
+    def test_milestones_no_token_401(self):
+        r = self.client.get(f"/api/v1/transfers/{self._first_transfer_id()}/milestones")
+        self.assertEqual(r.status_code, 401)
+
+    def test_milestones_invalid_token_401(self):
+        r = self.client.get(
+            f"/api/v1/transfers/{self._first_transfer_id()}/milestones",
+            headers={"Authorization": "Bearer not-a-token"},
+        )
+        self.assertEqual(r.status_code, 401)
+
+    def test_milestones_service_key_401(self):
+        r = self.client.get(
+            f"/api/v1/transfers/{self._first_transfer_id()}/milestones",
+            headers={"X-Service-Key": "some-key"},
+        )
+        self.assertEqual(r.status_code, 401)
+
+    def test_milestones_staff_ai_5_200(self):
+        transfer_id = self._first_transfer_id()
+        r = self.client.get(
+            f"/api/v1/transfers/{transfer_id}/milestones",
+            headers={"Authorization": f"Bearer {_token(3, 5)}"},
+        )
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(body["message"], "OK")
+        self.assertIn("milestones", body["data"])
+        self.assertIsInstance(body["data"]["milestones"], list)
+        for ms in body["data"]["milestones"]:
+            self.assertIn("id", ms)
+            self.assertIn("status", ms)
+            self.assertNotIn("assignedTo", ms)
+            self.assertNotIn("filePath", ms)
+
+    def test_milestones_staff_foreign_tenant_404(self):
+        transfer_id = self._first_transfer_id()
+        r = self.client.get(
+            f"/api/v1/transfers/{transfer_id}/milestones",
+            headers={"Authorization": f"Bearer {_token(3, 99)}"},
+        )
+        self.assertEqual(r.status_code, 404)
+
+    def test_milestones_nonexistent_uuid_404(self):
+        r = self.client.get(
+            f"/api/v1/transfers/{uuid.uuid4()}/milestones",
+            headers={"Authorization": f"Bearer {_token(3, 5)}"},
+        )
+        self.assertEqual(r.status_code, 404)
+
+    def test_milestones_malformed_id_404(self):
+        r = self.client.get(
+            "/api/v1/transfers/not-a-uuid/milestones",
+            headers={"Authorization": f"Bearer {_token(3, 5)}"},
+        )
+        self.assertEqual(r.status_code, 404)
+
+    def test_milestones_role_1_200(self):
+        transfer_id = self._first_transfer_id()
+        r = self.client.get(
+            f"/api/v1/transfers/{transfer_id}/milestones",
+            headers={"Authorization": f"Bearer {_token(1, 5)}"},
+        )
+        self.assertEqual(r.status_code, 200)
+
+    def test_milestones_role_6_200(self):
+        transfer_id = self._first_transfer_id()
+        r = self.client.get(
+            f"/api/v1/transfers/{transfer_id}/milestones",
+            headers={"Authorization": f"Bearer {_token(6, 5)}"},
+        )
+        self.assertEqual(r.status_code, 200)
+
+    def test_milestones_missing_ability_403(self):
+        transfer_id = self._first_transfer_id()
+        r = self.client.get(
+            f"/api/v1/transfers/{transfer_id}/milestones",
+            headers={"Authorization": f"Bearer {_token(3, 5, abilities=['api'])}"},
+        )
+        self.assertEqual(r.status_code, 403)
+
+    def test_milestones_client_404(self):
+        transfer_id = self._first_transfer_id()
+        r = self.client.get(
+            f"/api/v1/transfers/{transfer_id}/milestones",
+            headers={"Authorization": f"Bearer {_token(4, 5, golden=str(uuid.uuid4()))}"},
+        )
+        self.assertEqual(r.status_code, 404)
+
+
 class V1TransferDocumentsTests(unittest.TestCase):
     """HTTP tests for GET /api/v1/transfers/:id/documents."""
 
@@ -744,6 +854,151 @@ class V1TransferFinancialsTests(unittest.TestCase):
         body = r.json()
         self.assertTrue(body["success"])
         self.assertIn("financials", body["data"])
+
+
+class TransferMilestonesPolicyTests(unittest.IsolatedAsyncioTestCase):
+    """Isolated transaction fixture verifying milestone scoping."""
+
+    @classmethod
+    def setUpClass(cls):
+        os.environ["POSTGRES_URL"] = TEST_POSTGRES_URL
+        os.environ["DB_SCHEMA"] = "transfers"
+
+    async def asyncSetUp(self):
+        await get_pool(load_settings())
+
+    async def asyncTearDown(self):
+        from db import close_pool
+        await close_pool()
+
+    async def test_authorised_transfer_with_no_milestones_returns_empty(self):
+        import python_server.routers.v1.transfers as v1_transfers
+
+        async def _tx(conn):
+            transfer_id = str(uuid.uuid4())
+            matter_id = str(uuid.uuid4())
+
+            await db_query(
+                """
+                INSERT INTO transfers (id, transfer_id, property_address, purchase_price, accountable_institution_id)
+                VALUES ($1::uuid, $2, $3, $4, $5)
+                """,
+                [transfer_id, "TP-MS-EMPTY", "Milestone empty address", 100000, 5],
+                connection=conn,
+            )
+
+            await db_query(
+                """
+                INSERT INTO matters (id, reference_number, matter_type, title, status, source_record_id, accountable_institution_id)
+                VALUES ($1::uuid, $2, $3, $4, $5, $6, $7)
+                """,
+                [matter_id, "REF-EMPTY", "transfer", "Empty matter", "draft", transfer_id, 5],
+                connection=conn,
+            )
+
+            original_query = v1_transfers.query
+
+            async def patched_query(sql, params, **kwargs):
+                return await db_query(sql, params, connection=conn)
+
+            try:
+                v1_transfers.query = patched_query
+                user = CurrentUser(
+                    user_id=1,
+                    golden_record_id=None,
+                    abilities=["api", "transfers:read"],
+                    accountable_institution_id=5,
+                    user_roles_id=3,
+                    tenant_id=None,
+                )
+                result = await v1_transfers.get_transfer_milestones(transfer_id, user)
+            finally:
+                v1_transfers.query = original_query
+
+            return result
+
+        result = await _with_rollback(_tx)
+        self.assertEqual(result["message"], "OK")
+        self.assertEqual(result["data"]["milestones"], [])
+
+    async def test_milestones_from_other_matter_do_not_leak(self):
+        import python_server.routers.v1.transfers as v1_transfers
+
+        async def _tx(conn):
+            transfer_id = str(uuid.uuid4())
+            other_transfer_id = str(uuid.uuid4())
+            matter_id = str(uuid.uuid4())
+            other_matter_id = str(uuid.uuid4())
+
+            await db_query(
+                """
+                INSERT INTO transfers (id, transfer_id, property_address, purchase_price, accountable_institution_id)
+                VALUES ($1::uuid, $2, $3, $4, $5)
+                """,
+                [transfer_id, "TP-MS-MAIN", "Main address", 100000, 5],
+                connection=conn,
+            )
+
+            await db_query(
+                """
+                INSERT INTO transfers (id, transfer_id, property_address, purchase_price, accountable_institution_id)
+                VALUES ($1::uuid, $2, $3, $4, $5)
+                """,
+                [other_transfer_id, "TP-MS-OTHER", "Other address", 100000, 5],
+                connection=conn,
+            )
+
+            await db_query(
+                """
+                INSERT INTO matters (id, reference_number, matter_type, title, status, source_record_id, accountable_institution_id)
+                VALUES ($1::uuid, $2, $3, $4, $5, $6, $7)
+                """,
+                [matter_id, "REF-MAIN", "transfer", "Main matter", "draft", transfer_id, 5],
+                connection=conn,
+            )
+
+            await db_query(
+                """
+                INSERT INTO matters (id, reference_number, matter_type, title, status, source_record_id, accountable_institution_id)
+                VALUES ($1::uuid, $2, $3, $4, $5, $6, $7)
+                """,
+                [other_matter_id, "REF-OTHER", "transfer", "Other matter", "draft", other_transfer_id, 5],
+                connection=conn,
+            )
+
+            # Create a milestone in the other matter
+            await db_query(
+                """
+                INSERT INTO matter_milestones (matter_id, name, status, sequence_number)
+                VALUES ($1, $2, $3, $4)
+                """,
+                [other_matter_id, "Other milestone", "not_started", 1],
+                connection=conn,
+            )
+
+            original_query = v1_transfers.query
+
+            async def patched_query(sql, params, **kwargs):
+                return await db_query(sql, params, connection=conn)
+
+            try:
+                v1_transfers.query = patched_query
+                user = CurrentUser(
+                    user_id=1,
+                    golden_record_id=None,
+                    abilities=["api", "transfers:read"],
+                    accountable_institution_id=5,
+                    user_roles_id=3,
+                    tenant_id=None,
+                )
+                result = await v1_transfers.get_transfer_milestones(transfer_id, user)
+            finally:
+                v1_transfers.query = original_query
+
+            return result
+
+        result = await _with_rollback(_tx)
+        self.assertEqual(result["data"]["milestones"], [])
 
 
 class TransferDocumentsPolicyTests(unittest.IsolatedAsyncioTestCase):

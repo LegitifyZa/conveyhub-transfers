@@ -68,6 +68,25 @@ def _map_client_transfer_party(row: dict) -> dict:
     }
 
 
+def _map_milestone(row: dict) -> dict:
+    return {
+        "id": row["id"],
+        "matterId": row["matter_id"],
+        "definitionId": row["definition_id"],
+        "code": row["code"],
+        "definitionName": row["definition_name"],
+        "name": row["name"],
+        "statusLabel": row["status_label"],
+        "status": row["status"],
+        "sequenceNumber": row["sequence_number"],
+        "dueDate": row["due_date"],
+        "completedDate": row["completed_date"],
+        "notes": row["notes"],
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+    }
+
+
 def _to_number(value):
     return float(value) if value is not None else None
 
@@ -314,6 +333,46 @@ async def get_transfer_parties(
     parties = [_map_transfer_party(row) for row in parties_result.rows]
 
     return {"message": "OK", "data": {"parties": parties}}
+
+
+@router.get("/{id}/milestones")
+async def get_transfer_milestones(
+    id: str,
+    user: CurrentUser = Depends(require_jwt),
+):
+    """List milestones for a transfer, scoped to the authorised tenant."""
+
+    # Client milestone visibility is not documented. Fail closed.
+    if user.is_client:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    # No separate milestones:read ability is documented; reuse transfers:read.
+    if not user.has_ability("transfers:read"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    transfer = await _authorize_transfer(user, id)
+    if not transfer:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    # The verified transfer-to-matter relationship is matters.source_record_id = transfers.id::text.
+    # transfers.matter_id is not populated in the prototype dataset.
+    milestones_result = await query(
+        """
+        SELECT mm.id, mm.matter_id, mm.definition_id, md.code,
+               md.name AS definition_name, mm.name, mm.status_label, mm.status,
+               mm.sequence_number, mm.due_date, mm.completed_date, mm.notes,
+               mm.created_at, mm.updated_at
+        FROM matter_milestones mm
+        JOIN matters m ON m.id = mm.matter_id
+        LEFT JOIN milestone_definitions md ON md.id = mm.definition_id
+        WHERE m.source_record_id = $1
+        ORDER BY mm.sequence_number
+        """,
+        [id],
+    )
+    milestones = [_map_milestone(row) for row in milestones_result.rows]
+
+    return {"message": "OK", "data": {"milestones": milestones}}
 
 
 @router.get("/{id}/documents")

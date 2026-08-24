@@ -89,6 +89,25 @@ function mapTransferDocument(row: any) {
   }
 }
 
+function mapMilestone(row: any) {
+  return {
+    id: row.id,
+    matterId: row.matter_id,
+    definitionId: row.definition_id,
+    code: row.code,
+    definitionName: row.definition_name,
+    name: row.name,
+    statusLabel: row.status_label,
+    status: row.status,
+    sequenceNumber: row.sequence_number,
+    dueDate: row.due_date,
+    completedDate: row.completed_date,
+    notes: row.notes,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }
+}
+
 function mapTransferFinancials(row: any) {
   if (!row) {
     return null
@@ -299,6 +318,55 @@ router.get(
       message: 'OK',
       data: {
         parties: partiesResult.rows.map(mapTransferParty),
+      },
+    })
+  })
+)
+
+router.get(
+  '/:id/milestones',
+  requireJwt,
+  asyncHandler(async (req: Request, res: Response) => {
+    const user = req.currentUser!
+    const { id } = req.params
+
+    // Client milestone visibility is not documented. Fail closed.
+    if (user.isClient) {
+      res.status(404).json({ success: false, error: 'Not found' })
+      return
+    }
+
+    // No separate milestones:read ability is documented; reuse transfers:read.
+    if (!user.hasAbility('transfers:read')) {
+      res.status(403).json({ success: false, error: 'Forbidden' })
+      return
+    }
+
+    const transfer = await authorizeTransfer(user, id)
+    if (!transfer) {
+      res.status(404).json({ success: false, error: 'Not found' })
+      return
+    }
+
+    // The verified transfer-to-matter relationship is matters.source_record_id = transfers.id::text.
+    // transfers.matter_id is not populated in the prototype dataset.
+    const milestonesQuery = `
+      SELECT mm.id, mm.matter_id, mm.definition_id, md.code,
+             md.name AS definition_name, mm.name, mm.status_label, mm.status,
+             mm.sequence_number, mm.due_date, mm.completed_date, mm.notes,
+             mm.created_at, mm.updated_at
+      FROM matter_milestones mm
+      JOIN matters m ON m.id = mm.matter_id
+      LEFT JOIN milestone_definitions md ON md.id = mm.definition_id
+      WHERE m.source_record_id = $1
+      ORDER BY mm.sequence_number
+    `
+    const milestonesResult = await query(milestonesQuery, [id])
+
+    res.json({
+      message: 'OK',
+      data: {
+        milestones: milestonesResult.rows.map(mapMilestone),
       },
     })
   })
