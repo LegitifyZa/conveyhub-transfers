@@ -26,6 +26,8 @@ export default defineConfig({
     'process.env.NODE_ENV': JSON.stringify('production'),
   },
   server: {
+    host: '0.0.0.0',
+    allowedHosts: true,
     proxy: {
       '/api': {
         target: `http://localhost:${API_PORT}`,

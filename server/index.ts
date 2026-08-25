@@ -11,6 +11,7 @@ import clausesRouter from './routes/clauses'
 import generatedDocumentsRouter from './routes/generatedDocuments'
 import documentsRouter from './routes/documents'
 import usersRouter from './routes/users'
+import accountsRouter from './routes/accounts'
 import { pool } from './db'
 
 dotenv.config()
@@ -32,6 +33,7 @@ app.use('/api/clauses', clausesRouter)
 app.use('/api/generated-documents', generatedDocumentsRouter)
 app.use('/api/documents', documentsRouter)
 app.use('/api/users', usersRouter)
+app.use('/api/accounts', accountsRouter)
 
 app.get('/api', (_req: Request, res: Response) => {
   res.json({

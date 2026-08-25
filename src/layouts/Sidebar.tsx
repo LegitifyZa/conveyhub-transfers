@@ -11,7 +11,8 @@ import {
   Wand2,
   Settings,
   Moon,
-  Sun
+  Sun,
+  Calculator
 } from 'lucide-react'
 import { cn } from '@/utils/cn'
 
@@ -47,6 +48,7 @@ interface SidebarProps {
 
 const primaryNavigation = [
   { name: 'Transfers', href: '/transfers', icon: FileText },
+  { name: 'Accounts & Calculator', href: '/accounts', icon: Calculator },
 ]
 
 const otherNavigation = [
