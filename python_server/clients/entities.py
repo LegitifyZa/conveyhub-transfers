@@ -10,8 +10,8 @@ class EntityServiceError(Exception):
 
     The exception message is intentionally sanitised: it contains only the
     operation name, the HTTP status, and a generic failure category. The raw
-    remote response body is retained on `response_body` for internal debugging
-    but is never included in ``str()`` or ``repr()`` of this exception.
+    remote response body is never retained; only a boolean flag indicating that
+    a body was present is kept, plus `operation`, `status_code`, and `category`.
     """
 
     def __init__(
@@ -20,12 +20,14 @@ class EntityServiceError(Exception):
         *,
         operation: Optional[str] = None,
         status_code: Optional[int] = None,
-        response_body: Any = None,
+        category: Optional[str] = None,
+        response_body_present: bool = False,
     ) -> None:
         super().__init__(message)
         self.operation = operation
         self.status_code = status_code
-        self.response_body = response_body
+        self.category = category
+        self.response_body_present = response_body_present
 
 
 class EntitiesClient:
@@ -92,15 +94,12 @@ class EntitiesClient:
 
     def _extract_data(self, response: httpx.Response, *, operation: str) -> Any:
         if not response.is_success:
-            try:
-                body = response.json()
-            except Exception:
-                body = response.text
             raise EntityServiceError(
                 f"Entity service {operation} failed with status {response.status_code}",
                 operation=operation,
                 status_code=response.status_code,
-                response_body=body,
+                category="http_error",
+                response_body_present=True,
             )
 
         try:
@@ -110,7 +109,8 @@ class EntitiesClient:
                 f"Entity service {operation} returned non-JSON response",
                 operation=operation,
                 status_code=response.status_code,
-                response_body=response.text,
+                category="malformed_json",
+                response_body_present=True,
             ) from exc
 
         if not isinstance(envelope, dict) or "data" not in envelope:
@@ -118,7 +118,8 @@ class EntitiesClient:
                 f"Entity service {operation} response missing 'data' envelope",
                 operation=operation,
                 status_code=response.status_code,
-                response_body=envelope,
+                category="missing_data_envelope",
+                response_body_present=True,
             )
 
         return envelope["data"]

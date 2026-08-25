@@ -142,13 +142,13 @@ class EntityReconciliationServiceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_non_2xx_response_raises_sanitised(self):
         client = AsyncMock(spec=EntitiesClient)
-        pii = {"id_number": "9001010001081", "email": "user@example.com", "name": "Dean"}
         client.search_entities = AsyncMock(
             side_effect=EntityServiceError(
                 "Entity service search_entities failed with status 500",
                 operation="search_entities",
                 status_code=500,
-                response_body=pii,
+                category="http_error",
+                response_body_present=True,
             )
         )
 
@@ -159,9 +159,6 @@ class EntityReconciliationServiceTests(unittest.IsolatedAsyncioTestCase):
         text = str(ctx.exception)
         self.assertIn("search_entities", text)
         self.assertIn("500", text)
-        self.assertNotIn("9001010001081", text)
-        self.assertNotIn("user@example.com", text)
-        self.assertNotIn("Dean", text)
 
     async def test_company_reconciliation_not_supported(self):
         client = AsyncMock(spec=EntitiesClient)
@@ -216,6 +213,67 @@ class EntityReconciliationServiceTests(unittest.IsolatedAsyncioTestCase):
             client = EntitiesClient(settings)
             text = repr(client._client)
             self.assertNotIn("super-secret-key-do-not-leak", text)
+
+
+class EntityServiceErrorSanitisationTests(unittest.TestCase):
+    def test_message_does_not_leak_pii(self):
+        exc = EntityServiceError(
+            "Entity service get_entity failed with status 500",
+            operation="get_entity",
+            status_code=500,
+            category="http_error",
+            response_body_present=True,
+        )
+        text = str(exc)
+        self.assertIn("get_entity", text)
+        self.assertIn("500", text)
+        self.assertNotIn("9001010001081", text)
+        self.assertNotIn("user@example.com", text)
+        self.assertNotIn("Dean", text)
+        self.assertNotIn("response_body", text)
+
+    def test_repr_does_not_leak_pii(self):
+        exc = EntityServiceError(
+            "Entity service get_entity failed with status 500",
+            operation="get_entity",
+            status_code=500,
+            category="http_error",
+            response_body_present=True,
+        )
+        text = repr(exc)
+        self.assertNotIn("9001010001081", text)
+        self.assertNotIn("user@example.com", text)
+        self.assertNotIn("Dean", text)
+        self.assertNotIn("response_body", text)
+
+    def test_vars_does_not_contain_response_body(self):
+        pii = {"id_number": "9001010001081", "email": "user@example.com", "name": "Dean"}
+        exc = EntityServiceError(
+            "Entity service search_entities failed with status 500",
+            operation="search_entities",
+            status_code=500,
+            category="http_error",
+            response_body_present=True,
+        )
+        # The exception must never have stored the raw response body.
+        self.assertNotIn("response_body", exc.__dict__)
+        for field in ("operation", "status_code", "category", "response_body_present"):
+            self.assertIn(field, exc.__dict__)
+        self.assertNotIn(pii["id_number"], str(vars(exc)))
+        self.assertNotIn(pii["email"], str(vars(exc)))
+        self.assertNotIn(pii["name"], str(vars(exc)))
+
+    def test_service_key_not_in_exception(self):
+        exc = EntityServiceError(
+            "Entity service submit_person failed with status 403",
+            operation="submit_person",
+            status_code=403,
+            category="http_error",
+            response_body_present=False,
+        )
+        for text in (str(exc), repr(exc), str(vars(exc))):
+            self.assertNotIn("super-secret-key", text)
+            self.assertNotIn("npg_", text)
 
 
 if __name__ == "__main__":
