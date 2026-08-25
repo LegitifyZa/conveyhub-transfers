@@ -6,29 +6,17 @@ import json
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from config import load_settings
-from db import get_pool, query as db_query
+from db import query as db_query
 import python_server.routers.transfers as legacy_transfers
-
-
-os.environ.setdefault("POSTGRES_URL", "postgresql://neondb_owner:npg_AqGWzru6MpZ7@ep-odd-shape-aw1ky0rb.c-12.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require")
-os.environ["DB_SCHEMA"] = "transfers"
-
-
-async def _with_rollback(callback):
-    """Run a callback inside a transaction that is always rolled back."""
-    pool = await get_pool(load_settings())
-    async with pool.acquire() as conn:
-        tx = conn.transaction()
-        await tx.start()
-        try:
-            return await callback(conn)
-        finally:
-            await tx.rollback()
+import tests.db_test_utils as db_test_utils
 
 
 class LegacyCreateConfigTests(unittest.IsolatedAsyncioTestCase):
     """Verify the temporary legacy create tenant bridge behaves correctly."""
+
+    @classmethod
+    def setUpClass(cls):
+        db_test_utils.require_test_database()
 
     def setUp(self):
         os.environ.pop("LEGACY_ACCOUNTABLE_INSTITUTION_ID", None)
@@ -59,7 +47,7 @@ class LegacyCreateConfigTests(unittest.IsolatedAsyncioTestCase):
                 legacy_transfers.with_transaction = original_with_transaction
                 legacy_transfers.query = original_query
 
-        return await _with_rollback(_tx)
+        return await db_test_utils.with_test_transaction(_tx)
 
     def _decode(self, response):
         payload = response.body
@@ -122,7 +110,7 @@ class LegacyCreateConfigTests(unittest.IsolatedAsyncioTestCase):
                 legacy_transfers.with_transaction = original_with_transaction
                 legacy_transfers.query = original_query
 
-        await _with_rollback(_tx)
+        await db_test_utils.with_test_transaction(_tx)
 
     async def test_missing_config_returns_controlled_error(self):
         response = await self._run_create_with_config(None, {
@@ -185,7 +173,7 @@ class LegacyCreateConfigTests(unittest.IsolatedAsyncioTestCase):
                 legacy_transfers.with_transaction = original_with_transaction
                 legacy_transfers.query = original_query
 
-        await _with_rollback(_tx)
+        await db_test_utils.with_test_transaction(_tx)
 
         async def _verify(conn):
             transfer_count = (await db_query(
@@ -203,4 +191,4 @@ class LegacyCreateConfigTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(transfer_count, 0)
             self.assertEqual(matter_count, 0)
 
-        await _with_rollback(_verify)
+        await db_test_utils.with_test_transaction(_verify)

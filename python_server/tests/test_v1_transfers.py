@@ -12,10 +12,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from auth.current_user import CurrentUser
 from main import app
+import tests.db_test_utils as db_test_utils
 
 
 TEST_JWT_SECRET = "test-jwt-secret-32-bytes-long!!"
-TEST_POSTGRES_URL = "postgresql://neondb_owner:npg_AqGWzru6MpZ7@ep-odd-shape-aw1ky0rb.c-12.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
 
 
 def _token(role: int, ai: int, abilities=None, golden: str | None = None):
@@ -42,7 +42,7 @@ def _auth_header(role: int, ai: int, abilities=None, golden: str | None = None):
 class V1TransfersAuthTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        os.environ["POSTGRES_URL"] = TEST_POSTGRES_URL
+        db_test_utils.require_test_database()
         os.environ["JWT_SECRET"] = TEST_JWT_SECRET
         os.environ["DB_SCHEMA"] = "transfers"
 
@@ -136,7 +136,7 @@ class V1TransfersAuthTests(unittest.TestCase):
 class V1TransferDetailTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        os.environ["POSTGRES_URL"] = TEST_POSTGRES_URL
+        db_test_utils.require_test_database()
         os.environ["JWT_SECRET"] = TEST_JWT_SECRET
         os.environ["DB_SCHEMA"] = "transfers"
 
@@ -241,20 +241,11 @@ class V1TransferDetailTests(unittest.TestCase):
         self.assertEqual(r.json()["data"]["id"], transfer_id)
 
 
-from config import load_settings
-from db import get_pool, query as db_query
+from db import query as db_query
 
 
-async def _with_rollback(callback):
-    """Run a callback inside a transaction that is always rolled back."""
-    pool = await get_pool(load_settings())
-    async with pool.acquire() as conn:
-        tx = conn.transaction()
-        await tx.start()
-        try:
-            return await callback(conn)
-        finally:
-            await tx.rollback()
+def _with_rollback(callback):
+    return db_test_utils.with_test_transaction(callback)
 
 
 class ClientPartyPolicyTests(unittest.IsolatedAsyncioTestCase):
@@ -262,11 +253,11 @@ class ClientPartyPolicyTests(unittest.IsolatedAsyncioTestCase):
 
     @classmethod
     def setUpClass(cls):
-        os.environ["POSTGRES_URL"] = TEST_POSTGRES_URL
+        db_test_utils.require_test_database()
         os.environ["DB_SCHEMA"] = "transfers"
 
     async def asyncSetUp(self):
-        await get_pool(load_settings())
+        await db_test_utils.get_test_pool()
 
     async def asyncTearDown(self):
         from db import close_pool
@@ -312,7 +303,7 @@ class ClientPartyPolicyTests(unittest.IsolatedAsyncioTestCase):
 class V1TransferPartiesTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        os.environ["POSTGRES_URL"] = TEST_POSTGRES_URL
+        db_test_utils.require_test_database()
         os.environ["JWT_SECRET"] = TEST_JWT_SECRET
         os.environ["DB_SCHEMA"] = "transfers"
 
@@ -413,11 +404,11 @@ class TransferPartiesPolicyTests(unittest.IsolatedAsyncioTestCase):
 
     @classmethod
     def setUpClass(cls):
-        os.environ["POSTGRES_URL"] = TEST_POSTGRES_URL
+        db_test_utils.require_test_database()
         os.environ["DB_SCHEMA"] = "transfers"
 
     async def asyncSetUp(self):
-        await get_pool(load_settings())
+        await db_test_utils.get_test_pool()
 
     async def asyncTearDown(self):
         from db import close_pool
@@ -512,7 +503,7 @@ class V1TransferMilestonesTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        os.environ["POSTGRES_URL"] = TEST_POSTGRES_URL
+        db_test_utils.require_test_database()
         os.environ["JWT_SECRET"] = TEST_JWT_SECRET
         os.environ["DB_SCHEMA"] = "transfers"
 
@@ -622,7 +613,7 @@ class V1TransferDocumentsTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        os.environ["POSTGRES_URL"] = TEST_POSTGRES_URL
+        db_test_utils.require_test_database()
         os.environ["JWT_SECRET"] = TEST_JWT_SECRET
         os.environ["DB_SCHEMA"] = "transfers"
 
@@ -743,7 +734,7 @@ class V1TransferFinancialsTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        os.environ["POSTGRES_URL"] = TEST_POSTGRES_URL
+        db_test_utils.require_test_database()
         os.environ["JWT_SECRET"] = TEST_JWT_SECRET
         os.environ["DB_SCHEMA"] = "transfers"
 
@@ -861,11 +852,11 @@ class TransferMilestonesPolicyTests(unittest.IsolatedAsyncioTestCase):
 
     @classmethod
     def setUpClass(cls):
-        os.environ["POSTGRES_URL"] = TEST_POSTGRES_URL
+        db_test_utils.require_test_database()
         os.environ["DB_SCHEMA"] = "transfers"
 
     async def asyncSetUp(self):
-        await get_pool(load_settings())
+        await db_test_utils.get_test_pool()
 
     async def asyncTearDown(self):
         from db import close_pool
@@ -1077,11 +1068,11 @@ class TransferDocumentsPolicyTests(unittest.IsolatedAsyncioTestCase):
 
     @classmethod
     def setUpClass(cls):
-        os.environ["POSTGRES_URL"] = TEST_POSTGRES_URL
+        db_test_utils.require_test_database()
         os.environ["DB_SCHEMA"] = "transfers"
 
     async def asyncSetUp(self):
-        await get_pool(load_settings())
+        await db_test_utils.get_test_pool()
 
     async def asyncTearDown(self):
         from db import close_pool
@@ -1133,11 +1124,11 @@ class TransferFinancialsPolicyTests(unittest.IsolatedAsyncioTestCase):
 
     @classmethod
     def setUpClass(cls):
-        os.environ["POSTGRES_URL"] = TEST_POSTGRES_URL
+        db_test_utils.require_test_database()
         os.environ["DB_SCHEMA"] = "transfers"
 
     async def asyncSetUp(self):
-        await get_pool(load_settings())
+        await db_test_utils.get_test_pool()
 
     async def asyncTearDown(self):
         from db import close_pool
@@ -1226,11 +1217,11 @@ class ClientPartiesPolicyTests(unittest.IsolatedAsyncioTestCase):
 
     @classmethod
     def setUpClass(cls):
-        os.environ["POSTGRES_URL"] = TEST_POSTGRES_URL
+        db_test_utils.require_test_database()
         os.environ["DB_SCHEMA"] = "transfers"
 
     async def asyncSetUp(self):
-        await get_pool(load_settings())
+        await db_test_utils.get_test_pool()
 
     async def asyncTearDown(self):
         from db import close_pool

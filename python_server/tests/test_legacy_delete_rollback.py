@@ -7,15 +7,11 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from config import load_settings
-from db import get_pool, query as db_query, close_pool
+from db import query as db_query, close_pool
 import python_server.routers.transfers as legacy_transfers
+import tests.db_test_utils as db_test_utils
 
 
-os.environ.setdefault(
-    "POSTGRES_URL",
-    "postgresql://neondb_owner:npg_AqGWzru6MpZ7@ep-odd-shape-aw1ky0rb.c-12.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require",
-)
 os.environ["DB_SCHEMA"] = "transfers"
 
 
@@ -25,18 +21,6 @@ def _now():
 
 def _now_aware():
     return datetime.datetime.now(datetime.timezone.utc)
-
-
-async def _with_rollback(callback):
-    """Run a callback inside a transaction that is always rolled back."""
-    pool = await get_pool(load_settings())
-    async with pool.acquire() as conn:
-        tx = conn.transaction()
-        await tx.start()
-        try:
-            return await callback(conn)
-        finally:
-            await tx.rollback()
 
 
 async def _create_transfer(conn):
@@ -139,6 +123,10 @@ async def _insert_bond(conn, matter_id):
 class LegacyDeleteRollbackTests(unittest.IsolatedAsyncioTestCase):
     """Real database tests that run inside transactions that are always rolled back."""
 
+    @classmethod
+    def setUpClass(cls):
+        db_test_utils.require_test_database()
+
     async def asyncTearDown(self):
         await close_pool()
 
@@ -157,7 +145,7 @@ class LegacyDeleteRollbackTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(m_check.rows), 0)
             self.assertEqual(len(ms_check.rows), 0)
 
-        await _with_rollback(_tx)
+        await db_test_utils.with_test_transaction(_tx)
 
     async def test_null_transfers_matter_id_still_cleans_matter(self):
         """Reproduces the Preview bug: legacy create does not set transfers.matter_id."""
@@ -178,7 +166,7 @@ class LegacyDeleteRollbackTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(t_check.rows), 0)
             self.assertEqual(len(m_check.rows), 0)
 
-        await _with_rollback(_tx)
+        await db_test_utils.with_test_transaction(_tx)
 
     async def test_matter_with_mismatched_source_record_id_is_retained(self):
         async def _tx(conn):
@@ -198,7 +186,7 @@ class LegacyDeleteRollbackTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(t_check.rows), 0)
             self.assertEqual(len(m_check.rows), 1)
 
-        await _with_rollback(_tx)
+        await db_test_utils.with_test_transaction(_tx)
 
     async def test_matter_with_wrong_type_is_retained(self):
         async def _tx(conn):
@@ -215,7 +203,7 @@ class LegacyDeleteRollbackTests(unittest.IsolatedAsyncioTestCase):
             m_check = await db_query("SELECT id FROM matters WHERE id = $1", [t["matter_id"]], connection=conn)
             self.assertEqual(len(m_check.rows), 1)
 
-        await _with_rollback(_tx)
+        await db_test_utils.with_test_transaction(_tx)
 
     async def test_duplicate_source_record_ids_are_not_deleted(self):
         async def _tx(conn):
@@ -230,7 +218,7 @@ class LegacyDeleteRollbackTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(m1.rows), 1)
             self.assertEqual(len(m2.rows), 1)
 
-        await _with_rollback(_tx)
+        await db_test_utils.with_test_transaction(_tx)
 
     async def test_matter_with_blocking_children_is_retained(self):
         async def _tx(conn):
@@ -243,7 +231,7 @@ class LegacyDeleteRollbackTests(unittest.IsolatedAsyncioTestCase):
             m_check = await db_query("SELECT id FROM matters WHERE id = $1", [t["matter_id"]], connection=conn)
             self.assertEqual(len(m_check.rows), 1)
 
-        await _with_rollback(_tx)
+        await db_test_utils.with_test_transaction(_tx)
 
     async def test_unshared_property_created_for_transfer_is_deleted(self):
         async def _tx(conn):
@@ -259,7 +247,7 @@ class LegacyDeleteRollbackTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(len(p_check.rows), 0)
 
-        await _with_rollback(_tx)
+        await db_test_utils.with_test_transaction(_tx)
 
     async def test_shared_property_is_retained(self):
         async def _tx(conn):
@@ -290,7 +278,7 @@ class LegacyDeleteRollbackTests(unittest.IsolatedAsyncioTestCase):
             m2 = await db_query("SELECT id FROM matters WHERE id = $1", [t2["matter_id"]], connection=conn)
             self.assertEqual(len(m2.rows), 1)
 
-        await _with_rollback(_tx)
+        await db_test_utils.with_test_transaction(_tx)
 
     async def test_property_without_created_for_transfer_marker_is_retained(self):
         async def _tx(conn):
@@ -311,7 +299,7 @@ class LegacyDeleteRollbackTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(len(p_check.rows), 1)
 
-        await _with_rollback(_tx)
+        await db_test_utils.with_test_transaction(_tx)
 
     async def test_transaction_rollback_on_downstream_sql_failure(self):
         """If a downstream delete fails, the whole operation must raise, not commit."""
@@ -342,7 +330,7 @@ class LegacyDeleteRollbackTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertFalse(any("DELETE FROM properties" in q for q in call_log))
 
-        await _with_rollback(_tx)
+        await db_test_utils.with_test_transaction(_tx)
 
 
 if __name__ == "__main__":
