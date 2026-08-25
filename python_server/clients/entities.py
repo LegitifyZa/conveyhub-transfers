@@ -6,10 +6,24 @@ from config import Settings
 
 
 class EntityServiceError(Exception):
+    """Raised when the Entities service returns an error or an unexpected shape.
+
+    The exception message is intentionally sanitised: it contains only the
+    operation name, the HTTP status, and a generic failure category. The raw
+    remote response body is retained on `response_body` for internal debugging
+    but is never included in ``str()`` or ``repr()`` of this exception.
+    """
+
     def __init__(
-        self, message: str, status_code: Optional[int] = None, response_body: Any = None
+        self,
+        message: str,
+        *,
+        operation: Optional[str] = None,
+        status_code: Optional[int] = None,
+        response_body: Any = None,
     ) -> None:
         super().__init__(message)
+        self.operation = operation
         self.status_code = status_code
         self.response_body = response_body
 
@@ -31,7 +45,7 @@ class EntitiesClient:
             params={"entity_type": entity_type},
             timeout=httpx.Timeout(None, read=10.0),
         )
-        return self._extract_data(response)
+        return self._extract_data(response, operation="get_entity")
 
     async def search_entities(self, payload: dict) -> Any:
         response = await self._client.post(
@@ -39,7 +53,7 @@ class EntitiesClient:
             json=payload,
             timeout=httpx.Timeout(None, read=10.0),
         )
-        return self._extract_data(response)
+        return self._extract_data(response, operation="search_entities")
 
     async def submit_person(
         self,
@@ -74,16 +88,17 @@ class EntitiesClient:
             json=body,
             timeout=httpx.Timeout(None, read=30.0),
         )
-        return self._extract_data(response)
+        return self._extract_data(response, operation="submit_person")
 
-    def _extract_data(self, response: httpx.Response) -> Any:
+    def _extract_data(self, response: httpx.Response, *, operation: str) -> Any:
         if not response.is_success:
             try:
                 body = response.json()
             except Exception:
                 body = response.text
             raise EntityServiceError(
-                f"Entity service returned {response.status_code}",
+                f"Entity service {operation} failed with status {response.status_code}",
+                operation=operation,
                 status_code=response.status_code,
                 response_body=body,
             )
@@ -92,14 +107,16 @@ class EntitiesClient:
             envelope = response.json()
         except Exception as exc:
             raise EntityServiceError(
-                "Entity service returned non-JSON response",
+                f"Entity service {operation} returned non-JSON response",
+                operation=operation,
                 status_code=response.status_code,
                 response_body=response.text,
             ) from exc
 
         if not isinstance(envelope, dict) or "data" not in envelope:
             raise EntityServiceError(
-                "Entity service response missing 'data' envelope",
+                f"Entity service {operation} response missing 'data' envelope",
+                operation=operation,
                 status_code=response.status_code,
                 response_body=envelope,
             )
