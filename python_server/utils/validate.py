@@ -3,6 +3,7 @@ from typing import Any, Optional
 UUID_RE = r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 
 VALID_STATUSES = ["draft", "in_progress", "completed", "cancelled"]
+TRANSFER_STATUSES = ["in_progress", "complete"]
 
 
 def is_non_empty_string(value: Any) -> bool:
@@ -18,6 +19,10 @@ def is_uuid(value: Any) -> bool:
 
 def is_valid_status(status: Any) -> bool:
     return isinstance(status, str) and status in VALID_STATUSES
+
+
+def is_valid_transfer_status(status: Any) -> bool:
+    return isinstance(status, str) and status in TRANSFER_STATUSES
 
 
 def to_number(value: Any) -> Optional[float]:

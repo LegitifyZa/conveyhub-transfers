@@ -20,8 +20,7 @@ CREATE TABLE IF NOT EXISTS matter_classification_options (
     is_selectable           BOOLEAN      NOT NULL DEFAULT TRUE,
     is_active               BOOLEAN      NOT NULL DEFAULT TRUE,
     created_at              TIMESTAMPTZ  NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at              TIMESTAMPTZ  NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE (category, subtype, transfer_from)
+    updated_at              TIMESTAMPTZ  NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 -- 2. Add classification and firm reference to matters

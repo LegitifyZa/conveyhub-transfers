@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse
 
 from config import load_settings
 from db import query, with_transaction
-from utils.validate import is_non_empty_string, is_sa_postal_code, is_uuid, is_valid_status, to_number
+from utils.validate import is_non_empty_string, is_sa_postal_code, is_uuid, is_valid_transfer_status, to_number
 
 router = APIRouter()
 
@@ -158,7 +158,7 @@ def map_transfer_row(row):
         "transferId": row["transfer_id"],
         "propertyAddress": row["property_address"],
         "purchasePrice": _num(row["purchase_price"]),
-        "status": "completed" if milestone_completed else row["status"],
+        "status": "complete" if milestone_completed else row["status"],
         "currentStep": row["current_step"],
         "totalSteps": row["total_steps"],
         "progress": _num(milestone_progress) if milestone_progress is not None else _num(row["progress"]),
@@ -300,7 +300,7 @@ async def get_or_create_matter_for_transfer(conn, transfer_id, transfer_referenc
             transfer_reference,
             "transfer",
             f"Transfer {transfer_reference}",
-            "draft",
+            "in_progress",
             transfer_id,
             accountable_institution_id,
         ],
@@ -452,10 +452,8 @@ async def transfer_stats():
     result = await query("""
       SELECT
         COUNT(*) as total,
-        COUNT(*) FILTER (WHERE status = 'completed') as completed,
-        COUNT(*) FILTER (WHERE status = 'in_progress') as in_progress,
-        COUNT(*) FILTER (WHERE status = 'draft') as draft,
-        COUNT(*) FILTER (WHERE status = 'cancelled') as cancelled
+        COUNT(*) FILTER (WHERE status = 'complete') as complete,
+        COUNT(*) FILTER (WHERE status = 'in_progress') as in_progress
       FROM transfers
     """)
     return {"success": True, "data": dict(result.rows[0])}
@@ -619,7 +617,7 @@ async def create_transfer(body: dict):
             )
             property_id = property_result.rows[0]["id"]
 
-        status_value = status if is_valid_status(status) else "draft"
+        status_value = status if is_valid_transfer_status(status) else "in_progress"
         current_step_value = current_step if isinstance(current_step, (int, float)) else 1
         total_steps_value = total_steps if isinstance(total_steps, (int, float)) else 5
         progress_value = progress if isinstance(progress, (int, float)) else 0
@@ -781,7 +779,7 @@ async def update_transfer(id: str, body: dict):
             transfer_params.append(purchase_price)
             param_idx += 1
 
-        if is_valid_status(status):
+        if is_valid_transfer_status(status):
             transfer_updates.append(f"status = ${param_idx}")
             transfer_params.append(status)
             param_idx += 1

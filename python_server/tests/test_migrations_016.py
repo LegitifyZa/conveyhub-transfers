@@ -65,6 +65,11 @@ class Migration016DbIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         db_test_utils.require_test_database()
 
+    async def asyncSetUp(self):
+        from db import close_pool
+
+        await close_pool()
+
     async def asyncTearDown(self):
         from db import close_pool
 

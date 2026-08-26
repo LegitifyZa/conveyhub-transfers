@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express'
 import { query, withTransaction } from '../db'
 import { asyncHandler } from '../utils/asyncHandler'
-import { isNonEmptyString, isSaPostalCode, isValidStatus, toNumber } from '../utils/validate'
+import { isNonEmptyString, isSaPostalCode, isValidTransferStatus, toNumber } from '../utils/validate'
 import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
@@ -56,7 +56,7 @@ function mapTransferRow(row: any) {
     transferId: row.transfer_id,
     propertyAddress: row.property_address,
     purchasePrice: row.purchase_price != null ? Number(row.purchase_price) : undefined,
-    status: milestoneCompleted ? 'completed' : row.status,
+    status: milestoneCompleted ? 'complete' : row.status,
     currentStep: row.current_step,
     totalSteps: row.total_steps,
     progress: milestoneProgress != null ? milestoneProgress : (row.progress != null ? Number(row.progress) : undefined),
@@ -278,7 +278,7 @@ async function getOrCreateMatterForTransfer(
       transferReference,
       'transfer',
       `Transfer ${transferReference}`,
-      'draft',
+      'in_progress',
       transferId,
       accountableInstitutionId,
     ]
@@ -412,10 +412,8 @@ router.get(
     const result = await query(`
       SELECT
         COUNT(*) as total,
-        COUNT(*) FILTER (WHERE status = 'completed') as completed,
-        COUNT(*) FILTER (WHERE status = 'in_progress') as in_progress,
-        COUNT(*) FILTER (WHERE status = 'draft') as draft,
-        COUNT(*) FILTER (WHERE status = 'cancelled') as cancelled
+        COUNT(*) FILTER (WHERE status = 'complete') as complete,
+        COUNT(*) FILTER (WHERE status = 'in_progress') as in_progress
       FROM transfers
     `)
     res.json({ success: true, data: result.rows[0] })
@@ -498,7 +496,7 @@ router.get(
       data: {
         id: transferRow.id,
         transferId: transferRow.transfer_id,
-        status: milestoneCompleted ? 'completed' : transferRow.status,
+        status: milestoneCompleted ? 'complete' : transferRow.status,
         currentStep: transferRow.current_step,
         totalSteps: transferRow.total_steps,
         progress: milestoneProgress != null ? milestoneProgress : (transferRow.progress != null ? Number(transferRow.progress) : undefined),
@@ -587,7 +585,7 @@ router.post(
         propertyId = propertyResult.rows[0].id
       }
 
-      const statusValue = isValidStatus(status) ? status : 'draft'
+      const statusValue = isValidTransferStatus(status) ? status : 'in_progress'
       const currentStepValue = typeof currentStep === 'number' ? currentStep : 1
       const totalStepsValue = typeof totalSteps === 'number' ? totalSteps : 5
       const progressValue = typeof progress === 'number' ? progress : 0
@@ -741,7 +739,7 @@ router.put(
         paramIdx += 1
       }
 
-      if (isValidStatus(status)) {
+      if (isValidTransferStatus(status)) {
         transferUpdates.push(`status = $${paramIdx}`)
         transferParams.push(status)
         paramIdx += 1

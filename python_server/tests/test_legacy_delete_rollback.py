@@ -99,7 +99,7 @@ async def _insert_matter(conn, source_record_id, matter_type="transfer", propert
         INSERT INTO matters (id, reference_number, matter_type, title, status, priority,
                              opened_date, source_record_id, property_id, metadata,
                              accountable_institution_id, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, 'draft', 'medium', '2026-01-01', $5, $6, '{}',
+        VALUES ($1, $2, $3, $4, 'in_progress', 'medium', '2026-01-01', $5, $6, '{}',
                 5, $7, $7)
         """,
         [matter_uuid, ref, matter_type, f"Matter {ref}",
