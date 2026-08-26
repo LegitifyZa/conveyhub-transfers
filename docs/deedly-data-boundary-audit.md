@@ -28,7 +28,7 @@ The handover defines the following data-ownership boundaries for the new Transfe
 | `firms` | **DEPRECATE** | Replaced by platform `accountable_institution` concept. |
 | `user_preferences` | **DEPRECATE** | Belongs to the `users` service. |
 | `matters` | **CHANGE** | Valid concept; must move to `accountable_institution_id` and drop local `users` FKs. |
-| `transfers` | **CHANGE** | Valid concept; add `accountable_institution_id`, remove `submitted_by` local user FK. |
+| `transfers` | **CHANGE** | Valid concept; add `accountable_institution_id`, deprecate legacy UUID `submitted_by` FK and use platform int `created_by_user_id` for creator provenance. |
 | `parties` | **CHANGE** | Must become `golden_record_id`-referenced cache, not a source of identity. |
 | `matter_parties` | **DEPRECATE** | Role mapping can be folded into `transfer_parties` / `parties`. |
 | `party_bank_accounts` | **DEPRECATE** | Golden Record owns canonical bank-account identity. |
@@ -91,10 +91,10 @@ The handover defines the following data-ownership boundaries for the new Transfe
 
 ### `transfers`
 
-- **Current:** `transfers` has `matter_id`, `property_id`, `submitted_by` to local `users`; `property_address`, `purchase_price` and status. No tenant column.  
-- **Target:** `transfers` working data is owned by `accountable_institution_id`; `submitted_by` is a platform `user_id` int; `purchase_price` may live in `transfer_financials`.  
+- **Current:** `transfers` has `matter_id`, `property_id`, `submitted_by` (legacy UUID FK to local `users`) and `submitted_by_user_id` (transitional platform int added in 013, renamed to `created_by_user_id` in 014); `property_address`, `purchase_price` and status. No tenant column.  
+- **Target:** `transfers` working data is owned by `accountable_institution_id`; creator provenance is `created_by_user_id` (platform `user_id` int); legacy UUID `submitted_by` remains transitional until all consumers are migrated; `purchase_price` may live in `transfer_financials`.  
 - **Migration risk:** **Medium**. Column reshuffle and tenant scoping.  
-- **Recommended transition:** Add `accountable_institution_id`; move `submitted_by` to int; consider whether `purchase_price` should be redundant with `transfer_financials`.
+- **Recommended transition:** Add `accountable_institution_id`; add `created_by_user_id` (platform `user_id` int) and rename from 013's `submitted_by_user_id`; leave legacy UUID `submitted_by` in place until the final cleanup migration; consider whether `purchase_price` should be redundant with `transfer_financials`.
 
 ### `parties` / `matter_parties`
 
@@ -202,7 +202,7 @@ The handover defines the following data-ownership boundaries for the new Transfe
 3. **Introduce `CurrentUser` and `require_ability` / `require_jwt_or_service_key` as opt-in route dependencies** on a shadow `/api/v1/transfers` router. The legacy `/api/transfers` paths and the new authenticated `/api/v1/transfers` paths may coexist only in a controlled development/transition environment. The legacy unauthenticated paths must be removed or fully protected before the service is deployed, so that publicly accessible unauthenticated routes do not remain.
 4. **Add `accountable_institution_id` nullable columns** to `matters`, `transfers`, `parties`/`matter_parties`, `properties`, `transfer_financials` and all other business tables. Back-fill from the existing `firms` mapping.
 5. **Add `golden_record_id` to `parties` (or create `transfer_parties`) and add `source_owner_golden_record_id` plus a Loom/provider property reference to `properties`**. Back-fill by first searching/reconciling existing `id_number` / `registration_number` / title-deed identifiers against the `entities` service. Only unresolved identities should be submitted to the appropriate `POST /api/v1/entities/submit` path, because provider orchestration can trigger billable external lookups. Keep the old identity columns for read-only fallback.
-6. **Replace the local `users` references** with platform `user_id` int columns (`created_by_user_id`, `updated_by_user_id`, `assigned_to_user_id`). Dual-write until the `users` table can be removed.
+6. **Replace the local `users` references** with platform `user_id` int columns (`matters.created_by_user_id`, `transfers.created_by_user_id`, `updated_by_user_id`, `matters.assigned_to_user_id`). Dual-write until the `users` table can be removed.
 7. **Integrate the `files` service** by adding `storage_key` / `file_instance_id` to `transfer_documents`; continue to write `file_path` until a batch upload can migrate existing files.
 8. **Add `AuditLogger` and `EventBus` to the FastAPI lifespan**. Route new audit events to `legitify_auditor` and publish `transfer.*` events; keep the local `audit_log`/`activity_log` read-only.
 9. **Add Loom property sync** to `properties`: periodically re-seed/enrich from the Golden Record and store `source_owner_golden_record_id` plus the Loom/provider property reference (naming TBC).
