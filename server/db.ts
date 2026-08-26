@@ -1,4 +1,4 @@
-import { Pool, PoolConfig, QueryResultRow, escapeIdentifier } from 'pg'
+import { Pool, PoolConfig, QueryResultRow } from 'pg'
 import dotenv from 'dotenv'
 
 dotenv.config()
@@ -34,12 +34,13 @@ const config: DatabaseConfig = connectionString
       query_timeout: 30000,
     }
 
-const schema = process.env.DB_SCHEMA || 'Transfers'
-if (schema !== 'public') {
-  config.options = `--search_path=${escapeIdentifier(schema)},public`
-}
+const schema = process.env.DB_SCHEMA || 'transfers'
 
 export const pool = new Pool(config)
+
+pool.on('connect', (client) => {
+  client.query(`SET search_path = ${schema}, public`)
+})
 
 pool.on('error', (err) => {
   console.error('Unexpected error on idle client', err)

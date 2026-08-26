@@ -27,7 +27,7 @@ const config: DatabaseConfig = {
 }
 
 // Configure schema search path
-const schema = process.env.DB_SCHEMA || 'Transfers'
+const schema = process.env.DB_SCHEMA || 'transfers'
 if (schema !== 'public') {
   config.options = `--search_path=${escapeIdentifier(schema)},public`
 }
@@ -134,91 +134,12 @@ export const initializeDatabase = async (): Promise<void> => {
       throw new Error('Failed to connect to database')
     }
 
-    // Create target schema if one is configured
-    if (schema !== 'public') {
-      await db.query(`CREATE SCHEMA IF NOT EXISTS ${escapeIdentifier(schema)}`)
-    }
-
-    // Create tables if they don't exist
-    await createTables()
-    console.log('✅ Database initialized successfully')
+    // Runtime schema/table creation is intentionally not performed here.
+    // SQL migrations via scripts/migrate.mjs are the only supported DDL path.
+    console.log('✅ Database connection verified')
   } catch (error) {
     console.error('❌ Database initialization failed:', error)
     throw error
-  }
-}
-
-// Create database tables
-const createTables = async (): Promise<void> => {
-  const queries = [
-    // Transfers table
-    `CREATE TABLE IF NOT EXISTS transfers (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      transfer_id VARCHAR(50) UNIQUE NOT NULL,
-      property_address TEXT NOT NULL,
-      purchase_price DECIMAL(12,2) NOT NULL,
-      transfer_duty DECIMAL(12,2),
-      conveyancing_fees DECIMAL(12,2),
-      deeds_office_fees DECIMAL(12,2),
-      vat DECIMAL(12,2),
-      total_costs DECIMAL(12,2),
-      status VARCHAR(50) DEFAULT 'draft',
-      current_step INTEGER DEFAULT 1,
-      total_steps INTEGER DEFAULT 5,
-      progress INTEGER DEFAULT 0,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )`,
-
-    // Parties table
-    `CREATE TABLE IF NOT EXISTS parties (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      transfer_id UUID REFERENCES transfers(id) ON DELETE CASCADE,
-      name VARCHAR(255) NOT NULL,
-      type VARCHAR(50) NOT NULL CHECK (type IN ('buyer', 'seller')),
-      id_number VARCHAR(13),
-      registration_number VARCHAR(50),
-      email VARCHAR(255),
-      phone VARCHAR(50),
-      address TEXT,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )`,
-
-    // Documents table
-    `CREATE TABLE IF NOT EXISTS documents (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      transfer_id UUID REFERENCES transfers(id) ON DELETE CASCADE,
-      name VARCHAR(255) NOT NULL,
-      file_path TEXT,
-      file_size INTEGER,
-      file_type VARCHAR(100),
-      category VARCHAR(100),
-      status VARCHAR(50) DEFAULT 'pending',
-      uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )`,
-
-    // Users table
-    `CREATE TABLE IF NOT EXISTS users (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      email VARCHAR(255) UNIQUE NOT NULL,
-      name VARCHAR(255) NOT NULL,
-      role VARCHAR(50) DEFAULT 'user',
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )`,
-
-    // Create indexes for better performance
-    `CREATE INDEX IF NOT EXISTS idx_transfers_status ON transfers(status)`,
-    `CREATE INDEX IF NOT EXISTS idx_transfers_created_at ON transfers(created_at)`,
-    `CREATE INDEX IF NOT EXISTS idx_parties_transfer_id ON parties(transfer_id)`,
-    `CREATE INDEX IF NOT EXISTS idx_documents_transfer_id ON documents(transfer_id)`,
-    `CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)`,
-  ]
-
-  for (const query of queries) {
-    await db.query(query)
   }
 }
 

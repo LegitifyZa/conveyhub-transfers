@@ -3,6 +3,7 @@ import cors from 'cors'
 import dotenv from 'dotenv'
 import healthRouter from './routes/health'
 import transfersRouter from './routes/transfers'
+import v1TransfersRouter from './routes/v1/transfers'
 import milestonesRouter from './routes/milestones'
 import documentCatalogueRouter from './routes/documentCatalogue'
 import addressRouter from './routes/address'
@@ -25,6 +26,7 @@ app.use(express.urlencoded({ extended: true }))
 
 app.use('/api/health', healthRouter)
 app.use('/api/transfers', transfersRouter)
+app.use('/api/v1/transfers', v1TransfersRouter)
 app.use('/api', milestonesRouter)
 app.use('/api/catalogue', documentCatalogueRouter)
 app.use('/api/address', addressRouter)
