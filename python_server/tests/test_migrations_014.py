@@ -164,12 +164,25 @@ class Migration014DbIntegrationTests(unittest.IsolatedAsyncioTestCase):
         creator_id = 42
 
         async def _seed_and_migrate(conn):
+            pre_state = await query(
+                """
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = 'transfers'
+                  AND table_name = 'transfers'
+                  AND column_name = 'submitted_by_user_id'
+                """,
+                connection=conn,
+            )
+            if not pre_state.rows:
+                raise unittest.SkipTest("submitted_by_user_id already renamed; test requires a pre-014 database state")
+
             await query(
                 """
-                INSERT INTO transfers (id, transfer_id, property_address, purchase_price, submitted_by_user_id)
-                VALUES ($1, $2, $3, $4, $5)
+                INSERT INTO transfers (id, transfer_id, property_address, purchase_price, submitted_by_user_id, accountable_institution_id)
+                VALUES ($1, $2, $3, $4, $5, $6)
                 """,
-                [transfer_id, "TP-014-TEST", "Test address", 100000, creator_id],
+                [transfer_id, "TP-014-TEST", "Test address", 100000, creator_id, 5],
                 connection=conn,
             )
             await self._run_migration_on_connection(conn)
