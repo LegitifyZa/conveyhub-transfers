@@ -164,5 +164,14 @@ def get_pool_stats() -> dict:
 async def close_pool() -> None:
     global _pool
     if _pool is not None:
-        await _pool.close()
+        try:
+            await _pool.close()
+        except RuntimeError as exc:
+            # A pool created in a test event loop may outlive that loop (e.g.
+            # IsolatedAsyncioTestCase). Closing it from a fresh loop raises
+            # "Event loop is closed". In that case the connections are already
+            # defunct; discard the stale reference so the next test can create a
+            # pool bound to the current loop.
+            if "Event loop is closed" not in str(exc):
+                raise
         _pool = None
