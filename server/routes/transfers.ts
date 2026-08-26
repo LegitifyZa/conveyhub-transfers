@@ -56,7 +56,7 @@ function mapTransferRow(row: any) {
     transferId: row.transfer_id,
     propertyAddress: row.property_address,
     purchasePrice: row.purchase_price != null ? Number(row.purchase_price) : undefined,
-    status: milestoneCompleted ? 'complete' : row.status,
+    status: row.status,
     currentStep: row.current_step,
     totalSteps: row.total_steps,
     progress: milestoneProgress != null ? milestoneProgress : (row.progress != null ? Number(row.progress) : undefined),
@@ -496,7 +496,7 @@ router.get(
       data: {
         id: transferRow.id,
         transferId: transferRow.transfer_id,
-        status: milestoneCompleted ? 'complete' : transferRow.status,
+        status: transferRow.status,
         currentStep: transferRow.current_step,
         totalSteps: transferRow.total_steps,
         progress: milestoneProgress != null ? milestoneProgress : (transferRow.progress != null ? Number(transferRow.progress) : undefined),
@@ -585,7 +585,7 @@ router.post(
         propertyId = propertyResult.rows[0].id
       }
 
-      const statusValue = isValidTransferStatus(status) ? status : 'in_progress'
+      const statusValue = 'in_progress'
       const currentStepValue = typeof currentStep === 'number' ? currentStep : 1
       const totalStepsValue = typeof totalSteps === 'number' ? totalSteps : 5
       const progressValue = typeof progress === 'number' ? progress : 0

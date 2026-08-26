@@ -158,7 +158,7 @@ def map_transfer_row(row):
         "transferId": row["transfer_id"],
         "propertyAddress": row["property_address"],
         "purchasePrice": _num(row["purchase_price"]),
-        "status": "complete" if milestone_completed else row["status"],
+        "status": row["status"],
         "currentStep": row["current_step"],
         "totalSteps": row["total_steps"],
         "progress": _num(milestone_progress) if milestone_progress is not None else _num(row["progress"]),
@@ -533,7 +533,7 @@ async def get_transfer(id: str):
         "data": {
             "id": transfer_row["id"],
             "transferId": transfer_row["transfer_id"],
-            "status": "completed" if transfer_row["milestone_completed"] else transfer_row["status"],
+            "status": transfer_row["status"],
             "currentStep": transfer_row["current_step"],
             "totalSteps": transfer_row["total_steps"],
             "progress": transfer_row["milestone_progress"] if transfer_row["milestone_progress"] is not None else transfer_row["progress"],
@@ -552,7 +552,6 @@ async def create_transfer(body: dict):
     property_data = body.get("property") or {}
     parties = _resolve_parties(body.get("parties"))
     financials = body.get("financials") or {}
-    status = body.get("status")
     current_step = body.get("currentStep")
     total_steps = body.get("totalSteps")
     progress = body.get("progress")
@@ -617,7 +616,7 @@ async def create_transfer(body: dict):
             )
             property_id = property_result.rows[0]["id"]
 
-        status_value = status if is_valid_transfer_status(status) else "in_progress"
+        status_value = "in_progress"
         current_step_value = current_step if isinstance(current_step, (int, float)) else 1
         total_steps_value = total_steps if isinstance(total_steps, (int, float)) else 5
         progress_value = progress if isinstance(progress, (int, float)) else 0
