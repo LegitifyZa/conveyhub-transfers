@@ -7,8 +7,10 @@ import string
 import time
 
 from fastapi import APIRouter, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 
+from config import load_settings
 from db import query, with_transaction
 from utils.validate import is_non_empty_string, is_sa_postal_code, is_uuid, is_valid_status, to_number
 
@@ -117,33 +119,33 @@ def map_property_row(row):
     if not row:
         return None
     return {
-        "id": row["id"],
-        "propertyId": row["property_id"],
-        "erfNumber": row["erf_number"],
-        "streetAddress": row["street_address"],
-        "suburb": row["suburb"],
-        "city": row["city"],
-        "postalCode": row["postal_code"],
-        "province": row["province"],
-        "country": row["country"],
-        "propertyType": row["property_type"],
-        "titleDeedNumber": row["title_deed_number"],
-        "extentSqm": _num(row["extent_sqm"]),
-        "description": row["description"],
-        "legalDescription": row["legal_description"],
-        "lotNumber": row["lot_number"],
-        "yearBuilt": _num(row["year_built"]),
-        "squareFootage": _num(row["square_footage"]),
-        "status": row["status"],
-        "createdAt": row["created_at"],
-        "updatedAt": row["updated_at"],
+        "id": row.get("id"),
+        "propertyId": row.get("property_id"),
+        "erfNumber": row.get("erf_number"),
+        "streetAddress": row.get("street_address"),
+        "suburb": row.get("suburb"),
+        "city": row.get("city"),
+        "postalCode": row.get("postal_code"),
+        "province": row.get("province"),
+        "country": row.get("country"),
+        "propertyType": row.get("property_type"),
+        "titleDeedNumber": row.get("title_deed_number"),
+        "extentSqm": _num(row.get("extent_sqm")),
+        "description": row.get("description"),
+        "legalDescription": row.get("legal_description"),
+        "lotNumber": row.get("lot_number"),
+        "yearBuilt": _num(row.get("year_built")),
+        "squareFootage": _num(row.get("square_footage")),
+        "status": row.get("status"),
+        "createdAt": row.get("created_at"),
+        "updatedAt": row.get("updated_at"),
     }
 
 
 def map_transfer_row(row):
-    milestone_progress = row["milestone_progress"]
-    milestone_completed = row["milestone_completed"]
-    parties = row["parties"]
+    milestone_progress = row.get("milestone_progress")
+    milestone_completed = row.get("milestone_completed")
+    parties = row.get("parties", [])
     if isinstance(parties, str):
         try:
             parties = json.loads(parties)
@@ -162,7 +164,7 @@ def map_transfer_row(row):
         "progress": _num(milestone_progress) if milestone_progress is not None else _num(row["progress"]),
         "createdAt": row["created_at"],
         "updatedAt": row["updated_at"],
-        "nextDueDate": row["next_due_date"],
+        "nextDueDate": row.get("next_due_date"),
         "parties": [map_party_row(p) for p in parties],
     }
 
@@ -281,7 +283,7 @@ async def save_transfer_document_upload(conn, transfer_uuid, transfer_document_i
     return result.rows[0] if result.rows else None
 
 
-async def get_or_create_matter_for_transfer(conn, transfer_id, transfer_reference):
+async def get_or_create_matter_for_transfer(conn, transfer_id, transfer_reference, accountable_institution_id):
     matter_result = await query(
         "SELECT id FROM matters WHERE source_record_id = $1 AND matter_type = $2 LIMIT 1",
         [transfer_id, "transfer"],
@@ -291,10 +293,17 @@ async def get_or_create_matter_for_transfer(conn, transfer_id, transfer_referenc
         return matter_result.rows[0]["id"]
 
     insert_result = await query(
-        """INSERT INTO matters (reference_number, matter_type, title, status, source_record_id)
-         VALUES ($1, $2, $3, $4, $5)
+        """INSERT INTO matters (reference_number, matter_type, title, status, source_record_id, accountable_institution_id)
+         VALUES ($1, $2, $3, $4, $5, $6)
          RETURNING id""",
-        [transfer_reference, "transfer", f"Transfer {transfer_reference}", "draft", transfer_id],
+        [
+            transfer_reference,
+            "transfer",
+            f"Transfer {transfer_reference}",
+            "draft",
+            transfer_id,
+            accountable_institution_id,
+        ],
         connection=conn,
     )
     return insert_result.rows[0]["id"]
@@ -559,6 +568,17 @@ async def create_transfer(body: dict):
             content={"success": False, "error": "Property address is required"},
         )
 
+    # TEMPORARY: the unauthenticated legacy create path is a bridge.  It is
+    # controlled entirely by server-side configuration and cannot be overridden
+    # by request body values.  Delete once the legacy write path is retired.
+    settings = load_settings()
+    legacy_ai = settings.legacy_accountable_institution_id
+    if legacy_ai is None or not isinstance(legacy_ai, int) or legacy_ai <= 0:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": "Server configuration error"},
+        )
+
     async def _create(conn):
         transfer_id = await generate_unique_transfer_id(conn)
 
@@ -573,8 +593,8 @@ async def create_transfer(body: dict):
                 """INSERT INTO properties (
                   property_id, street_address, suburb, city, postal_code, province,
                   country, property_type, erf_number, title_deed_number, extent_sqm, description,
-                  legal_description, lot_number, year_built, square_footage
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+                  legal_description, lot_number, year_built, square_footage, created_for_transfer_id
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
                 RETURNING id""",
                 [
                     property_id_value,
@@ -593,6 +613,7 @@ async def create_transfer(body: dict):
                     property_data.get("lotNumber") if is_non_empty_string(property_data.get("lotNumber")) else None,
                     to_number(property_data.get("yearBuilt")),
                     to_number(property_data.get("squareFootage")),
+                    transfer_id,
                 ],
                 connection=conn,
             )
@@ -606,8 +627,8 @@ async def create_transfer(body: dict):
         transfer_result = await query(
             """INSERT INTO transfers (
               transfer_id, property_id, property_address, purchase_price, status,
-              current_step, total_steps, progress
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+              current_step, total_steps, progress, accountable_institution_id
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             RETURNING *""",
             [
                 transfer_id,
@@ -618,6 +639,7 @@ async def create_transfer(body: dict):
                 current_step_value,
                 total_steps_value,
                 progress_value,
+                legacy_ai,
             ],
             connection=conn,
         )
@@ -679,7 +701,7 @@ async def create_transfer(body: dict):
             )
             created_parties.append(map_party_row(party_result.rows[0]))
 
-        matter_id = await get_or_create_matter_for_transfer(conn, transfer_uuid, transfer_id)
+        matter_id = await get_or_create_matter_for_transfer(conn, transfer_uuid, transfer_id, legacy_ai)
         await create_default_milestones(conn, matter_id)
         await seed_transfer_documents(conn, transfer_uuid)
 
@@ -711,14 +733,18 @@ async def create_transfer(body: dict):
     new_transfer = await with_transaction(_create)
     return JSONResponse(
         status_code=201,
-        content={"success": True, "data": new_transfer, "message": "Transfer created successfully"},
+        content=jsonable_encoder({
+            "success": True,
+            "data": new_transfer,
+            "message": "Transfer created successfully",
+        }),
     )
 
 
 @router.put("/{id}")
 async def update_transfer(id: str, body: dict):
     transfer_result = await query(
-        f"SELECT id, transfer_id FROM transfers WHERE transfer_id = $1{' OR id = $1::uuid' if is_uuid(id) else ''}",
+        f"SELECT id, transfer_id, accountable_institution_id FROM transfers WHERE transfer_id = $1{' OR id = $1::uuid' if is_uuid(id) else ''}",
         [id],
     )
     if not transfer_result.rows:
@@ -728,6 +754,7 @@ async def update_transfer(id: str, body: dict):
         )
     transfer_uuid = transfer_result.rows[0]["id"]
     transfer_reference = transfer_result.rows[0]["transfer_id"]
+    transfer_ai = transfer_result.rows[0]["accountable_institution_id"]
 
     property_data = body.get("property") or {}
     parties = _resolve_parties(body.get("parties"))
@@ -1036,7 +1063,7 @@ async def update_transfer(id: str, body: dict):
                         connection=conn,
                     )
 
-        await get_or_create_matter_for_transfer(conn, transfer_uuid, transfer_reference)
+        await get_or_create_matter_for_transfer(conn, transfer_uuid, transfer_reference, transfer_ai)
 
         final_transfer = await query(
             """SELECT t.*, p.id as property_row_id, p.property_id, p.erf_number, p.street_address, p.suburb, p.city,
@@ -1097,16 +1124,129 @@ async def update_transfer(id: str, body: dict):
 
 @router.delete("/{id}")
 async def delete_transfer(id: str):
-    result = await query(
-        f"DELETE FROM transfers WHERE transfer_id = $1{' OR id = $1::uuid' if is_uuid(id) else ''}",
-        [id],
-    )
-    if (result.row_count or 0) == 0:
-        return JSONResponse(
-            status_code=404,
-            content={"success": False, "error": "Transfer not found"},
+    async def _delete(conn):
+        transfer_result = await query(
+            f"""SELECT id, transfer_id, matter_id, property_id
+                  FROM transfers
+                 WHERE transfer_id = $1{' OR id = $1::uuid' if is_uuid(id) else ''}
+                   FOR UPDATE""",
+            [id],
+            connection=conn,
         )
-    return {"success": True, "data": True, "message": "Transfer deleted successfully"}
+        if not transfer_result.rows:
+            return JSONResponse(
+                status_code=404,
+                content={"success": False, "error": "Transfer not found"},
+            )
+
+        transfer_row = transfer_result.rows[0]
+        transfer_uuid = str(transfer_row["id"])
+        transfer_ref = transfer_row["transfer_id"]
+        matter_id = transfer_row["matter_id"]
+        property_id = transfer_row["property_id"]
+
+        await query(
+            "DELETE FROM transfers WHERE id = $1",
+            [transfer_uuid],
+            connection=conn,
+        )
+
+        # Identify the matter by the actual relationship: matters.source_record_id = transfers.id.
+        # Do not rely solely on transfers.matter_id, which the legacy create path does not populate.
+        matter_count_result = await query(
+            "SELECT COUNT(*) as count FROM matters WHERE source_record_id = $1 AND matter_type = 'transfer'",
+            [transfer_uuid],
+            connection=conn,
+        )
+        matter_count = int(matter_count_result.rows[0]["count"])
+
+        # Only proceed with a single, unambiguous matter. Duplicate/corrupt source_record_ids
+        # fail safely by retaining the matter rows.
+        if matter_count == 1:
+            matter_result = await query(
+                "SELECT id, matter_type, source_record_id FROM matters WHERE source_record_id = $1 AND matter_type = 'transfer' FOR UPDATE",
+                [transfer_uuid],
+                connection=conn,
+            )
+            if matter_result.rows:
+                matter_row = matter_result.rows[0]
+                can_delete_matter = (
+                    matter_row["matter_type"] == "transfer"
+                    and matter_row["source_record_id"] == transfer_uuid
+                )
+
+                if can_delete_matter:
+                    linked_matter_id = matter_row["id"]
+
+                    other_transfers = await query(
+                        "SELECT COUNT(*) as count FROM transfers WHERE matter_id = $1 AND id != $2",
+                        [linked_matter_id, transfer_uuid],
+                        connection=conn,
+                    )
+                    has_other_transfers = int(other_transfers.rows[0]["count"]) > 0
+
+                    blocking_queries = [
+                        "SELECT COUNT(*) as count FROM bonds WHERE matter_id = $1",
+                        "SELECT COUNT(*) as count FROM clearance_records WHERE matter_id = $1",
+                        "SELECT COUNT(*) as count FROM compliance_certificates WHERE matter_id = $1",
+                        "SELECT COUNT(*) as count FROM fica_verifications WHERE matter_id = $1",
+                        "SELECT COUNT(*) as count FROM matter_accounts WHERE matter_id = $1",
+                        "SELECT COUNT(*) as count FROM matter_parties WHERE matter_id = $1",
+                        "SELECT COUNT(*) as count FROM parties WHERE matter_id = $1",
+                    ]
+
+                    has_blocking_children = False
+                    for text in blocking_queries:
+                        count_result = await query(text, [linked_matter_id], connection=conn)
+                        if int(count_result.rows[0]["count"]) > 0:
+                            has_blocking_children = True
+                            break
+
+                    if not has_other_transfers and not has_blocking_children:
+                        await query(
+                            "DELETE FROM matters WHERE id = $1",
+                            [linked_matter_id],
+                            connection=conn,
+                        )
+
+        if property_id:
+            property_result = await query(
+                "SELECT created_for_transfer_id FROM properties WHERE id = $1 FOR UPDATE",
+                [property_id],
+                connection=conn,
+            )
+            if property_result.rows:
+                property_row = property_result.rows[0]
+                is_auto_created = property_row["created_for_transfer_id"] == transfer_ref
+
+                if is_auto_created:
+                    ref_queries = [
+                        "SELECT COUNT(*) as count FROM transfers WHERE property_id = $1 AND id != $2",
+                        "SELECT COUNT(*) as count FROM matters WHERE property_id = $1",
+                        "SELECT COUNT(*) as count FROM municipal_accounts WHERE property_id = $1",
+                        "SELECT COUNT(*) as count FROM compliance_certificates WHERE property_id = $1",
+                    ]
+
+                    has_references = False
+                    for text in ref_queries:
+                        # The transfers query needs the deleted transfer id excluded;
+                        # the other reference checks only need the property id.
+                        ref_params = [property_id, transfer_uuid] if "FROM transfers" in text else [property_id]
+                        count_result = await query(text, ref_params, connection=conn)
+                        if int(count_result.rows[0]["count"]) > 0:
+                            has_references = True
+                            break
+
+                    if not has_references:
+                        await query(
+                            "DELETE FROM properties WHERE id = $1",
+                            [property_id],
+                            connection=conn,
+                        )
+
+        return {"success": True, "data": True, "message": "Transfer deleted successfully"}
+
+    return await with_transaction(_delete)
 
 
 @router.get("/{id}/parties")

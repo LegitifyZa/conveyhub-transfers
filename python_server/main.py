@@ -1,4 +1,5 @@
 import os
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -6,10 +7,26 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from config import load_settings
 from db import close_pool, get_pool
 from routers import address, clauses, document_catalogue, documents, generated_documents, health, milestones, template_data_fields, transfers, users
+from routers.v1 import transfers as v1_transfers
 
-app = FastAPI(title="Legitify ConveyHub API", version="1.0.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    app.state.settings = load_settings()
+    await get_pool(app.state.settings)
+    yield
+    await close_pool()
+
+
+app = FastAPI(
+    title="Legitify ConveyHub API",
+    version="1.0.0",
+    lifespan=lifespan,
+    redirect_slashes=False,
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -21,6 +38,7 @@ app.add_middleware(
 
 app.include_router(health.router, prefix="/api/health")
 app.include_router(transfers.router, prefix="/api/transfers")
+app.include_router(v1_transfers.router, prefix="/api/v1/transfers")
 app.include_router(milestones.router, prefix="/api")
 app.include_router(document_catalogue.router, prefix="/api/catalogue")
 app.include_router(address.router, prefix="/api/address")
@@ -94,24 +112,16 @@ async def generic_exception_handler(request: Request, exc: Exception):
     print("Unhandled error:", exc)
     traceback.print_exc()
     status_code = getattr(exc, "status_code", 500)
-    message = "Internal server error" if os.getenv("NODE_ENV") == "production" else str(exc)
+    settings = getattr(request.app.state, "settings", None)
+    node_env = settings.node_env if settings is not None else "development"
+    message = "Internal server error" if node_env == "production" else str(exc)
     return JSONResponse(
         status_code=status_code,
         content={"success": False, "error": message},
     )
 
 
-@app.on_event("startup")
-async def startup():
-    await get_pool()
-
-
-@app.on_event("shutdown")
-async def shutdown():
-    await close_pool()
-
-
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.getenv("PORT", "3000"))
-    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
+    settings = load_settings()
+    uvicorn.run("main:app", host="0.0.0.0", port=settings.port, reload=True)

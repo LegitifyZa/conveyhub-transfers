@@ -261,7 +261,8 @@ async function saveTransferDocumentUpload(
 async function getOrCreateMatterForTransfer(
   client: import('pg').PoolClient,
   transferId: string,
-  transferReference: string
+  transferReference: string,
+  accountableInstitutionId: number
 ): Promise<string> {
   const matterResult = await client.query(
     'SELECT id FROM matters WHERE source_record_id = $1 AND matter_type = $2 LIMIT 1',
@@ -270,10 +271,17 @@ async function getOrCreateMatterForTransfer(
   if (matterResult.rows[0]) return matterResult.rows[0].id
 
   const insertResult = await client.query(
-    `INSERT INTO matters (reference_number, matter_type, title, status, source_record_id)
-     VALUES ($1, $2, $3, $4, $5)
+    `INSERT INTO matters (reference_number, matter_type, title, status, source_record_id, accountable_institution_id)
+     VALUES ($1, $2, $3, $4, $5, $6)
      RETURNING id`,
-    [transferReference, 'transfer', `Transfer ${transferReference}`, 'draft', transferId]
+    [
+      transferReference,
+      'transfer',
+      `Transfer ${transferReference}`,
+      'draft',
+      transferId,
+      accountableInstitutionId,
+    ]
   )
   return insertResult.rows[0].id
 }
@@ -517,6 +525,20 @@ router.post(
     const totalSteps = body.totalSteps
     const progress = body.progress
 
+    // TEMPORARY: unauthenticated legacy create path controlled by server-side
+    // configuration.  Cannot be overridden by the request body.  Delete once the
+    // legacy write path is retired.
+    const rawLegacyAI = process.env.LEGACY_ACCOUNTABLE_INSTITUTION_ID
+    if (!rawLegacyAI || rawLegacyAI.trim() === '') {
+      res.status(500).json({ success: false, error: 'Server configuration error' })
+      return
+    }
+    const legacyAI = Number(rawLegacyAI)
+    if (!Number.isInteger(legacyAI) || legacyAI <= 0) {
+      res.status(500).json({ success: false, error: 'Server configuration error' })
+      return
+    }
+
     const propertyAddress = property && isNonEmptyString(property.address) ? property.address : undefined
     const purchasePrice = toNumber(financials?.purchasePrice) ?? toNumber(body.purchasePrice) ?? 0
 
@@ -539,8 +561,8 @@ router.post(
           `INSERT INTO properties (
             property_id, street_address, suburb, city, postal_code, province,
             country, property_type, erf_number, title_deed_number, extent_sqm, description,
-            legal_description, lot_number, year_built, square_footage
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+            legal_description, lot_number, year_built, square_footage, created_for_transfer_id
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
           RETURNING id`,
           [
             propertyIdValue,
@@ -559,6 +581,7 @@ router.post(
             isNonEmptyString(property.lotNumber) ? property.lotNumber : null,
             toNumber(property.yearBuilt),
             toNumber(property.squareFootage),
+            transferId,
           ]
         )
         propertyId = propertyResult.rows[0].id
@@ -572,8 +595,8 @@ router.post(
       const transferResult = await client.query(
         `INSERT INTO transfers (
           transfer_id, property_id, property_address, purchase_price, status,
-          current_step, total_steps, progress
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+          current_step, total_steps, progress, accountable_institution_id
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         RETURNING *`,
         [
           transferId,
@@ -584,6 +607,7 @@ router.post(
           currentStepValue,
           totalStepsValue,
           progressValue,
+          legacyAI,
         ]
       )
       const transferRow = transferResult.rows[0]
@@ -643,7 +667,7 @@ router.post(
         }
       }
 
-      const matterId = await getOrCreateMatterForTransfer(client, transferUuid, transferId)
+      const matterId = await getOrCreateMatterForTransfer(client, transferUuid, transferId, legacyAI)
       await createDefaultMilestones(client, matterId)
       await seedTransferDocuments(client, transferUuid)
 
@@ -680,13 +704,14 @@ router.put(
   '/:id',
   asyncHandler(async (req: Request, res: Response) => {
     const { id } = req.params
-    const transferResult = await query(`SELECT id, transfer_id FROM transfers WHERE transfer_id = $1${isUuid(id) ? ' OR id = $1::uuid' : ''}`, [id])
+    const transferResult = await query(`SELECT id, transfer_id, accountable_institution_id FROM transfers WHERE transfer_id = $1${isUuid(id) ? ' OR id = $1::uuid' : ''}`, [id])
     if (transferResult.rows.length === 0) {
       res.status(404).json({ success: false, error: 'Transfer not found' })
       return
     }
     const transferUuid = transferResult.rows[0].id
     const transferReference = transferResult.rows[0].transfer_id
+    const transferAi = transferResult.rows[0].accountable_institution_id
 
     const body = req.body as Record<string, unknown>
     const property = (body.property ?? undefined) as Record<string, unknown> | undefined
@@ -985,7 +1010,7 @@ router.put(
         }
       }
 
-      await getOrCreateMatterForTransfer(client, transferUuid, transferReference)
+      await getOrCreateMatterForTransfer(client, transferUuid, transferReference, transferAi)
 
       const finalTransfer = await client.query(
         `SELECT t.*, p.id as property_row_id, p.property_id, p.erf_number, p.street_address, p.suburb, p.city,
@@ -1047,12 +1072,122 @@ router.delete(
   '/:id',
   asyncHandler(async (req: Request, res: Response) => {
     const { id } = req.params
-    const result = await query(`DELETE FROM transfers WHERE transfer_id = $1${isUuid(id) ? ' OR id = $1::uuid' : ''}`, [id])
-    if ((result.rowCount ?? 0) === 0) {
-      res.status(404).json({ success: false, error: 'Transfer not found' })
-      return
-    }
-    res.json({ success: true, data: true, message: 'Transfer deleted successfully' })
+
+    await withTransaction(async (client) => {
+      const transferResult = await client.query(
+        `SELECT id, transfer_id, matter_id, property_id
+         FROM transfers
+         WHERE transfer_id = $1${isUuid(id) ? ' OR id = $1::uuid' : ''}
+         FOR UPDATE`,
+        [id]
+      )
+      if ((transferResult.rowCount ?? 0) === 0) {
+        res.status(404).json({ success: false, error: 'Transfer not found' })
+        return
+      }
+
+      const transferRow = transferResult.rows[0]
+      const transferUuid = transferRow.id as string
+      const transferRef = transferRow.transfer_id as string
+      const matterId = transferRow.matter_id as string | null
+      const propertyId = transferRow.property_id as string | null
+
+      await client.query(
+        `DELETE FROM transfers WHERE id = $1`,
+        [transferUuid]
+      )
+
+      // Identify the matter by the actual relationship: matters.source_record_id = transfers.id.
+      // Do not rely solely on transfers.matter_id, which the legacy create path does not populate.
+      const matterCountResult = await client.query(
+        `SELECT COUNT(*) as count FROM matters WHERE source_record_id = $1 AND matter_type = 'transfer'`,
+        [transferUuid]
+      )
+      const matterCount = parseInt(matterCountResult.rows[0].count, 10)
+
+      // Only proceed with a single, unambiguous matter. Duplicate/corrupt source_record_ids
+      // fail safely by retaining the matter rows.
+      if (matterCount === 1) {
+        const matterResult = await client.query(
+          `SELECT id, matter_type, source_record_id FROM matters WHERE source_record_id = $1 AND matter_type = 'transfer' FOR UPDATE`,
+          [transferUuid]
+        )
+        const matterRow = matterResult.rows[0]
+        const canDeleteMatter =
+          matterRow &&
+          matterRow.matter_type === 'transfer' &&
+          matterRow.source_record_id === transferUuid
+
+        if (canDeleteMatter) {
+          const linkedMatterId = matterRow.id as string
+
+          const otherTransferCount = await client.query(
+            `SELECT COUNT(*) as count FROM transfers WHERE matter_id = $1 AND id != $2`,
+            [linkedMatterId, transferUuid]
+          )
+          const hasOtherTransfers = parseInt(otherTransferCount.rows[0].count, 10) > 0
+
+          const blockingQueries = [
+            `SELECT COUNT(*) as count FROM bonds WHERE matter_id = $1`,
+            `SELECT COUNT(*) as count FROM clearance_records WHERE matter_id = $1`,
+            `SELECT COUNT(*) as count FROM compliance_certificates WHERE matter_id = $1`,
+            `SELECT COUNT(*) as count FROM fica_verifications WHERE matter_id = $1`,
+            `SELECT COUNT(*) as count FROM matter_accounts WHERE matter_id = $1`,
+            `SELECT COUNT(*) as count FROM matter_parties WHERE matter_id = $1`,
+            `SELECT COUNT(*) as count FROM parties WHERE matter_id = $1`,
+          ]
+
+          let hasBlockingChildren = false
+          for (const text of blockingQueries) {
+            const countResult = await client.query(text, [linkedMatterId])
+            if (parseInt(countResult.rows[0].count, 10) > 0) {
+              hasBlockingChildren = true
+              break
+            }
+          }
+
+          if (!hasOtherTransfers && !hasBlockingChildren) {
+            await client.query(`DELETE FROM matters WHERE id = $1`, [linkedMatterId])
+          }
+        }
+      }
+
+      if (propertyId) {
+        const propertyResult = await client.query(
+          `SELECT created_for_transfer_id FROM properties WHERE id = $1 FOR UPDATE`,
+          [propertyId]
+        )
+        const propertyRow = propertyResult.rows[0]
+        const isAutoCreated = propertyRow && propertyRow.created_for_transfer_id === transferRef
+
+        if (isAutoCreated) {
+          const refQueries = [
+            `SELECT COUNT(*) as count FROM transfers WHERE property_id = $1 AND id != $2`,
+            `SELECT COUNT(*) as count FROM matters WHERE property_id = $1`,
+            `SELECT COUNT(*) as count FROM municipal_accounts WHERE property_id = $1`,
+            `SELECT COUNT(*) as count FROM compliance_certificates WHERE property_id = $1`,
+          ]
+
+          let hasReferences = false
+          for (const text of refQueries) {
+            // The transfers query needs the deleted transfer id excluded;
+            // the other reference checks only need the property id.
+            const refParams = text.includes('FROM transfers') ? [propertyId, transferUuid] : [propertyId]
+            const countResult = await client.query(text, refParams)
+            if (parseInt(countResult.rows[0].count, 10) > 0) {
+              hasReferences = true
+              break
+            }
+          }
+
+          if (!hasReferences) {
+            await client.query(`DELETE FROM properties WHERE id = $1`, [propertyId])
+          }
+        }
+      }
+
+      res.json({ success: true, data: true, message: 'Transfer deleted successfully' })
+    })
   })
 )
 
