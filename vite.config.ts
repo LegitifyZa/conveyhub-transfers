@@ -4,7 +4,7 @@ import path from 'path'
 
 process.env.NODE_ENV = process.env.NODE_ENV || 'production'
 
-const API_PORT = parseInt(process.env.VITE_API_PORT || '3000', 10)
+const API_PORT = parseInt(process.env.VITE_API_PORT || '3001', 10)
 
 function getPackageName(id: string) {
   const normalized = id.replace(/\\/g, '/')

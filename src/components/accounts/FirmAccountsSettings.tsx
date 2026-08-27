@@ -9,7 +9,6 @@ import {
   RefreshCw, 
   CheckCircle, 
   AlertCircle,
-  Percent,
   Layers
 } from 'lucide-react'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui'
@@ -130,16 +129,15 @@ export const FirmAccountsSettings: React.FC = () => {
   const handleAddBracket = () => {
     if (!activeTariff) return
     const lastBracket = activeTariff.brackets[activeTariff.brackets.length - 1]
-    const min = lastBracket ? (lastBracket.maxAmount || 5000000) + 1 : 0
+    const min = lastBracket ? (lastBracket.maxAmount || 5000000) : 0
     const newBracket: TariffBracket = {
-      id: `b-${Date.now()}`,
       minAmount: min,
       maxAmount: null,
       baseFee: lastBracket ? lastBracket.baseFee + 10000 : 5000,
-      baseThreshold: min - 1,
-      incrementStep: 1000000,
-      incrementFee: 5000,
-      description: `Custom bracket above R${(min - 1).toLocaleString()}`
+      baseThreshold: min,
+      stepAmount: 1000000,
+      feePerStep: 5000,
+      description: `Custom bracket above R${min.toLocaleString()}`
     }
     setActiveTariff({
       ...activeTariff,
@@ -181,13 +179,17 @@ export const FirmAccountsSettings: React.FC = () => {
   const handleAddDisbursement = () => {
     if (!settings || !newDisbName.trim()) return
     const amt = parseFloat(newDisbAmount.replace(/[^0-9.]/g, '')) || 0
+    const code = newDisbName.trim().toUpperCase().replace(/[^A-Z0-9]/g, '_')
     const newItem: DisbursementItem = {
       id: `disb-${Date.now()}`,
+      code,
       name: newDisbName.trim(),
       amount: amt,
       isVatApplicable: newDisbVat,
-      isCustomary: false,
-      category: newDisbCategory
+      category: newDisbCategory,
+      enabled: true,
+      applicationRule: 'always',
+      description: newDisbName.trim()
     }
     setSettings({
       ...settings,
@@ -389,20 +391,6 @@ export const FirmAccountsSettings: React.FC = () => {
 
             <div>
               <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wider mb-1">
-                Account Holder / Name
-              </label>
-              <Input
-                value={settings.trustAccount?.accountName || ''}
-                onChange={e => setSettings({
-                  ...settings,
-                  trustAccount: { ...settings.trustAccount, accountName: e.target.value }
-                })}
-                placeholder="e.g. Kruger Inc Trust Account"
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wider mb-1">
                 Account Number
               </label>
               <Input
@@ -447,13 +435,13 @@ export const FirmAccountsSettings: React.FC = () => {
 
             <div>
               <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wider mb-1">
-                Payment Reference Prefix
+                Payment Beneficiary Reference
               </label>
               <Input
-                value={settings.trustAccount?.referencePrefix || 'TRF'}
+                value={settings.trustAccount?.beneficiaryReference || 'TRF'}
                 onChange={e => setSettings({
                   ...settings,
-                  trustAccount: { ...settings.trustAccount, referencePrefix: e.target.value }
+                  trustAccount: { ...settings.trustAccount, beneficiaryReference: e.target.value }
                 })}
                 placeholder="e.g. TRF or MAT"
               />
@@ -468,71 +456,59 @@ export const FirmAccountsSettings: React.FC = () => {
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div>
               <CardTitle className="flex items-center gap-2 text-lg">
-                <Layers className="h-5 w-5 text-teal-600 dark:text-teal-400" />
-                <span>Conveyancing Tariff Engine (Sliding Scale)</span>
+                <Coins className="h-5 w-5 text-teal-600" />
+                LSSA Conveyancing Sliding Scale Tariff Schedules
               </CardTitle>
               <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                Manage annual Law Society of South Africa (LSSA) recommended guidelines, bracket increments, and custom firm fee rules.
+                Configure professional conveyancing fees calculated on property purchase price or bond amount.
               </p>
-            </div>
-            
-            <div className="flex items-center gap-3">
-              <label className="text-xs font-medium text-gray-600 dark:text-gray-300">Active Tariff Version:</label>
-              <select
-                value={selectedTariffId}
-                onChange={e => handleTariffChange(e.target.value)}
-                className="px-3 py-1.5 text-sm bg-white dark:bg-navy-700 border border-gray-300 dark:border-navy-600 rounded-lg text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-teal-500 font-medium"
-              >
-                {tariffs.map(t => (
-                  <option key={t.id} value={t.id}>{t.name}</option>
-                ))}
-              </select>
             </div>
           </div>
         </CardHeader>
-
         <CardContent className="p-6 space-y-6">
-          {/* Rate Multiplier / Negotiation discount */}
-          <div className="flex flex-col md:flex-row items-center justify-between p-4 rounded-xl bg-gray-50 dark:bg-navy-800/60 border border-gray-200 dark:border-navy-700 gap-4">
-            <div className="space-y-1">
-              <h4 className="font-semibold text-sm text-gray-900 dark:text-gray-100 flex items-center gap-1.5">
-                <Percent className="h-4 w-4 text-teal-600 dark:text-teal-400" />
-                Firm Tariff Multiplier / Discount Rate
-              </h4>
-              <p className="text-xs text-gray-500 dark:text-gray-400">
-                1.0 = 100% LSSA Standard Guideline. Set to 0.85 for 15% developer discount, or 1.10 for 10% premium.
-              </p>
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 p-4 bg-gray-50 dark:bg-navy-800 rounded-xl border border-gray-200 dark:border-navy-700">
+            <div className="flex-1">
+              <label className="block text-xs font-semibold text-gray-700 dark:text-gray-300 uppercase tracking-wider mb-1">
+                Active Fee Schedule
+              </label>
+              <select
+                value={selectedTariffId}
+                onChange={e => handleTariffChange(e.target.value)}
+                className="w-full md:w-80 px-3 py-2 rounded-lg border border-gray-300 dark:border-navy-600 bg-white dark:bg-navy-700 text-gray-900 dark:text-gray-100 font-medium"
+              >
+                {tariffs.map(t => (
+                  <option key={t.id} value={t.id}>
+                    {t.name} {t.isOfficial ? '(Official Guideline)' : '(Custom Firm Tariff)'}
+                  </option>
+                ))}
+              </select>
             </div>
-            <div className="flex items-center gap-2">
-              <Input
-                type="number"
-                step="0.05"
-                min="0.1"
-                max="3.0"
-                value={settings.tariffMultiplier ?? 1.0}
-                onChange={e => setSettings({ ...settings, tariffMultiplier: parseFloat(e.target.value) || 1.0 })}
-                className="w-24 text-center font-bold text-teal-600"
-              />
-              <span className="text-sm font-semibold text-gray-600 dark:text-gray-300">
-                ({Math.round(((settings.tariffMultiplier ?? 1.0) * 100))}% of tariff)
-              </span>
-            </div>
+            {activeTariff && (
+              <div className="flex items-center gap-2">
+                <Badge variant={activeTariff.isOfficial ? 'success' : 'warning'}>
+                  {activeTariff.isOfficial ? 'Official Benchmark' : 'Firm Custom'}
+                </Badge>
+                <span className="text-xs text-gray-500 font-mono">Effective: {activeTariff.effectiveDate}</span>
+              </div>
+            )}
           </div>
 
-          {/* Brackets Table */}
           {activeTariff && (
-            <div className="space-y-3">
+            <div className="space-y-4">
               <div className="flex items-center justify-between">
-                <h4 className="text-sm font-bold text-gray-800 dark:text-gray-200 uppercase tracking-wider">
-                  Sliding Scale Brackets ({activeTariff.name})
+                <h4 className="text-sm font-bold text-gray-900 dark:text-gray-100 flex items-center gap-2">
+                  <Layers className="h-4 w-4 text-teal-600" />
+                  Sliding Scale Brackets ({activeTariff.brackets.length} Tiers)
                 </h4>
-                <Button size="sm" variant="outline" onClick={handleAddBracket} className="text-xs">
-                  <Plus className="h-3.5 w-3.5 mr-1" />
-                  Add Bracket Tier
-                </Button>
+                {!activeTariff.isOfficial && (
+                  <Button variant="outline" size="sm" onClick={handleAddBracket} className="gap-1 text-xs">
+                    <Plus className="h-3.5 w-3.5" />
+                    Add Tier
+                  </Button>
+                )}
               </div>
 
-              <div className="overflow-x-auto rounded-xl border border-gray-200 dark:border-navy-700">
+              <div className="overflow-x-auto border border-gray-200 dark:border-navy-700 rounded-xl">
                 <table className="w-full text-xs text-left">
                   <thead className="bg-gray-100 dark:bg-navy-800 text-gray-600 dark:text-gray-400 uppercase font-semibold">
                     <tr>
@@ -547,13 +523,14 @@ export const FirmAccountsSettings: React.FC = () => {
                   </thead>
                   <tbody className="divide-y divide-gray-100 dark:divide-navy-700 font-mono">
                     {activeTariff.brackets.map((bracket, idx) => (
-                      <tr key={bracket.id || idx} className="hover:bg-gray-50/80 dark:hover:bg-navy-800/40">
+                      <tr key={idx} className="hover:bg-gray-50/80 dark:hover:bg-navy-800/40">
                         <td className="px-3 py-2">
                           <input
                             type="number"
                             value={bracket.minAmount}
                             onChange={e => handleBracketChange(idx, 'minAmount', parseFloat(e.target.value) || 0)}
                             className="w-24 p-1 rounded border border-gray-300 dark:border-navy-600 bg-white dark:bg-navy-700"
+                            disabled={activeTariff.isOfficial}
                           />
                         </td>
                         <td className="px-3 py-2">
@@ -563,6 +540,7 @@ export const FirmAccountsSettings: React.FC = () => {
                               value={bracket.maxAmount}
                               onChange={e => handleBracketChange(idx, 'maxAmount', parseFloat(e.target.value) || 0)}
                               className="w-24 p-1 rounded border border-gray-300 dark:border-navy-600 bg-white dark:bg-navy-700"
+                              disabled={activeTariff.isOfficial}
                             />
                           ) : (
                             <span className="text-gray-400 font-sans italic">Unlimited</span>
@@ -574,6 +552,7 @@ export const FirmAccountsSettings: React.FC = () => {
                             value={bracket.baseFee}
                             onChange={e => handleBracketChange(idx, 'baseFee', parseFloat(e.target.value) || 0)}
                             className="w-24 p-1 rounded border border-gray-300 dark:border-navy-600 bg-white dark:bg-navy-700 text-teal-600 font-bold"
+                            disabled={activeTariff.isOfficial}
                           />
                         </td>
                         <td className="px-3 py-2">
@@ -582,29 +561,32 @@ export const FirmAccountsSettings: React.FC = () => {
                             value={bracket.baseThreshold}
                             onChange={e => handleBracketChange(idx, 'baseThreshold', parseFloat(e.target.value) || 0)}
                             className="w-24 p-1 rounded border border-gray-300 dark:border-navy-600 bg-white dark:bg-navy-700"
+                            disabled={activeTariff.isOfficial}
                           />
                         </td>
                         <td className="px-3 py-2">
                           <input
                             type="number"
-                            value={bracket.incrementStep}
-                            onChange={e => handleBracketChange(idx, 'incrementStep', parseFloat(e.target.value) || 0)}
+                            value={bracket.stepAmount}
+                            onChange={e => handleBracketChange(idx, 'stepAmount', parseFloat(e.target.value) || 0)}
                             className="w-24 p-1 rounded border border-gray-300 dark:border-navy-600 bg-white dark:bg-navy-700"
+                            disabled={activeTariff.isOfficial}
                           />
                         </td>
                         <td className="px-3 py-2">
                           <input
                             type="number"
-                            value={bracket.incrementFee}
-                            onChange={e => handleBracketChange(idx, 'incrementFee', parseFloat(e.target.value) || 0)}
+                            value={bracket.feePerStep}
+                            onChange={e => handleBracketChange(idx, 'feePerStep', parseFloat(e.target.value) || 0)}
                             className="w-24 p-1 rounded border border-gray-300 dark:border-navy-600 bg-white dark:bg-navy-700 text-teal-600 font-bold"
+                            disabled={activeTariff.isOfficial}
                           />
                         </td>
                         <td className="px-3 py-2 text-right">
                           <button
                             type="button"
                             onClick={() => handleRemoveBracket(idx)}
-                            disabled={activeTariff.brackets.length <= 1}
+                            disabled={activeTariff.isOfficial || activeTariff.brackets.length <= 1}
                             className="text-gray-400 hover:text-red-500 disabled:opacity-30 p-1"
                           >
                             <Trash2 className="h-4 w-4" />

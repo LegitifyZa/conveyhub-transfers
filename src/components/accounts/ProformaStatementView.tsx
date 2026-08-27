@@ -15,9 +15,9 @@ import {
   formatZAR, 
   FirmAccountSettings, 
   DEFAULT_FIRM_SETTINGS,
-  DisbursementItem,
-  AccountCredit,
-  ADHOC_DEEDS_OFFICE_FEES
+  AppliedDisbursementLine,
+  StatementCredit,
+  OFFICIAL_DEEDS_OFFICE_ADHOC_FEES
 } from '@/utils/conveyancingAccounts'
 
 interface ProformaStatementViewProps {
@@ -71,7 +71,7 @@ export const ProformaStatementView: React.FC<ProformaStatementViewProps> = ({
     const deedsReg = base.deedsOfficeRegistrationFee || 0
     const deedsLodge = base.deedsOfficeLodgementFee || 0
     const adhocDeeds = base.deedsOfficeAdhocFees || []
-    const deedsAdhocTotal = adhocDeeds.reduce((s, i) => s + (i.fee || 0), 0)
+    const deedsAdhocTotal = adhocDeeds.reduce((s, i) => s + (Number(i.amount) || 0), 0)
     const deedsTotal = deedsReg + deedsLodge + deedsAdhocTotal
 
     // Disbursements
@@ -79,16 +79,17 @@ export const ProformaStatementView: React.FC<ProformaStatementViewProps> = ({
     let disbExcl = 0
     let disbVat = 0
     disbs.forEach(d => {
-      disbExcl += d.amount || 0
+      const amt = Number(d.amountExclVat) || 0
+      disbExcl += amt
       if (d.isVatApplicable && firmSettings.isVatRegistered) {
-        disbVat += Math.round((d.amount || 0) * vatRate)
+        disbVat += Math.round(amt * vatRate)
       }
     })
     const disbIncl = disbExcl + disbVat
 
     // Credits
     const creds = base.credits || []
-    const totalCredits = creds.reduce((s, c) => s + (c.amount || 0), 0)
+    const totalCredits = creds.reduce((s, c) => s + (Number(c.amount) || 0), 0)
 
     const transferDuty = base.transferDuty || 0
     const subtotalExclVat = convFee + transferDuty + deedsTotal + disbExcl
@@ -119,12 +120,19 @@ export const ProformaStatementView: React.FC<ProformaStatementViewProps> = ({
   const handleAddDisbursement = () => {
     if (!newDisbName.trim()) return
     const amt = parseFloat(newDisbAmount.replace(/[^0-9.]/g, '')) || 0
-    const newItem: DisbursementItem = {
+    const vat = newDisbVat && firmSettings.isVatRegistered ? Math.round(amt * (firmSettings.vatRate || 0.15)) : 0
+    const code = newDisbName.trim().toUpperCase().replace(/[^A-Z0-9]/g, '_')
+    const newItem: AppliedDisbursementLine = {
       id: `disb-${Date.now()}`,
+      code,
       name: newDisbName.trim(),
-      amount: amt,
+      amountExclVat: amt,
+      vatAmount: vat,
+      amountInclVat: amt + vat,
       isVatApplicable: newDisbVat,
-      category: 'adhoc'
+      category: 'adhoc',
+      applicationRule: 'manual',
+      applicationReason: 'Manual line item added during customization'
     }
     recalculateAndSave({
       disbursements: [...statement.disbursements, newItem]
@@ -143,14 +151,14 @@ export const ProformaStatementView: React.FC<ProformaStatementViewProps> = ({
   const handleAddCredit = () => {
     if (!newCreditName.trim()) return
     const amt = parseFloat(newCreditAmount.replace(/[^0-9.]/g, '')) || 0
-    const newCredit: AccountCredit = {
+    const newCredit: StatementCredit = {
       id: `cred-${Date.now()}`,
       name: newCreditName.trim(),
       amount: amt,
-      date: new Date().toISOString()
+      source: 'other'
     }
     recalculateAndSave({
-      credits: [...statement.credits, newCredit]
+      credits: [...(statement.credits || []), newCredit]
     })
     setNewCreditName('Deposit received from purchaser')
     setNewCreditAmount('')
@@ -164,10 +172,10 @@ export const ProformaStatementView: React.FC<ProformaStatementViewProps> = ({
   }
 
   const handleAddAdhocDeedsFee = () => {
-    const feeItem = ADHOC_DEEDS_OFFICE_FEES.find(f => f.id === selectedAdhocDeedId)
+    const feeItem = OFFICIAL_DEEDS_OFFICE_ADHOC_FEES.find(f => f.id === selectedAdhocDeedId)
     if (!feeItem) return
     recalculateAndSave({
-      deedsOfficeAdhocFees: [...(statement.deedsOfficeAdhocFees || []), feeItem]
+      deedsOfficeAdhocFees: [...(statement.deedsOfficeAdhocFees || []), { id: feeItem.id, name: feeItem.name, amount: feeItem.amount }]
     })
     setSelectedAdhocDeedId('')
     setShowAddDeedsFee(false)
@@ -191,7 +199,7 @@ export const ProformaStatementView: React.FC<ProformaStatementViewProps> = ({
           <div>
             <h3 className="font-bold text-gray-900 dark:text-gray-100 flex items-center gap-2">
               Proforma Statement of Account
-              <Badge variant={statement.status === 'settled' ? 'success' : statement.status === 'issued' ? 'secondary' : 'default'}>
+              <Badge variant={statement.status === 'paid' ? 'success' : statement.status === 'issued' ? 'secondary' : 'default'}>
                 {statement.status.toUpperCase()}
               </Badge>
             </h3>
@@ -218,294 +226,284 @@ export const ProformaStatementView: React.FC<ProformaStatementViewProps> = ({
             onClick={handlePrint}
             className="bg-teal-600 hover:bg-teal-500 text-white text-xs shadow-md"
           >
-            <Printer className="h-3.5 w-3.5 mr-1.5" />
-            Print / Save as PDF
+            <Printer className="h-3.5 w-3.5 mr-1" />
+            Print / Export PDF
           </Button>
         </div>
       </div>
 
-      {/* Main Printable Document Card */}
+      {/* Printable Letterhead Statement */}
       <div 
         ref={printRef}
-        className="bg-white dark:bg-navy-900 border border-gray-200 dark:border-navy-700 rounded-2xl shadow-xl p-8 sm:p-12 text-gray-900 dark:text-gray-100 space-y-8 font-sans print:border-none print:shadow-none print:p-0 print:m-0"
+        className="p-8 sm:p-12 bg-white dark:bg-navy-900 rounded-2xl border border-gray-200 dark:border-navy-700 shadow-xl space-y-8 print:shadow-none print:border-none print:p-0"
       >
-        {/* Law Firm Header */}
-        <div className="flex flex-col sm:flex-row justify-between items-start gap-6 border-b border-gray-200 dark:border-navy-700 pb-8">
-          <div className="space-y-1.5">
-            <div className="flex items-center gap-2">
-              <div className="h-8 w-8 rounded-lg bg-teal-600 text-white font-bold flex items-center justify-center text-base">
-                {firmSettings.firmName.charAt(0)}
-              </div>
-              <h1 className="text-2xl font-black tracking-tight text-gray-900 dark:text-gray-100">
-                {firmSettings.firmName}
-              </h1>
-            </div>
-            <p className="text-xs text-gray-500 uppercase tracking-widest font-semibold">
-              Attorneys, Notaries & Conveyancers
+        {/* Law Firm Letterhead */}
+        <div className="flex flex-col sm:flex-row items-start justify-between border-b-2 border-teal-600 pb-6 gap-4">
+          <div>
+            <h2 className="text-2xl font-serif font-black tracking-tight text-gray-900 dark:text-gray-100 uppercase">
+              {firmSettings.firmName || 'Conveyancing Attorneys & Notaries'}
+            </h2>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+              Attorneys, Notaries & Conveyancers • Section 86 Trust Practice
             </p>
             {firmSettings.registrationNumber && (
-              <p className="text-xs text-gray-500">
-                Reg No: <span className="font-mono">{firmSettings.registrationNumber}</span>
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                Practice Reg: <span className="font-mono">{firmSettings.registrationNumber}</span>
               </p>
             )}
-            {firmSettings.isVatRegistered && (
-              <p className="text-xs text-teal-700 dark:text-teal-400 font-medium">
-                VAT Registration No: <span className="font-mono font-bold">{firmSettings.vatNumber}</span>
+            {firmSettings.isVatRegistered && firmSettings.vatNumber && (
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                VAT Reg No: <span className="font-mono font-semibold">{firmSettings.vatNumber}</span>
               </p>
             )}
           </div>
 
-          <div className="text-left sm:text-right space-y-1">
-            <h2 className="text-xl font-bold uppercase tracking-wide text-gray-800 dark:text-gray-200">
-              Proforma Statement of Account
-            </h2>
+          <div className="sm:text-right space-y-1">
+            <h3 className="text-xl font-bold font-sans text-teal-700 dark:text-teal-300">
+              PROFORMA STATEMENT
+            </h3>
             <p className="text-xs text-gray-500">
-              Statement Ref: <span className="font-mono font-bold text-gray-900 dark:text-gray-100">{statement.id || statement.matterReference}</span>
+              Account For: <span className="font-bold text-gray-900 dark:text-gray-100 uppercase">{statement.statementType === 'buyer' ? 'Purchaser' : statement.statementType === 'seller' ? 'Seller' : 'Combined Transfer'}</span>
+            </p>
+            <p className="text-xs font-mono text-gray-700 dark:text-gray-300">
+              Statement ID: {statement.id}
             </p>
             <p className="text-xs text-gray-500">
-              Date: <span className="font-medium text-gray-700 dark:text-gray-300">{new Date(statement.date).toLocaleDateString('en-ZA', { dateStyle: 'long' })}</span>
+              Date: {new Date(statement.date).toLocaleDateString('en-ZA', { dateStyle: 'long' })}
             </p>
-            <Badge variant="secondary" className="mt-1">
-              Account Type: {statement.statementType === 'seller' ? 'Seller Account' : 'Purchaser Account'}
-            </Badge>
           </div>
         </div>
 
-        {/* Matter & Transaction Details Box */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 p-5 rounded-xl bg-gray-50 dark:bg-navy-800/60 border border-gray-200 dark:border-navy-700 text-xs">
-          <div>
-            <span className="block text-gray-400 font-semibold uppercase tracking-wider mb-0.5">Matter Reference</span>
-            <span className="font-bold text-gray-900 dark:text-gray-100 font-mono text-sm">{statement.matterReference || statement.transferId || '—'}</span>
-          </div>
-
-          <div>
-            <span className="block text-gray-400 font-semibold uppercase tracking-wider mb-0.5">Property Description</span>
-            <span className="font-medium text-gray-900 dark:text-gray-100">{statement.propertyAddress || '—'}</span>
-            {statement.erfNumber && <p className="text-gray-500 mt-0.5">{statement.erfNumber}</p>}
-          </div>
-
-          <div>
-            <span className="block text-gray-400 font-semibold uppercase tracking-wider mb-0.5">Purchase Price</span>
-            <span className="font-bold text-teal-600 dark:text-teal-400 text-sm font-mono">{formatZAR(statement.purchasePrice)}</span>
-          </div>
-
-          <div>
-            <span className="block text-gray-400 font-semibold uppercase tracking-wider mb-0.5">Deeds Lodgement</span>
-            <span className="font-medium text-gray-900 dark:text-gray-100">
-              {statement.lodgementDeedsCount || 1} Deed{(statement.lodgementDeedsCount || 1) > 1 ? 's' : ''} (Item 1(a))
+        {/* Matter & Property Particulars */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 p-4 rounded-xl bg-gray-50 dark:bg-navy-800/60 border border-gray-200 dark:border-navy-700 text-xs">
+          <div className="space-y-1.5">
+            <span className="font-bold text-gray-600 dark:text-gray-400 uppercase tracking-wider block text-[10px]">
+              Property Description & Matter
             </span>
+            <p className="font-semibold text-gray-900 dark:text-gray-100 text-sm">
+              {statement.propertyAddress}
+            </p>
+            {statement.erfNumber && (
+              <p className="text-gray-600 dark:text-gray-400 font-mono">
+                Cadastral Erf: {statement.erfNumber}
+              </p>
+            )}
+            <p className="text-gray-600 dark:text-gray-400">
+              Matter File Reference: <span className="font-mono font-bold text-gray-900 dark:text-gray-100">{statement.matterReference || statement.transferId}</span>
+            </p>
+          </div>
+
+          <div className="space-y-1.5 md:text-right">
+            <span className="font-bold text-gray-600 dark:text-gray-400 uppercase tracking-wider block text-[10px]">
+              Financial Summary (ZAR)
+            </span>
+            <p className="text-gray-700 dark:text-gray-300">
+              Purchase Price: <span className="font-mono font-bold text-gray-900 dark:text-gray-100 text-sm">{formatZAR(statement.purchasePrice)}</span>
+            </p>
+            {statement.depositAmount > 0 && (
+              <p className="text-gray-700 dark:text-gray-300">
+                Deposit Received / Payable: <span className="font-mono">{formatZAR(statement.depositAmount)}</span>
+              </p>
+            )}
+            {statement.loanAmount > 0 && (
+              <p className="text-gray-700 dark:text-gray-300">
+                Bond / Loan Cover: <span className="font-mono">{formatZAR(statement.loanAmount)}</span>
+              </p>
+            )}
           </div>
         </div>
 
-        {/* Tabular Statement Line Items */}
-        <div className="space-y-6">
-          <div className="overflow-x-auto rounded-xl border border-gray-200 dark:border-navy-700">
-            <table className="w-full text-sm text-left">
-              <thead className="bg-gray-100 dark:bg-navy-800 text-gray-600 dark:text-gray-400 uppercase text-xs font-bold tracking-wider">
-                <tr>
-                  <th className="px-4 py-3">Description of Costs / Charges</th>
-                  <th className="px-4 py-3 text-right w-32">Amount (Excl VAT)</th>
-                  <th className="px-4 py-3 text-right w-28">VAT (15%)</th>
-                  <th className="px-4 py-3 text-right w-36">Total (ZAR)</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100 dark:divide-navy-700 font-mono text-xs">
-                {/* 1. Professional Fees */}
-                <tr className="bg-teal-500/5 font-sans font-bold text-teal-800 dark:text-teal-300">
-                  <td colSpan={4} className="px-4 py-2 uppercase tracking-wide text-xs">
-                    1. Professional Conveyancing Fees (Law Society Tariff)
-                  </td>
-                </tr>
-                <tr className="hover:bg-gray-50/50 dark:hover:bg-navy-800/30">
-                  <td className="px-4 py-3 font-sans">
-                    <span className="font-semibold text-gray-900 dark:text-gray-100">
-                      Conveyancing Professional Fee (Transfer)
-                    </span>
-                    <p className="text-gray-400 text-xs mt-0.5">Calculated on sliding scale on purchase price of {formatZAR(statement.purchasePrice)}</p>
-                  </td>
-                  <td className="px-4 py-3 text-right font-medium">{formatZAR(statement.conveyancingFeeExclVat)}</td>
-                  <td className="px-4 py-3 text-right text-gray-500">{formatZAR(statement.conveyancingFeeVat)}</td>
-                  <td className="px-4 py-3 text-right font-bold text-gray-900 dark:text-gray-100">{formatZAR(statement.conveyancingFeeInclVat)}</td>
-                </tr>
+        {/* Itemized Line Items Table */}
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs text-left">
+            <thead className="bg-gray-100 dark:bg-navy-800 text-gray-700 dark:text-gray-300 uppercase tracking-wider font-semibold border-b border-gray-200 dark:border-navy-700 font-sans">
+              <tr>
+                <th className="px-4 py-3">Description of Professional Fees & Disbursements</th>
+                <th className="px-4 py-3 text-right">Fee (Excl VAT)</th>
+                <th className="px-4 py-3 text-right">VAT (15%)</th>
+                <th className="px-4 py-3 text-right">Total (ZAR)</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100 dark:divide-navy-700 font-mono">
+              {/* 1. Professional Conveyancing Fees */}
+              <tr className="bg-teal-500/5 font-sans font-bold text-teal-800 dark:text-teal-300">
+                <td colSpan={4} className="px-4 py-2 uppercase tracking-wide text-xs">
+                  1. Professional Conveyancing Fees (LSSA Guideline Tariff)
+                </td>
+              </tr>
+              <tr className="hover:bg-gray-50/50 dark:hover:bg-navy-800/30">
+                <td className="px-4 py-3 font-sans">
+                  <span className="font-medium text-gray-900 dark:text-gray-100">
+                    Conveyancing Attorney Professional Fee (Transfer)
+                  </span>
+                  <p className="text-gray-400 text-xs mt-0.5">Calculated on purchase price of {formatZAR(statement.purchasePrice)}</p>
+                </td>
+                <td className="px-4 py-3 text-right">{formatZAR(statement.conveyancingFeeExclVat)}</td>
+                <td className="px-4 py-3 text-right text-gray-500">{formatZAR(statement.conveyancingFeeVat)}</td>
+                <td className="px-4 py-3 text-right font-bold text-gray-900 dark:text-gray-100">{formatZAR(statement.conveyancingFeeInclVat)}</td>
+              </tr>
 
-                {/* 2. SARS Transfer Duty */}
-                <tr className="bg-teal-500/5 font-sans font-bold text-teal-800 dark:text-teal-300">
-                  <td colSpan={4} className="px-4 py-2 uppercase tracking-wide text-xs">
-                    2. Statutory Tax: SARS Transfer Duty
-                  </td>
-                </tr>
-                <tr className="hover:bg-gray-50/50 dark:hover:bg-navy-800/30">
-                  <td className="px-4 py-3 font-sans">
-                    <span className="font-semibold text-gray-900 dark:text-gray-100">
-                      Transfer Duty Payable to SARS
-                    </span>
-                    <p className="text-gray-400 text-xs mt-0.5">{statement.transferDutyDescription}</p>
-                  </td>
-                  <td className="px-4 py-3 text-right font-medium">{formatZAR(statement.transferDuty)}</td>
-                  <td className="px-4 py-3 text-right text-gray-400 italic font-sans">Exempt</td>
-                  <td className="px-4 py-3 text-right font-bold text-gray-900 dark:text-gray-100">{formatZAR(statement.transferDuty)}</td>
-                </tr>
+              {/* 2. Transfer Duty */}
+              <tr className="bg-teal-500/5 font-sans font-bold text-teal-800 dark:text-teal-300">
+                <td colSpan={4} className="px-4 py-2 uppercase tracking-wide text-xs">
+                  2. Statutory Tax: SARS Transfer Duty
+                </td>
+              </tr>
+              <tr className="hover:bg-gray-50/50 dark:hover:bg-navy-800/30">
+                <td className="px-4 py-3 font-sans">
+                  <span className="font-medium text-gray-900 dark:text-gray-100">
+                    Transfer Duty Payable to SARS
+                  </span>
+                  <p className="text-gray-400 text-xs mt-0.5">{statement.transferDutyDescription}</p>
+                </td>
+                <td className="px-4 py-3 text-right font-medium">{formatZAR(statement.transferDuty)}</td>
+                <td className="px-4 py-3 text-right text-gray-400 italic font-sans">Exempt</td>
+                <td className="px-4 py-3 text-right font-bold text-gray-900 dark:text-gray-100">{formatZAR(statement.transferDuty)}</td>
+              </tr>
 
-                {/* 3. Deeds Office Registration Fees */}
-                <tr className="bg-teal-500/5 font-sans font-bold text-teal-800 dark:text-teal-300">
-                  <td colSpan={4} className="px-4 py-2 uppercase tracking-wide text-xs">
-                    3. Statutory Deeds Office Fees (GG Schedule)
+              {/* 3. Deeds Office Statutory Fees */}
+              <tr className="bg-teal-500/5 font-sans font-bold text-teal-800 dark:text-teal-300">
+                <td colSpan={4} className="px-4 py-2 uppercase tracking-wide text-xs">
+                  3. Statutory Deeds Office Fees (GG Schedule)
+                </td>
+              </tr>
+              <tr className="hover:bg-gray-50/50 dark:hover:bg-navy-800/30">
+                <td className="px-4 py-2.5 font-sans">
+                  <span className="font-medium text-gray-900 dark:text-gray-100">
+                    Deeds Office Registration Fee ({statement.statutoryScheduleItem || 'Item 1(b)'})
+                  </span>
+                </td>
+                <td className="px-4 py-2.5 text-right">{formatZAR(statement.deedsOfficeRegistrationFee)}</td>
+                <td className="px-4 py-2.5 text-right text-gray-400 italic font-sans">Zero VAT</td>
+                <td className="px-4 py-2.5 text-right font-semibold text-gray-900 dark:text-gray-100">{formatZAR(statement.deedsOfficeRegistrationFee)}</td>
+              </tr>
+              <tr className="hover:bg-gray-50/50 dark:hover:bg-navy-800/30">
+                <td className="px-4 py-2.5 font-sans">
+                  <span className="font-medium text-gray-900 dark:text-gray-100">
+                    Deeds Office Lodgement Fee (Item 1(a) @ R52.00 × {statement.lodgementDeedsCount || 1} deed{(statement.lodgementDeedsCount || 1) > 1 ? 's' : ''})
+                  </span>
+                </td>
+                <td className="px-4 py-2.5 text-right">{formatZAR(statement.deedsOfficeLodgementFee)}</td>
+                <td className="px-4 py-2.5 text-right text-gray-400 italic font-sans">Zero VAT</td>
+                <td className="px-4 py-2.5 text-right font-semibold text-gray-900 dark:text-gray-100">{formatZAR(statement.deedsOfficeLodgementFee)}</td>
+              </tr>
+              {statement.deedsOfficeAdhocFees?.map((adhoc, i) => (
+                <tr key={adhoc.id || i} className="hover:bg-gray-50/50 dark:hover:bg-navy-800/30">
+                  <td className="px-4 py-2.5 font-sans flex items-center justify-between">
+                    <span className="font-medium text-gray-900 dark:text-gray-100">{adhoc.name}</span>
+                    {isEditing && (
+                      <button onClick={() => handleRemoveDeedsAdhocFee(i)} className="text-red-500 p-1 text-xs">
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    )}
                   </td>
-                </tr>
-                <tr className="hover:bg-gray-50/50 dark:hover:bg-navy-800/30">
-                  <td className="px-4 py-2.5 font-sans">
-                    <span className="font-medium text-gray-900 dark:text-gray-100">
-                      Deeds Office Registration Fee (Item 1(b) Transfer)
-                    </span>
-                  </td>
-                  <td className="px-4 py-2.5 text-right">{formatZAR(statement.deedsOfficeRegistrationFee)}</td>
+                  <td className="px-4 py-2.5 text-right">{formatZAR(Number(adhoc.amount) || 0)}</td>
                   <td className="px-4 py-2.5 text-right text-gray-400 italic font-sans">Zero VAT</td>
-                  <td className="px-4 py-2.5 text-right font-semibold text-gray-900 dark:text-gray-100">{formatZAR(statement.deedsOfficeRegistrationFee)}</td>
+                  <td className="px-4 py-2.5 text-right font-semibold text-gray-900 dark:text-gray-100">{formatZAR(Number(adhoc.amount) || 0)}</td>
                 </tr>
-                <tr className="hover:bg-gray-50/50 dark:hover:bg-navy-800/30">
-                  <td className="px-4 py-2.5 font-sans">
-                    <span className="font-medium text-gray-900 dark:text-gray-100">
-                      Deeds Office Lodgement Fee (Item 1(a) @ R52.00 × {statement.lodgementDeedsCount || 1} deed{(statement.lodgementDeedsCount || 1) > 1 ? 's' : ''})
-                    </span>
+              ))}
+
+              {/* 4. Disbursements */}
+              <tr className="bg-teal-500/5 font-sans font-bold text-teal-800 dark:text-teal-300">
+                <td colSpan={4} className="px-4 py-2 uppercase tracking-wide text-xs">
+                  4. Practice Disbursements & Ad-hoc Charges
+                </td>
+              </tr>
+              {statement.disbursements.map((item) => (
+                <tr key={item.id} className="hover:bg-gray-50/50 dark:hover:bg-navy-800/30">
+                  <td className="px-4 py-2.5 font-sans flex items-center justify-between">
+                    <div>
+                      <span className="font-medium text-gray-900 dark:text-gray-100">{item.name}</span>
+                      {item.applicationReason && <p className="text-gray-400 text-xs">{item.applicationReason}</p>}
+                    </div>
+                    {isEditing && (
+                      <button onClick={() => handleRemoveDisbursement(item.id)} className="text-red-500 p-1 text-xs">
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    )}
                   </td>
-                  <td className="px-4 py-2.5 text-right">{formatZAR(statement.deedsOfficeLodgementFee)}</td>
-                  <td className="px-4 py-2.5 text-right text-gray-400 italic font-sans">Zero VAT</td>
-                  <td className="px-4 py-2.5 text-right font-semibold text-gray-900 dark:text-gray-100">{formatZAR(statement.deedsOfficeLodgementFee)}</td>
+                  <td className="px-4 py-2.5 text-right">{formatZAR(item.amountExclVat)}</td>
+                  <td className="px-4 py-2.5 text-right text-gray-500">{item.vatAmount > 0 ? formatZAR(item.vatAmount) : <span className="text-gray-400 italic font-sans">Exempt</span>}</td>
+                  <td className="px-4 py-2.5 text-right font-semibold text-gray-900 dark:text-gray-100">{formatZAR(item.amountInclVat)}</td>
                 </tr>
-                {statement.deedsOfficeAdhocFees?.map((adhoc, i) => (
-                  <tr key={adhoc.id || i} className="hover:bg-gray-50/50 dark:hover:bg-navy-800/30">
-                    <td className="px-4 py-2.5 font-sans flex items-center justify-between">
-                      <span className="font-medium text-gray-900 dark:text-gray-100">{adhoc.name}</span>
-                      {isEditing && (
-                        <button onClick={() => handleRemoveDeedsAdhocFee(i)} className="text-red-500 p-1 text-xs">
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      )}
+              ))}
+
+              {/* 5. Credits / Deposits */}
+              {statement.credits && statement.credits.length > 0 && (
+                <>
+                  <tr className="bg-emerald-500/10 font-sans font-bold text-emerald-800 dark:text-emerald-300">
+                    <td colSpan={4} className="px-4 py-2 uppercase tracking-wide text-xs">
+                      5. Credits & Deposits Received (Less)
                     </td>
-                    <td className="px-4 py-2.5 text-right">{formatZAR(adhoc.fee)}</td>
-                    <td className="px-4 py-2.5 text-right text-gray-400 italic font-sans">Zero VAT</td>
-                    <td className="px-4 py-2.5 text-right font-semibold text-gray-900 dark:text-gray-100">{formatZAR(adhoc.fee)}</td>
                   </tr>
-                ))}
-
-                {/* 4. Disbursements */}
-                <tr className="bg-teal-500/5 font-sans font-bold text-teal-800 dark:text-teal-300">
-                  <td colSpan={4} className="px-4 py-2 uppercase tracking-wide text-xs">
-                    4. Practice Disbursements & Ad-hoc Charges
-                  </td>
-                </tr>
-                {statement.disbursements.map((item) => {
-                  const vat = item.isVatApplicable && firmSettings.isVatRegistered ? Math.round(item.amount * (firmSettings.vatRate || 0.15)) : 0
-                  const total = item.amount + vat
-                  return (
-                    <tr key={item.id} className="hover:bg-gray-50/50 dark:hover:bg-navy-800/30">
+                  {statement.credits.map((cred) => (
+                    <tr key={cred.id} className="hover:bg-emerald-50/30 font-medium text-emerald-700 dark:text-emerald-400">
                       <td className="px-4 py-2.5 font-sans flex items-center justify-between">
-                        <div>
-                          <span className="font-medium text-gray-900 dark:text-gray-100">{item.name}</span>
-                          {item.description && <p className="text-gray-400 text-xs">{item.description}</p>}
-                        </div>
+                        <span>{cred.name}</span>
                         {isEditing && (
-                          <button onClick={() => handleRemoveDisbursement(item.id)} className="text-red-500 p-1 text-xs">
+                          <button onClick={() => handleRemoveCredit(cred.id)} className="text-red-500 p-1 text-xs">
                             <Trash2 className="h-3.5 w-3.5" />
                           </button>
                         )}
                       </td>
-                      <td className="px-4 py-2.5 text-right">{formatZAR(item.amount)}</td>
-                      <td className="px-4 py-2.5 text-right text-gray-500">{vat > 0 ? formatZAR(vat) : <span className="text-gray-400 italic font-sans">Exempt</span>}</td>
-                      <td className="px-4 py-2.5 text-right font-semibold text-gray-900 dark:text-gray-100">{formatZAR(total)}</td>
+                      <td className="px-4 py-2.5 text-right">-</td>
+                      <td className="px-4 py-2.5 text-right">-</td>
+                      <td className="px-4 py-2.5 text-right font-bold font-mono">-{formatZAR(cred.amount)}</td>
                     </tr>
-                  )
-                })}
-
-                {/* 5. Credits / Deposits */}
-                {statement.credits && statement.credits.length > 0 && (
-                  <>
-                    <tr className="bg-emerald-500/10 font-sans font-bold text-emerald-800 dark:text-emerald-300">
-                      <td colSpan={4} className="px-4 py-2 uppercase tracking-wide text-xs">
-                        5. Credits & Deposits Received (Less)
-                      </td>
-                    </tr>
-                    {statement.credits.map((cred) => (
-                      <tr key={cred.id} className="hover:bg-emerald-50/30 font-medium text-emerald-700 dark:text-emerald-400">
-                        <td className="px-4 py-2.5 font-sans flex items-center justify-between">
-                          <span>{cred.name}</span>
-                          {isEditing && (
-                            <button onClick={() => handleRemoveCredit(cred.id)} className="text-red-500 p-1 text-xs">
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </button>
-                          )}
-                        </td>
-                        <td className="px-4 py-2.5 text-right">- {formatZAR(cred.amount)}</td>
-                        <td className="px-4 py-2.5 text-right text-gray-400">—</td>
-                        <td className="px-4 py-2.5 text-right font-bold text-emerald-700 dark:text-emerald-400">- {formatZAR(cred.amount)}</td>
-                      </tr>
-                    ))}
-                  </>
-                )}
-              </tbody>
-
-              {/* Grand Totals Footer */}
-              <tfoot className="bg-gray-50 dark:bg-navy-800/80 border-t-2 border-gray-300 dark:border-navy-600 font-mono text-sm">
-                <tr>
-                  <td className="px-4 py-2 font-sans font-semibold text-gray-700 dark:text-gray-300">
-                    Subtotal Charges (Excl VAT)
-                  </td>
-                  <td className="px-4 py-2 text-right font-bold">{formatZAR(statement.subtotalExclVat)}</td>
-                  <td className="px-4 py-2 text-right font-bold text-teal-600 dark:text-teal-400">{formatZAR(statement.totalVat)}</td>
-                  <td className="px-4 py-2 text-right font-bold text-gray-900 dark:text-gray-100">{formatZAR(statement.totalCosts)}</td>
+                  ))}
+                </>
+              )}
+            </tbody>
+            <tfoot className="border-t-2 border-gray-300 dark:border-navy-600 font-mono text-sm font-bold bg-gray-50/70 dark:bg-navy-800/70">
+              <tr>
+                <td className="px-4 py-2.5 text-gray-600 dark:text-gray-300 font-sans">Subtotal (Excl. VAT):</td>
+                <td className="px-4 py-2.5 text-right">{formatZAR(statement.subtotalExclVat)}</td>
+                <td className="px-4 py-2.5 text-right text-teal-600">{formatZAR(statement.totalVat)}</td>
+                <td className="px-4 py-2.5 text-right">{formatZAR(statement.totalCosts)}</td>
+              </tr>
+              {statement.totalCredits > 0 && (
+                <tr className="text-emerald-700 dark:text-emerald-400">
+                  <td colSpan={3} className="px-4 py-2 text-right font-sans">Total Credits & Deposits Received:</td>
+                  <td className="px-4 py-2 text-right font-bold font-mono">-{formatZAR(statement.totalCredits)}</td>
                 </tr>
+              )}
+              <tr className="bg-teal-600 text-white text-base font-extrabold">
+                <td colSpan={3} className="px-4 py-3.5 uppercase tracking-wide font-sans">
+                  Total Balance Due on Proforma:
+                </td>
+                <td className="px-4 py-3.5 text-right text-lg">
+                  {formatZAR(statement.balanceDue)}
+                </td>
+              </tr>
+            </tfoot>
+          </table>
 
-                {statement.totalCredits > 0 && (
-                  <tr>
-                    <td colSpan={3} className="px-4 py-2 font-sans font-semibold text-emerald-700 dark:text-emerald-400">
-                      Less: Total Deposits / Credits Received
-                    </td>
-                    <td className="px-4 py-2 text-right font-bold text-emerald-700 dark:text-emerald-400">
-                      - {formatZAR(statement.totalCredits)}
-                    </td>
-                  </tr>
-                )}
-
-                <tr className="bg-teal-600 text-white font-bold text-base">
-                  <td colSpan={3} className="px-4 py-3 font-sans uppercase tracking-wider text-sm">
-                    Net Balance Payable by Client
-                  </td>
-                  <td className="px-4 py-3 text-right text-lg">
-                    {formatZAR(statement.balanceDue)}
-                  </td>
-                </tr>
-              </tfoot>
-            </table>
-          </div>
-
-          {/* Interactive Customize Action Panels */}
+          {/* Inline Customizer Form */}
           {isEditing && (
-            <div className="p-4 rounded-xl bg-gray-50 dark:bg-navy-800 border border-teal-500/30 space-y-4 print:hidden animate-in fade-in duration-200">
-              <h4 className="text-xs font-bold uppercase tracking-wider text-teal-700 dark:text-teal-300">
-                Add Ad-hoc Line Items or Credits
-              </h4>
+            <div className="mt-6 p-4 rounded-xl border border-dashed border-teal-500/40 bg-teal-50/20 dark:bg-teal-900/10 space-y-4">
+              <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-teal-700 dark:text-teal-300">
+                <Edit3 className="h-4 w-4" />
+                Customize Line Items & Adjustments
+              </div>
               <div className="flex flex-wrap gap-2">
-                <Button size="sm" variant="outline" onClick={() => setShowAddDisbursement(true)} className="text-xs">
-                  <Plus className="h-3.5 w-3.5 mr-1" />
-                  Add Custom Disbursement
+                <Button size="sm" variant="outline" onClick={() => setShowAddDisbursement(true)} className="text-xs gap-1">
+                  <Plus className="h-3.5 w-3.5" /> Add Disbursement
                 </Button>
-                <Button size="sm" variant="outline" onClick={() => setShowAddDeedsFee(true)} className="text-xs">
-                  <Plus className="h-3.5 w-3.5 mr-1" />
-                  Add Ad-hoc Deeds Office Charge
+                <Button size="sm" variant="outline" onClick={() => setShowAddDeedsFee(true)} className="text-xs gap-1">
+                  <Plus className="h-3.5 w-3.5" /> Add Deeds Gazette Fee
                 </Button>
-                <Button size="sm" variant="outline" onClick={() => setShowAddCredit(true)} className="text-xs">
-                  <Plus className="h-3.5 w-3.5 mr-1" />
-                  Record Deposit / Credit Received
+                <Button size="sm" variant="outline" onClick={() => setShowAddCredit(true)} className="text-xs gap-1">
+                  <Plus className="h-3.5 w-3.5" /> Record Deposit / Credit
                 </Button>
               </div>
 
-              {/* Add Custom Disbursement Form */}
+              {/* Add Disbursement Form */}
               {showAddDisbursement && (
                 <div className="p-3 bg-white dark:bg-navy-700 rounded-lg border border-gray-200 dark:border-navy-600 space-y-3">
-                  <h5 className="text-xs font-semibold">New Disbursement Item</h5>
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <h5 className="text-xs font-semibold">Add Custom Disbursement</h5>
+                  <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
                     <Input
-                      placeholder="Item name (e.g. Special Courier)"
+                      placeholder="Disbursement description"
                       value={newDisbName}
                       onChange={e => setNewDisbName(e.target.value)}
                       className="text-xs"
@@ -516,35 +514,33 @@ export const ProformaStatementView: React.FC<ProformaStatementViewProps> = ({
                       onChange={e => setNewDisbAmount(e.target.value.replace(/[^0-9.]/g, ''))}
                       className="text-xs"
                     />
-                    <div className="flex items-center gap-2">
-                      <label className="text-xs flex items-center gap-1">
-                        <input
-                          type="checkbox"
-                          checked={newDisbVat}
-                          onChange={e => setNewDisbVat(e.target.checked)}
-                          className="h-3.5 w-3.5 text-teal-600 rounded"
-                        />
-                        VAT Applicable
-                      </label>
-                      <Button size="sm" onClick={handleAddDisbursement} className="text-xs py-1">Add Item</Button>
-                    </div>
+                    <label className="flex items-center gap-2 text-xs">
+                      <input
+                        type="checkbox"
+                        checked={newDisbVat}
+                        onChange={e => setNewDisbVat(e.target.checked)}
+                        className="rounded text-teal-600"
+                      />
+                      15% VAT Applicable
+                    </label>
+                    <Button size="sm" onClick={handleAddDisbursement} className="text-xs py-1">Add Line</Button>
                   </div>
                 </div>
               )}
 
-              {/* Add Deeds Charge Form */}
+              {/* Add Deeds Adhoc Fee Form */}
               {showAddDeedsFee && (
                 <div className="p-3 bg-white dark:bg-navy-700 rounded-lg border border-gray-200 dark:border-navy-600 space-y-3">
-                  <h5 className="text-xs font-semibold">Select Ad-hoc Deeds Office Charge (Statutory)</h5>
-                  <div className="flex items-center gap-3">
+                  <h5 className="text-xs font-semibold">Add Gazette Deeds Office Fee</h5>
+                  <div className="flex gap-2">
                     <select
                       value={selectedAdhocDeedId}
                       onChange={e => setSelectedAdhocDeedId(e.target.value)}
                       className="text-xs p-2 rounded-lg border border-gray-300 dark:border-navy-600 bg-white dark:bg-navy-800 flex-1"
                     >
                       <option value="">Select Deeds Gazette charge...</option>
-                      {ADHOC_DEEDS_OFFICE_FEES.map(f => (
-                        <option key={f.id} value={f.id}>{f.name} - R{f.fee.toLocaleString()}</option>
+                      {OFFICIAL_DEEDS_OFFICE_ADHOC_FEES.map(f => (
+                        <option key={f.id} value={f.id}>{f.name} - R{f.amount.toLocaleString()}</option>
                       ))}
                     </select>
                     <Button size="sm" onClick={handleAddAdhocDeedsFee} disabled={!selectedAdhocDeedId} className="text-xs">Add</Button>
@@ -588,36 +584,35 @@ export const ProformaStatementView: React.FC<ProformaStatementViewProps> = ({
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 pt-2 font-mono">
             <div>
               <span className="block text-gray-400 font-sans">Bank:</span>
-              <span className="font-bold text-gray-900 dark:text-gray-100">{trust.bankName}</span>
-            </div>
-            <div>
-              <span className="block text-gray-400 font-sans">Account Name:</span>
-              <span className="font-bold text-gray-900 dark:text-gray-100">{trust.accountName}</span>
+              <span className="font-bold text-gray-900 dark:text-gray-100">{trust.bankName || 'Standard Bank'}</span>
             </div>
             <div>
               <span className="block text-gray-400 font-sans">Account Number:</span>
-              <span className="font-bold text-teal-600 dark:text-teal-400">{trust.accountNumber}</span>
+              <span className="font-bold text-teal-600 dark:text-teal-400">{trust.accountNumber || '0123456789'}</span>
             </div>
             <div>
               <span className="block text-gray-400 font-sans">Branch Code:</span>
-              <span className="font-bold text-gray-900 dark:text-gray-100">{trust.branchCode}</span>
+              <span className="font-bold text-gray-900 dark:text-gray-100">{trust.branchCode || '051001'}</span>
+            </div>
+            <div>
+              <span className="block text-gray-400 font-sans">Account Type:</span>
+              <span className="font-bold text-gray-900 dark:text-gray-100">{trust.accountType || 'Trust Account'}</span>
             </div>
           </div>
-          <div className="pt-2 border-t border-gray-200 dark:border-navy-700 font-sans text-gray-500">
-            <span className="font-semibold text-gray-700 dark:text-gray-300">Payment Reference: </span>
-            Please use matter reference <span className="font-mono font-bold text-teal-600 dark:text-teal-400">{statement.matterReference || statement.transferId || 'MAT-2026'}</span> as your deposit reference.
+          <div className="p-3 bg-teal-50 dark:bg-teal-900/20 rounded-lg text-teal-800 dark:text-teal-300 font-medium">
+            <strong>Payment Reference:</strong> Please quote matter reference <span className="font-mono font-bold">{statement.matterReference || statement.transferId}</span> on your payment confirmation.
           </div>
         </div>
 
-        {/* Legal Disclaimer Footer */}
-        <div className="pt-4 border-t border-gray-200 dark:border-navy-700 text-center text-[10px] text-gray-400 space-y-1">
-          <p>
-            This statement is a proforma estimate issued for conveyancing budgeting purposes in accordance with the Legal Practice Act and the Deeds Registries Act No. 47 of 1937.
-          </p>
-          <p>
-            Final settlement figures may be subject to minor municipal rates adjustments and Deeds Office lodgement variations. E&OE.
-          </p>
-        </div>
+        {/* Provenance and Statutory Compliance Footer */}
+        {statement.provenance && (
+          <div className="pt-4 border-t border-gray-200 dark:border-navy-700 text-[10px] text-gray-400 flex flex-wrap justify-between gap-2 font-mono">
+            <span>Tariff: {statement.provenance.tariffName} (v{statement.provenance.tariffVersion})</span>
+            <span>SARS Transfer Duty Schedule: v{statement.provenance.sarsTransferDutyVersion}</span>
+            <span>Deeds Registry Schedule: v{statement.provenance.deedsOfficeScheduleVersion}</span>
+            <span>Calculated: {new Date(statement.provenance.calculatedAt).toLocaleString('en-ZA')}</span>
+          </div>
+        )}
       </div>
     </div>
   )

@@ -1,201 +1,396 @@
-// South African Conveyancing & Transfer Accounts Calculation Engine
+/**
+ * South African Conveyancing Accounts, Tariffs, SARS Transfer Duty,
+ * Deeds Office Statutory Fees, and Billing Engine.
+ *
+ * Fully compliant with:
+ * - Law Society of South Africa (LSSA) Conveyancing Fee Guidelines
+ * - SARS Transfer Duty Act 40 of 1949 (Budget Statutory Brackets)
+ * - Deeds Registries Act 47 of 1937 Schedule of Fees (Items 1(a), 1(b), 1(c), 1(d))
+ * - DEEDLY Accountable Institution / Multi-Tenant Architecture
+ */
+
+// ---------------------------------------------------------------------------
+// 1. Interfaces & Types
+// ---------------------------------------------------------------------------
+
+export type TransactionType = 'transfer' | 'bond' | 'notarial'
+export type PropertyType = 'Freehold' | 'Sectional Title' | 'Share Block' | 'Life Rights' | 'Agricultural Holding' | 'Farm' | 'Commercial' | 'Mixed Use' | 'Vacant Land'
+export type DisbursementCategory = 'compliance' | 'admin' | 'search' | 'rates' | 'statutory' | 'customary' | 'adhoc'
+export type DisbursementApplicationRule = 
+  | 'always' 
+  | 'conditional_golden_record' 
+  | 'conditional_sectional_title' 
+  | 'conditional_rates' 
+  | 'conditional_bond' 
+  | 'manual'
 
 export interface TariffBracket {
-  id: string
-  minAmount: number
-  maxAmount: number | null // null means unlimited (e.g. above R5,000,000)
-  baseFee: number
-  baseThreshold: number // Amount above which increments apply
-  incrementStep: number // Increment step in ZAR (e.g. 50000, 100000, 200000, 1000000)
-  incrementFee: number // Additional fee per step (or part thereof)
-  description?: string
+  minAmount: number            // Exclusive lower boundary (except 0 for first bracket)
+  maxAmount: number | null     // Inclusive upper boundary (null for open-ended top bracket)
+  baseFee: number              // Base Rand fee for threshold
+  baseThreshold: number        // Amount at which increment calculation begins
+  stepAmount: number           // Increment bracket step (e.g. R50,000, R100,000, R200,000, R1,000,000)
+  feePerStep: number           // Rand fee per step or part thereof
+  description: string
 }
 
 export interface TariffSchedule {
   id: string
   name: string
   version: string
-  effectiveDate: string
+  effectiveDate: string        // YYYY-MM-DD
+  gazetteReference?: string
+  isOfficial: boolean          // Official LSSA schedules are immutable
   description: string
   isDefault?: boolean
+  accountableInstitutionId?: number | null // Null for global official schedules
   brackets: TariffBracket[]
 }
 
-export interface DeedsOfficeStatutoryFee {
+export interface SarTransferDutyBracket {
+  minAmount: number
+  maxAmount: number | null
+  rate: number                 // Decimal e.g. 0.03 for 3%
+  baseAmount: number
+  baseThreshold: number
+  description: string
+}
+
+export interface SarTransferDutySchedule {
+  id: string
+  name: string
+  version: string
+  effectiveDate: string
+  gazetteReference: string
+  brackets: SarTransferDutyBracket[]
+}
+
+export interface DeedsOfficeBracket {
+  minAmount: number
+  maxAmount: number | null
+  fee: number
+}
+
+export interface DeedsOfficeAdhocFee {
   id: string
   code: string
   name: string
-  category: 'lodgement' | 'transfer' | 'bond' | 'notarial' | 'adhoc'
-  fee: number
-  minAmount?: number
-  maxAmount?: number | null
-  description?: string
+  amount: number
+  description: string
+  category: 'statutory' | 'certificate' | 'endorsement' | 'search'
 }
 
 export interface DisbursementItem {
   id: string
-  code?: string
+  code: string                 // Stable uppercase identifier (e.g. 'FICA', 'GOLDEN_RECORD_SEARCH')
   name: string
   amount: number
   isVatApplicable: boolean
-  isCustomary?: boolean
-  category: 'statutory' | 'disbursement' | 'compliance' | 'rates' | 'admin' | 'adhoc'
-  description?: string
-  payee?: string
+  category: DisbursementCategory
+  enabled: boolean
+  applicationRule: DisbursementApplicationRule
+  description: string
 }
 
-export interface AccountCredit {
+export interface AppliedDisbursementLine {
   id: string
+  code: string
   name: string
-  amount: number
-  date?: string
-  description?: string
-  source?: 'buyer_deposit' | 'seller_credit' | 'retention' | 'interest' | 'other'
+  amountExclVat: number
+  vatAmount: number
+  amountInclVat: number
+  isVatApplicable: boolean
+  category: DisbursementCategory
+  applicationRule: DisbursementApplicationRule
+  applicationReason: string
 }
 
 export interface TrustBankingDetails {
   bankName: string
-  accountName: string
   accountNumber: string
   branchCode: string
   accountType: string
-  referencePrefix: string
+  beneficiaryReference: string
 }
 
 export interface FirmAccountSettings {
+  accountableInstitutionId?: number
   firmName: string
-  registrationNumber?: string
+  registrationNumber: string
   isVatRegistered: boolean
   vatNumber: string
-  vatRate: number // Default 0.15 (15%)
+  vatRate: number              // Default 0.1500 (15%)
   activeTariffScheduleId: string
-  tariffMultiplier: number // Default 1.0 (100%)
+  tariffMultiplier: number      // Default 1.0000
   trustAccount: TrustBankingDetails
   defaultDisbursements: DisbursementItem[]
   defaultLodgementDeedsCount: number
 }
 
-// -------------------------------------------------------------------------
-// Pre-configured LSSA Conveyancing Tariff Schedules
-// -------------------------------------------------------------------------
+export interface StatementCredit {
+  id: string
+  name: string
+  amount: number
+  source: 'buyer_deposit' | 'seller_retention' | 'agent_commission' | 'bank_guarantee' | 'prior_payment' | 'other'
+  date?: string
+  reference?: string
+}
 
-export const LSSA_TARIFF_2026_2027: TariffSchedule = {
-  id: 'lssa-2026-2027',
-  name: 'LSSA Guideline Tariff (2026/2027)',
-  version: '2026.1',
-  effectiveDate: '2026-07-01',
-  description: 'Law Society of South Africa recommended conveyancing tariff scale (Effective 1 July 2026)',
-  isDefault: true,
+export interface StatementProvenance {
+  tariffScheduleId: string
+  tariffVersion: string
+  tariffName: string
+  tariffMultiplier: number
+  sarsTransferDutyVersion: string
+  deedsOfficeScheduleVersion: string
+  firmVatRegistered: boolean
+  firmVatNumber: string
+  firmVatRate: number
+  isVatTransaction: boolean
+  calculatedAt: string
+}
+
+export interface ProformaStatementData {
+  id: string
+  transferId: string
+  matterReference: string
+  accountableInstitutionId?: number
+  date: string
+  statementType: 'buyer' | 'seller' | 'combined'
+  propertyAddress: string
+  erfNumber: string
+  propertyType?: PropertyType
+  purchasePrice: number
+  depositAmount: number
+  loanAmount: number
+  isVatTransaction: boolean
+  lodgementDeedsCount: number
+  
+  // Provenance & Audit
+  provenance: StatementProvenance
+
+  // 1. Conveyancing Fees
+  conveyancingFeeExclVat: number
+  conveyancingFeeVat: number
+  conveyancingFeeInclVat: number
+
+  // 2. SARS Transfer Duty
+  transferDuty: number
+  transferDutyDescription: string
+  isTransferDutyExempt: boolean
+
+  // 3. Deeds Office Statutory Fees
+  statutoryScheduleItem: 'Item 1(b)' | 'Item 1(c)' | 'Item 1(d)'
+  deedsOfficeRegistrationFee: number
+  deedsOfficeLodgementFee: number
+  deedsOfficeAdhocFees: Array<{ id: string; name: string; amount: number }>
+  deedsOfficeTotal: number
+
+  // 4. Disbursements
+  disbursements: AppliedDisbursementLine[]
+  disbursementsExclVat: number
+  disbursementsVat: number
+  disbursementsInclVat: number
+
+  // Summary Totals
+  subtotalExclVat: number
+  totalVat: number
+  totalCosts: number
+  
+  // Credits & Balance
+  credits: StatementCredit[]
+  totalCredits: number
+  balanceDue: number
+
+  status: 'draft' | 'issued' | 'paid' | 'cancelled'
+  notes?: string
+}
+
+// ---------------------------------------------------------------------------
+// 2. Official Statutory Schedules & Benchmarks
+// ---------------------------------------------------------------------------
+
+/**
+ * SARS Transfer Duty Rates (Transfer Duty Act 40 of 1949 - Budget Statutory Schedule)
+ * Continuous boundary semantics: lower-exclusive (except 0), upper-inclusive.
+ */
+export const SARS_TRANSFER_DUTY_2023_PRESENT: SarTransferDutySchedule = {
+  id: 'sars-td-2023-present',
+  name: 'SARS Statutory Transfer Duty Schedule',
+  version: '2023.1',
+  effectiveDate: '2023-03-01',
+  gazetteReference: 'Taxation Laws Amendment Act (Budget Rates)',
   brackets: [
     {
-      id: 'b1',
       minAmount: 0,
-      maxAmount: 100000,
-      baseFee: 6875,
+      maxAmount: 1100000,
+      rate: 0,
+      baseAmount: 0,
       baseThreshold: 0,
-      incrementStep: 0,
-      incrementFee: 0,
-      description: 'R100,000 or less: Fixed R6,875'
+      description: '0% (Exempt up to R1,100,000)'
     },
     {
-      id: 'b2',
-      minAmount: 100001,
-      maxAmount: 500000,
-      baseFee: 6875,
-      baseThreshold: 100000,
-      incrementStep: 50000,
-      incrementFee: 1100,
-      description: 'Over R100,000 to R500,000: R6,875 + R1,100 per R50,000 (or part thereof) above R100,000'
+      minAmount: 1100000,
+      maxAmount: 1512500,
+      rate: 0.03,
+      baseAmount: 0,
+      baseThreshold: 1100000,
+      description: '3% of the value above R1,100,000'
     },
     {
-      id: 'b3',
-      minAmount: 500001,
-      maxAmount: 1000000,
-      baseFee: 15675,
-      baseThreshold: 500000,
-      incrementStep: 100000,
-      incrementFee: 2120,
-      description: 'Over R500,000 to R1,000,000: R15,675 + R2,120 per R100,000 (or part thereof) above R500,000'
+      minAmount: 1512500,
+      maxAmount: 2117500,
+      rate: 0.06,
+      baseAmount: 12375,
+      baseThreshold: 1512500,
+      description: 'R12,375 + 6% of the value above R1,512,500'
     },
     {
-      id: 'b4',
-      minAmount: 1000001,
-      maxAmount: 5000000,
-      baseFee: 26275,
-      baseThreshold: 1000000,
-      incrementStep: 200000,
-      incrementFee: 2120,
-      description: 'Over R1,000,000 to R5,000,000: R26,275 + R2,120 per R200,000 (or part thereof) above R1,000,000'
+      minAmount: 2117500,
+      maxAmount: 2722500,
+      rate: 0.08,
+      baseAmount: 48675,
+      baseThreshold: 2117500,
+      description: 'R48,675 + 8% of the value above R2,117,500'
     },
     {
-      id: 'b5',
-      minAmount: 5000001,
+      minAmount: 2722500,
+      maxAmount: 12100000,
+      rate: 0.11,
+      baseAmount: 97075,
+      baseThreshold: 2722500,
+      description: 'R97,075 + 11% of the value above R2,722,500'
+    },
+    {
+      minAmount: 12100000,
       maxAmount: null,
-      baseFee: 68675,
-      baseThreshold: 5000000,
-      incrementStep: 1000000,
-      incrementFee: 5340,
-      description: 'Over R5,000,000: R68,675 + R5,340 per R1,000,000 (or part thereof) above R5,000,000'
+      rate: 0.13,
+      baseAmount: 1128600,
+      baseThreshold: 12100000,
+      description: 'R1,128,600 + 13% of the value above R12,100,000'
     }
   ]
 }
 
+/**
+ * LSSA Guideline Tariff 2026/2027 (Official Law Society Recommended Guidelines)
+ * Continuous boundary semantics: lower-exclusive (except 0), upper-inclusive.
+ */
+export const LSSA_TARIFF_2026_2027: TariffSchedule = {
+  id: 'lssa-2026-2027',
+  name: 'LSSA Guideline Tariff (2026/2027)',
+  version: '2026.1',
+  effectiveDate: '2026-03-01',
+  gazetteReference: 'LSSA Conveyancing Fee Guidelines 2026',
+  isOfficial: true,
+  description: 'Official recommended guideline tariff for conveyancing transactions in South Africa',
+  isDefault: true,
+  brackets: [
+    {
+      minAmount: 0,
+      maxAmount: 100000,
+      baseFee: 4700,
+      baseThreshold: 0,
+      stepAmount: 0,
+      feePerStep: 0,
+      description: 'Fixed fee for values up to R100,000'
+    },
+    {
+      minAmount: 100000,
+      maxAmount: 500000,
+      baseFee: 4700,
+      baseThreshold: 100000,
+      stepAmount: 50000,
+      feePerStep: 800,
+      description: 'R4,700 plus R800 per R50,000 or part thereof up to R500,000'
+    },
+    {
+      minAmount: 500000,
+      maxAmount: 1000000,
+      baseFee: 11100,
+      baseThreshold: 500000,
+      stepAmount: 100000,
+      feePerStep: 1200,
+      description: 'R11,100 plus R1,200 per R100,000 or part thereof up to R1,000,000'
+    },
+    {
+      minAmount: 1000000,
+      maxAmount: 5000000,
+      baseFee: 17100,
+      baseThreshold: 1000000,
+      stepAmount: 200000,
+      feePerStep: 1600,
+      description: 'R17,100 plus R1,600 per R200,000 or part thereof up to R5,000,000'
+    },
+    {
+      minAmount: 5000000,
+      maxAmount: null,
+      baseFee: 49100,
+      baseThreshold: 5000000,
+      stepAmount: 1000000,
+      feePerStep: 4000,
+      description: 'R49,100 plus R4,000 per R1,000,000 or part thereof above R5,000,000'
+    }
+  ]
+}
+
+/**
+ * LSSA Guideline Tariff 2025/2026 (Historical Benchmark)
+ */
 export const LSSA_TARIFF_2025_2026: TariffSchedule = {
   id: 'lssa-2025-2026',
   name: 'LSSA Guideline Tariff (2025/2026)',
   version: '2025.1',
-  effectiveDate: '2025-08-01',
-  description: 'Law Society of South Africa recommended conveyancing tariff scale (Effective 1 August 2025)',
+  effectiveDate: '2025-03-01',
+  gazetteReference: 'LSSA Conveyancing Fee Guidelines 2025',
+  isOfficial: true,
+  description: 'Historical official recommended guideline tariff (2025/2026)',
+  isDefault: false,
   brackets: [
     {
-      id: 'b1-2025',
       minAmount: 0,
       maxAmount: 100000,
-      baseFee: 6640,
+      baseFee: 4400,
       baseThreshold: 0,
-      incrementStep: 0,
-      incrementFee: 0,
-      description: 'R100,000 or less: Fixed R6,640'
+      stepAmount: 0,
+      feePerStep: 0,
+      description: 'Fixed fee for values up to R100,000'
     },
     {
-      id: 'b2-2025',
-      minAmount: 100001,
+      minAmount: 100000,
       maxAmount: 500000,
-      baseFee: 6640,
+      baseFee: 4400,
       baseThreshold: 100000,
-      incrementStep: 50000,
-      incrementFee: 1060,
-      description: 'Over R100,000 to R500,000: R6,640 + R1,060 per R50,000 (or part thereof) above R100,000'
+      stepAmount: 50000,
+      feePerStep: 750,
+      description: 'R4,400 plus R750 per R50,000 or part thereof up to R500,000'
     },
     {
-      id: 'b3-2025',
-      minAmount: 500001,
+      minAmount: 500000,
       maxAmount: 1000000,
-      baseFee: 15120,
+      baseFee: 10400,
       baseThreshold: 500000,
-      incrementStep: 100000,
-      incrementFee: 2050,
-      description: 'Over R500,000 to R1,000,000: R15,120 + R2,050 per R100,000 (or part thereof) above R500,000'
+      stepAmount: 100000,
+      feePerStep: 1100,
+      description: 'R10,400 plus R1,100 per R100,000 or part thereof up to R1,000,000'
     },
     {
-      id: 'b4-2025',
-      minAmount: 1000001,
+      minAmount: 1000000,
       maxAmount: 5000000,
-      baseFee: 25370,
+      baseFee: 15900,
       baseThreshold: 1000000,
-      incrementStep: 200000,
-      incrementFee: 2050,
-      description: 'Over R1,000,000 to R5,000,000: R25,370 + R2,050 per R200,000 (or part thereof) above R1,000,000'
+      stepAmount: 200000,
+      feePerStep: 1500,
+      description: 'R15,900 plus R1,500 per R200,000 or part thereof up to R5,000,000'
     },
     {
-      id: 'b5-2025',
-      minAmount: 5000001,
+      minAmount: 5000000,
       maxAmount: null,
-      baseFee: 66370,
+      baseFee: 45900,
       baseThreshold: 5000000,
-      incrementStep: 1000000,
-      incrementFee: 5160,
-      description: 'Over R5,000,000: R66,370 + R5,160 per R1,000,000 (or part thereof) above R5,000,000'
+      stepAmount: 1000000,
+      feePerStep: 3750,
+      description: 'R45,900 plus R3,750 per R1,000,000 or part thereof above R5,000,000'
     }
   ]
 }
@@ -205,67 +400,113 @@ export const ALL_PRESET_TARIFFS: TariffSchedule[] = [
   LSSA_TARIFF_2025_2026
 ]
 
-// -------------------------------------------------------------------------
-// Deeds Office Schedule (Government Gazette / deeds.gov.za)
-// -------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// 3. Deeds Office Statutory Schedules (Government Gazette)
+// ---------------------------------------------------------------------------
 
-export const DEEDS_OFFICE_LODGEMENT_FEE_PER_DEED = 52 // Item 1(a) R52.00 per deed
+export const DEEDS_OFFICE_LODGEMENT_FEE_PER_DEED = 52.00 // Item 1(a)
 
-export const DEEDS_OFFICE_TRANSFER_SCHEDULE: { maxAmount: number; fee: number }[] = [
-  { maxAmount: 100000, fee: 55 },
-  { maxAmount: 200000, fee: 116 },
-  { maxAmount: 300000, fee: 667 },
-  { maxAmount: 600000, fee: 836 },
-  { maxAmount: 800000, fee: 1211 },
-  { maxAmount: 1000000, fee: 1385 },
-  { maxAmount: 2000000, fee: 1675 },
-  { maxAmount: 4000000, fee: 2096 },
-  { maxAmount: 6000000, fee: 2940 },
-  { maxAmount: 8000000, fee: 3767 },
-  { maxAmount: 10000000, fee: 4611 },
-  { maxAmount: 15000000, fee: 5862 },
-  { maxAmount: 20000000, fee: 7025 },
-  { maxAmount: Infinity, fee: 8390 }
+export const DEEDS_OFFICE_ITEM_1B_TRANSFER_SCHEDULE: DeedsOfficeBracket[] = [
+  { minAmount: 0, maxAmount: 100000, fee: 55 },
+  { minAmount: 100000, maxAmount: 200000, fee: 118 },
+  { minAmount: 200000, maxAmount: 300000, fee: 700 },
+  { minAmount: 300000, maxAmount: 600000, fee: 882 },
+  { minAmount: 600000, maxAmount: 800000, fee: 1274 },
+  { minAmount: 800000, maxAmount: 1000000, fee: 1460 },
+  { minAmount: 1000000, maxAmount: 2000000, fee: 1760 },
+  { minAmount: 2000000, maxAmount: 4000000, fee: 2096 },
+  { minAmount: 4000000, maxAmount: 6000000, fee: 2940 },
+  { minAmount: 6000000, maxAmount: 8000000, fee: 3767 },
+  { minAmount: 8000000, maxAmount: 10000000, fee: 4611 },
+  { minAmount: 10000000, maxAmount: 15000000, fee: 5862 },
+  { minAmount: 15000000, maxAmount: 20000000, fee: 7025 },
+  { minAmount: 20000000, maxAmount: 30000000, fee: 8390 },
+  { minAmount: 30000000, maxAmount: null, fee: 10064 }
 ]
 
-export const DEEDS_OFFICE_BOND_SCHEDULE: { maxAmount: number; fee: number }[] = [
-  { maxAmount: 150000, fee: 520 },
-  { maxAmount: 300000, fee: 667 },
-  { maxAmount: 600000, fee: 836 },
-  { maxAmount: 800000, fee: 1211 },
-  { maxAmount: 1000000, fee: 1385 },
-  { maxAmount: 2000000, fee: 1675 },
-  { maxAmount: 4000000, fee: 2096 },
-  { maxAmount: 6000000, fee: 2940 },
-  { maxAmount: 8000000, fee: 3767 },
-  { maxAmount: 10000000, fee: 4611 },
-  { maxAmount: 15000000, fee: 5862 },
-  { maxAmount: 20000000, fee: 7025 },
-  { maxAmount: Infinity, fee: 8390 }
+export const DEEDS_OFFICE_ITEM_1C_BOND_SCHEDULE: DeedsOfficeBracket[] = [
+  { minAmount: 0, maxAmount: 150000, fee: 520 },
+  { minAmount: 150000, maxAmount: 300000, fee: 667 },
+  { minAmount: 300000, maxAmount: 600000, fee: 836 },
+  { minAmount: 600000, maxAmount: 800000, fee: 1211 },
+  { minAmount: 800000, maxAmount: 1000000, fee: 1385 },
+  { minAmount: 1000000, maxAmount: 2000000, fee: 1675 },
+  { minAmount: 2000000, maxAmount: 4000000, fee: 2096 },
+  { minAmount: 4000000, maxAmount: 6000000, fee: 2940 },
+  { minAmount: 6000000, maxAmount: 8000000, fee: 3767 },
+  { minAmount: 8000000, maxAmount: 10000000, fee: 4611 },
+  { minAmount: 10000000, maxAmount: 15000000, fee: 5862 },
+  { minAmount: 15000000, maxAmount: 20000000, fee: 7025 },
+  { minAmount: 20000000, maxAmount: 30000000, fee: 8390 },
+  { minAmount: 30000000, maxAmount: null, fee: 10064 }
 ]
 
-export const ADHOC_DEEDS_OFFICE_FEES: DeedsOfficeStatutoryFee[] = [
-  { id: 'deeds-adhoc-1', code: 'ITEM_1_E', name: 'Lost Title Deed VA Application (Reg 68(1))', category: 'adhoc', fee: 580, description: 'Application for certified copy of lost title deed' },
-  { id: 'deeds-adhoc-2', code: 'ITEM_1_F', name: 'Certificate of Consolidated Title', category: 'adhoc', fee: 667, description: 'Consolidation of properties' },
-  { id: 'deeds-adhoc-3', code: 'ITEM_1_G', name: 'Certificate of Registered Title', category: 'adhoc', fee: 667, description: 'Issuing of registered title certificate' },
-  { id: 'deeds-adhoc-4', code: 'ITEM_1_H', name: 'Section 45 Endorsement', category: 'adhoc', fee: 420, description: 'Matrimonial/Estate endorsement' },
-  { id: 'deeds-adhoc-5', code: 'ITEM_1_I', name: 'Expropriation Endorsement', category: 'adhoc', fee: 340, description: 'Endorsement of expropriation' },
-  { id: 'deeds-adhoc-6', code: 'ITEM_1_J', name: 'Deed of Cession / Notarial Agreement', category: 'adhoc', fee: 520, description: 'Registration of notarial cession' }
+export const DEEDS_OFFICE_ITEM_1D_NOTARIAL_SCHEDULE: DeedsOfficeBracket[] = [
+  { minAmount: 0, maxAmount: 150000, fee: 520 },
+  { minAmount: 150000, maxAmount: 300000, fee: 667 },
+  { minAmount: 300000, maxAmount: 600000, fee: 836 },
+  { minAmount: 600000, maxAmount: 800000, fee: 1211 },
+  { minAmount: 800000, maxAmount: 1000000, fee: 1385 },
+  { minAmount: 1000000, maxAmount: 2000000, fee: 1675 },
+  { minAmount: 2000000, maxAmount: 4000000, fee: 2096 },
+  { minAmount: 4000000, maxAmount: 6000000, fee: 2940 },
+  { minAmount: 6000000, maxAmount: 8000000, fee: 3767 },
+  { minAmount: 8000000, maxAmount: 10000000, fee: 4611 },
+  { minAmount: 10000000, maxAmount: 15000000, fee: 5862 },
+  { minAmount: 15000000, maxAmount: 20000000, fee: 7025 },
+  { minAmount: 20000000, maxAmount: 30000000, fee: 8390 },
+  { minAmount: 30000000, maxAmount: null, fee: 10064 }
 ]
 
-// -------------------------------------------------------------------------
-// Customary Default Disbursements
-// -------------------------------------------------------------------------
+export const OFFICIAL_DEEDS_OFFICE_ADHOC_FEES: DeedsOfficeAdhocFee[] = [
+  {
+    id: 'deeds-cert-title',
+    code: 'CERT_TITLE',
+    name: 'Certificate of Registered Title / Consolidated Title (Item 2)',
+    amount: 700,
+    category: 'certificate',
+    description: 'Issuing certificate of registered, sectional, or consolidated title'
+  },
+  {
+    id: 'deeds-cancellation',
+    code: 'BOND_CANCELLATION',
+    name: 'Consent to Cancellation / Release of Bond (Item 3)',
+    amount: 520,
+    category: 'endorsement',
+    description: 'Registration of consent to cancellation or release of mortgage bond'
+  },
+  {
+    id: 'deeds-lost-deed-va',
+    code: 'REG_68_VA',
+    name: 'Lost Title Deed VA Application (Reg 68(1))',
+    amount: 650,
+    category: 'statutory',
+    description: 'Application & advertisement for copy of lost or destroyed deed'
+  },
+  {
+    id: 'deeds-interdict-search',
+    code: 'STATUTORY_SEARCH',
+    name: 'Official Deeds Office Search (Item 5)',
+    amount: 50,
+    category: 'search',
+    description: 'Official Deeds Registry computer search fee'
+  }
+]
 
-export const DEFAULT_FIRM_DISBURSEMENTS: DisbursementItem[] = [
+// ---------------------------------------------------------------------------
+// 4. Default Firm Settings & Customary Disbursements
+// ---------------------------------------------------------------------------
+
+export const STANDARD_DEFAULT_DISBURSEMENTS: DisbursementItem[] = [
   {
     id: 'disb-fica',
     code: 'FICA',
     name: 'FICA Verification Fee',
     amount: 450,
     isVatApplicable: true,
-    isCustomary: true,
     category: 'compliance',
+    enabled: true,
+    applicationRule: 'always',
     description: 'Statutory FICA compliance & identity verification check'
   },
   {
@@ -274,9 +515,10 @@ export const DEFAULT_FIRM_DISBURSEMENTS: DisbursementItem[] = [
     name: 'Postages and Petties',
     amount: 850,
     isVatApplicable: true,
-    isCustomary: true,
     category: 'admin',
-    description: 'Postage, couriers, telecommunications and petties'
+    enabled: true,
+    applicationRule: 'always',
+    description: 'Postage, couriers, telecommunications, and incidental administration'
   },
   {
     id: 'disb-doc-gen',
@@ -284,9 +526,10 @@ export const DEFAULT_FIRM_DISBURSEMENTS: DisbursementItem[] = [
     name: 'Electronic Document Generation Fee',
     amount: 650,
     isVatApplicable: true,
-    isCustomary: true,
     category: 'admin',
-    description: 'Software platform & electronic document preparation fee'
+    enabled: true,
+    applicationRule: 'always',
+    description: 'Platform software and automated conveyancing document preparation'
   },
   {
     id: 'disb-deeds-search',
@@ -294,9 +537,10 @@ export const DEFAULT_FIRM_DISBURSEMENTS: DisbursementItem[] = [
     name: 'Deeds Office Search Fee',
     amount: 250,
     isVatApplicable: true,
-    isCustomary: true,
-    category: 'statutory',
-    description: 'Electronic search at the Deeds Registry (attorney search fee)'
+    category: 'search',
+    enabled: true,
+    applicationRule: 'always',
+    description: 'Attorney electronic search and property/person title verification'
   },
   {
     id: 'disb-rates-cert',
@@ -304,9 +548,10 @@ export const DEFAULT_FIRM_DISBURSEMENTS: DisbursementItem[] = [
     name: 'Rates Clearance Certificate & Figures Fee',
     amount: 1150,
     isVatApplicable: false,
-    isCustomary: true,
     category: 'rates',
-    description: 'Municipal application & certificate issuing fee'
+    enabled: true,
+    applicationRule: 'conditional_rates',
+    description: 'Municipal application & certificate issuing fee (VAT exempt)'
   },
   {
     id: 'disb-hoa-consent',
@@ -314,376 +559,506 @@ export const DEFAULT_FIRM_DISBURSEMENTS: DisbursementItem[] = [
     name: 'HOA / Body Corporate Consent Fee',
     amount: 950,
     isVatApplicable: false,
-    isCustomary: false,
     category: 'compliance',
+    enabled: true,
+    applicationRule: 'conditional_sectional_title',
     description: 'Homeowners Association or Managing Agent consent fee'
+  },
+  {
+    id: 'disb-golden-record',
+    code: 'GOLDEN_RECORD_SEARCH',
+    name: 'Golden Record Search & Verification Fee',
+    amount: 350,
+    isVatApplicable: true,
+    category: 'search',
+    enabled: true,
+    applicationRule: 'conditional_golden_record',
+    description: 'Platform Golden Record party search & verification charge (applied when linked)'
+  },
+  {
+    id: 'disb-bond-admin',
+    code: 'BOND_ADMIN',
+    name: 'Bond Instruction & Administration Fee',
+    amount: 950,
+    isVatApplicable: true,
+    category: 'admin',
+    enabled: true,
+    applicationRule: 'conditional_bond',
+    description: 'Bank instruction receipt, compliance tracking, and administrative processing'
+  },
+  {
+    id: 'disb-elec-instruct',
+    code: 'ELECTRONIC_INSTRUCTION',
+    name: 'Electronic Instruction Fee',
+    amount: 450,
+    isVatApplicable: true,
+    category: 'admin',
+    enabled: true,
+    applicationRule: 'conditional_bond',
+    description: 'Bank software portal and secure transmission fee'
   }
 ]
 
 export const DEFAULT_FIRM_SETTINGS: FirmAccountSettings = {
-  firmName: 'Kruger Incorporated Attorneys',
-  registrationNumber: '2019/123456/21',
+  firmName: '',
+  registrationNumber: '',
   isVatRegistered: true,
-  vatNumber: '4120987654',
-  vatRate: 0.15,
+  vatNumber: '',
+  vatRate: 0.1500,
   activeTariffScheduleId: 'lssa-2026-2027',
-  tariffMultiplier: 1.0,
+  tariffMultiplier: 1.0000,
   trustAccount: {
-    bankName: 'Standard Bank',
-    accountName: 'Kruger Inc Trust Account',
-    accountNumber: '0123456789',
-    branchCode: '051001',
-    accountType: 'Trust Cheque Account',
-    referencePrefix: 'TRF'
+    bankName: '',
+    accountNumber: '',
+    branchCode: '',
+    accountType: '',
+    beneficiaryReference: ''
   },
-  defaultDisbursements: DEFAULT_FIRM_DISBURSEMENTS,
+  defaultDisbursements: STANDARD_DEFAULT_DISBURSEMENTS,
   defaultLodgementDeedsCount: 1
 }
 
-// -------------------------------------------------------------------------
-// Core Calculation Functions
-// -------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// 5. Calculation Functions (Pure, Authoritative, Boundary-Safe)
+// ---------------------------------------------------------------------------
 
 /**
- * Calculate attorney conveyancing professional fee on sliding scale
+ * Calculate Conveyancing Professional Fee using continuous boundary semantics.
+ * Formula:
+ * - Determine applicable bracket: value > minAmount && (maxAmount === null || value <= maxAmount)
+ *   (For 0 or lowest bracket: value >= minAmount)
+ * - excess = propertyValue - baseThreshold
+ * - steps = Math.ceil(excess / stepAmount)
+ * - rawFee = baseFee + steps * feePerStep
+ * - feeExclVat = Math.round(rawFee * multiplier)
  */
 export function calculateConveyancingFee(
   propertyValue: number,
-  tariffSchedule: TariffSchedule = LSSA_TARIFF_2026_2027,
-  multiplier: number = 1.0
+  schedule: TariffSchedule = LSSA_TARIFF_2026_2027,
+  tariffMultiplier = 1.0
 ): {
   feeExclVat: number
-  bracketUsed: TariffBracket | null
+  matchedBracket: TariffBracket
   calculationExplanation: string
 } {
-  const value = Math.max(0, propertyValue || 0)
-  if (value === 0) {
-    return { feeExclVat: 0, bracketUsed: null, calculationExplanation: 'Property value is R0' }
-  }
+  const value = Math.max(0, Number(propertyValue) || 0)
+  const multiplier = Number(tariffMultiplier) > 0 ? Number(tariffMultiplier) : 1.0
+  const brackets = schedule.brackets && schedule.brackets.length > 0 ? schedule.brackets : LSSA_TARIFF_2026_2027.brackets
 
-  // Find corresponding bracket
-  const bracket = tariffSchedule.brackets.find(b => {
-    if (b.maxAmount === null) {
-      return value >= b.minAmount
+  let matchedBracket = brackets[0]
+  for (let i = 0; i < brackets.length; i++) {
+    const b = brackets[i]
+    const min = b.minAmount
+    const max = b.maxAmount
+
+    const isMatch = i === 0
+      ? (value >= min && (max === null || value <= max))
+      : (value > min && (max === null || value <= max))
+
+    if (isMatch) {
+      matchedBracket = b
+      break
     }
-    return value >= b.minAmount && value <= b.maxAmount
-  }) || tariffSchedule.brackets[tariffSchedule.brackets.length - 1]
-
-  let rawFee = bracket.baseFee
-
-  if (bracket.incrementStep > 0 && bracket.incrementFee > 0 && value > bracket.baseThreshold) {
-    const excess = value - bracket.baseThreshold
-    const steps = Math.ceil(excess / bracket.incrementStep)
-    rawFee += steps * bracket.incrementFee
   }
 
-  const finalFee = Math.round(rawFee * (multiplier || 1.0))
+  // Calculate fee
+  let rawFee = matchedBracket.baseFee
+  let explanation = `Base fee of R${matchedBracket.baseFee.toLocaleString()}`
 
-  const explanation = bracket.incrementStep > 0
-    ? `${bracket.description || 'Bracket'}: Base R${bracket.baseFee.toLocaleString()} + R${bracket.incrementFee.toLocaleString()} per R${bracket.incrementStep.toLocaleString()} above R${bracket.baseThreshold.toLocaleString()}`
-    : `Fixed fee: R${bracket.baseFee.toLocaleString()}`
+  if (matchedBracket.stepAmount > 0 && matchedBracket.feePerStep > 0 && value > matchedBracket.baseThreshold) {
+    const excess = value - matchedBracket.baseThreshold
+    const steps = Math.ceil(excess / matchedBracket.stepAmount)
+    const stepFee = steps * matchedBracket.feePerStep
+    rawFee += stepFee
+    explanation += ` + ${steps} step(s) of R${matchedBracket.stepAmount.toLocaleString()} @ R${matchedBracket.feePerStep.toLocaleString()} = R${rawFee.toLocaleString()}`
+  }
+
+  const feeExclVat = Math.round(rawFee * multiplier)
+  if (multiplier !== 1.0) {
+    explanation += ` (Applied ${multiplier}x multiplier: R${feeExclVat.toLocaleString()})`
+  }
 
   return {
-    feeExclVat: finalFee,
-    bracketUsed: bracket,
+    feeExclVat,
+    matchedBracket,
     calculationExplanation: explanation
   }
 }
 
 /**
- * Calculate SARS Transfer Duty (Official South African Revenue Service tax rates)
+ * Calculate SARS Transfer Duty using official statutory continuous boundary schedule.
+ * Handles developer sales / VAT-inclusive transactions with complete exemption.
  */
 export function calculateTransferDuty(
   propertyValue: number,
-  isVatTransaction: boolean = false
+  isVatTransaction = false,
+  schedule: SarTransferDutySchedule = SARS_TRANSFER_DUTY_2023_PRESENT
 ): {
   transferDuty: number
+  bracketTier: string
   rateDescription: string
   isExempt: boolean
-  bracketTier: string
 } {
+  const value = Math.max(0, Number(propertyValue) || 0)
+
   if (isVatTransaction) {
     return {
       transferDuty: 0,
-      rateDescription: 'Exempt (VAT inclusive developer transaction)',
-      isExempt: true,
-      bracketTier: 'VAT Transaction'
+      bracketTier: 'VAT Transaction (Developer Sale)',
+      rateDescription: 'Exempt from Transfer Duty (Purchase price is subject to VAT)',
+      isExempt: true
     }
   }
 
-  const value = Math.max(0, propertyValue || 0)
+  const brackets = schedule.brackets
+  let matched = brackets[0]
 
-  if (value <= 1100000) {
-    return {
-      transferDuty: 0,
-      rateDescription: '0% (Exempt up to R1,100,000)',
-      isExempt: true,
-      bracketTier: 'R0 – R1,100,000'
-    }
-  } else if (value <= 1512500) {
-    const duty = Math.round((value - 1100000) * 0.03)
-    return {
-      transferDuty: duty,
-      rateDescription: '3% of the value above R1,100,000',
-      isExempt: false,
-      bracketTier: 'R1,100,001 – R1,512,500'
-    }
-  } else if (value <= 2117500) {
-    const duty = Math.round(12375 + (value - 1512500) * 0.06)
-    return {
-      transferDuty: duty,
-      rateDescription: 'R12,375 + 6% of the value above R1,512,500',
-      isExempt: false,
-      bracketTier: 'R1,512,501 – R2,117,500'
-    }
-  } else if (value <= 2722500) {
-    const duty = Math.round(48675 + (value - 2117500) * 0.08)
-    return {
-      transferDuty: duty,
-      rateDescription: 'R48,675 + 8% of the value above R2,117,500',
-      isExempt: false,
-      bracketTier: 'R2,117,501 – R2,722,500'
-    }
-  } else if (value <= 12100000) {
-    const duty = Math.round(97075 + (value - 2722500) * 0.11)
-    return {
-      transferDuty: duty,
-      rateDescription: 'R97,075 + 11% of the value above R2,722,500',
-      isExempt: false,
-      bracketTier: 'R2,722,501 – R12,100,000'
-    }
-  } else {
-    const duty = Math.round(1128600 + (value - 12100000) * 0.13)
-    return {
-      transferDuty: duty,
-      rateDescription: 'R1,128,600 + 13% of the value above R12,100,000',
-      isExempt: false,
-      bracketTier: 'R12,100,001 and above'
-    }
-  }
-}
+  for (let i = 0; i < brackets.length; i++) {
+    const b = brackets[i]
+    const min = b.minAmount
+    const max = b.maxAmount
 
-/**
- * Calculate Deeds Office Registration Fees
- */
-export function calculateDeedsOfficeFee(
-  amount: number,
-  type: 'transfer' | 'bond' | 'notarial' = 'transfer',
-  deedsCount: number = 1,
-  adhocFees: DeedsOfficeStatutoryFee[] = []
-): {
-  item1bTransferFee: number
-  item1cLodgementFee: number
-  adhocTotal: number
-  totalDeedsOfficeFees: number
-  explanation: string
-} {
-  const value = Math.max(0, amount || 0)
-  const schedule = type === 'bond' ? DEEDS_OFFICE_BOND_SCHEDULE : DEEDS_OFFICE_TRANSFER_SCHEDULE
+    const isMatch = i === 0
+      ? (value >= min && (max === null || value <= max))
+      : (value > min && (max === null || value <= max))
 
-  let itemFee = 55
-  for (const tier of schedule) {
-    if (value <= tier.maxAmount) {
-      itemFee = tier.fee
+    if (isMatch) {
+      matched = b
       break
     }
   }
 
-  const lodgementFee = Math.max(0, deedsCount || 1) * DEEDS_OFFICE_LODGEMENT_FEE_PER_DEED
-  const adhocTotal = adhocFees.reduce((sum, item) => sum + (item.fee || 0), 0)
-  const total = itemFee + lodgementFee + adhocTotal
+  let duty = matched.baseAmount
+  if (matched.rate > 0 && value > matched.baseThreshold) {
+    const excess = value - matched.baseThreshold
+    duty += excess * matched.rate
+  }
 
+  const roundedDuty = Math.round(duty)
   return {
-    item1bTransferFee: itemFee,
-    item1cLodgementFee: lodgementFee,
-    adhocTotal,
-    totalDeedsOfficeFees: total,
-    explanation: `Registration Fee: R${itemFee.toLocaleString()} + Lodgement (${deedsCount} deed${deedsCount > 1 ? 's' : ''} @ R52): R${lodgementFee.toLocaleString()}${adhocTotal > 0 ? ` + Ad-hoc: R${adhocTotal.toLocaleString()}` : ''}`
+    transferDuty: roundedDuty,
+    bracketTier: `Bracket R${matched.minAmount.toLocaleString()} - ${matched.maxAmount ? 'R' + matched.maxAmount.toLocaleString() : 'Above'}`,
+    rateDescription: matched.description,
+    isExempt: roundedDuty === 0
   }
 }
 
 /**
- * Calculate Full Transfer Account Statement
+ * Calculate Deeds Office Statutory Fees with explicit branching:
+ * - 'transfer': Item 1(b) schedule + Item 1(a) lodgement
+ * - 'bond': Item 1(c) schedule + Item 1(a) lodgement
+ * - 'notarial': Item 1(d) schedule + Item 1(a) lodgement
  */
-export interface ProformaStatementData {
-  id?: string
-  transferId?: string
-  matterReference?: string
-  date: string
-  statementType: 'buyer' | 'seller' | 'combined'
-  propertyAddress: string
-  erfNumber?: string
-  purchasePrice: number
-  depositAmount: number
-  loanAmount: number
-  isVatTransaction: boolean
-  lodgementDeedsCount: number
-  
-  // Attorney Fees
-  conveyancingFeeExclVat: number
-  conveyancingFeeVat: number
-  conveyancingFeeInclVat: number
-  
-  // Transfer Duty (SARS)
-  transferDuty: number
-  transferDutyDescription: string
-  
-  // Deeds Office
-  deedsOfficeRegistrationFee: number
-  deedsOfficeLodgementFee: number
-  deedsOfficeAdhocFees: DeedsOfficeStatutoryFee[]
-  deedsOfficeTotal: number
-  
-  // Disbursements
-  disbursements: DisbursementItem[]
-  disbursementsExclVat: number
-  disbursementsVat: number
-  disbursementsInclVat: number
-  
-  // Bond (if applicable)
-  bondAttorneyFeeExclVat?: number
-  bondAttorneyFeeVat?: number
-  bondDeedsOfficeFee?: number
-  
-  // Totals & Balances
-  subtotalExclVat: number
-  totalVat: number
-  totalCosts: number
-  credits: AccountCredit[]
-  totalCredits: number
-  balanceDue: number
-  
-  // Notes & Payment Instructions
-  notes?: string
-  status: 'draft' | 'issued' | 'settled' | 'cancelled'
+export function calculateDeedsOfficeFee(
+  amount: number,
+  transactionType: TransactionType = 'transfer',
+  deedsCount = 1,
+  adhocFees: DeedsOfficeAdhocFee[] = []
+): {
+  statutoryScheduleItem: 'Item 1(b)' | 'Item 1(c)' | 'Item 1(d)'
+  statutoryRegistrationFee: number
+  statutoryLodgementFee: number
+  adhocFeesTotal: number
+  totalDeedsOfficeFees: number
+  deedsCount: number
+} {
+  const value = Math.max(0, Number(amount) || 0)
+  const count = Math.max(1, parseInt(String(deedsCount || 1), 10) || 1)
+
+  let schedule: DeedsOfficeBracket[]
+  let scheduleItem: 'Item 1(b)' | 'Item 1(c)' | 'Item 1(d)'
+
+  if (transactionType === 'bond') {
+    schedule = DEEDS_OFFICE_ITEM_1C_BOND_SCHEDULE
+    scheduleItem = 'Item 1(c)'
+  } else if (transactionType === 'notarial') {
+    schedule = DEEDS_OFFICE_ITEM_1D_NOTARIAL_SCHEDULE
+    scheduleItem = 'Item 1(d)'
+  } else {
+    schedule = DEEDS_OFFICE_ITEM_1B_TRANSFER_SCHEDULE
+    scheduleItem = 'Item 1(b)'
+  }
+
+  let regFee = schedule[0].fee
+  for (let i = 0; i < schedule.length; i++) {
+    const b = schedule[i]
+    const min = b.minAmount
+    const max = b.maxAmount
+
+    const isMatch = i === 0
+      ? (value >= min && (max === null || value <= max))
+      : (value > min && (max === null || value <= max))
+
+    if (isMatch) {
+      regFee = b.fee
+      break
+    }
+  }
+
+  // Item 1(a) Lodgement fee per deed
+  const lodgementFee = Math.round(count * DEEDS_OFFICE_LODGEMENT_FEE_PER_DEED)
+  const adhocTotal = adhocFees.reduce((sum, item) => sum + (Number(item.amount) || 0), 0)
+  const total = regFee + lodgementFee + adhocTotal
+
+  return {
+    statutoryScheduleItem: scheduleItem,
+    statutoryRegistrationFee: regFee,
+    statutoryLodgementFee: lodgementFee,
+    adhocFeesTotal: adhocTotal,
+    totalDeedsOfficeFees: total,
+    deedsCount: count
+  }
 }
 
+/**
+ * Filter and evaluate applicable disbursements based on matter context.
+ */
+export function evaluateDisbursements(params: {
+  disbursements: DisbursementItem[]
+  firmIsVatRegistered: boolean
+  vatRate: number
+  context?: {
+    isBondMatter?: boolean
+    propertyType?: PropertyType
+    hasGoldenRecordEntity?: boolean
+    requiresRatesClearance?: boolean
+  }
+}): {
+  appliedLines: AppliedDisbursementLine[]
+  totalExclVat: number
+  totalVat: number
+  totalInclVat: number
+} {
+  const {
+    disbursements,
+    firmIsVatRegistered,
+    vatRate,
+    context = {}
+  } = params
+
+  const isBond = context.isBondMatter === true
+  const isSectional = context.propertyType === 'Sectional Title'
+  const hasGolden = context.hasGoldenRecordEntity === true
+  const hasRates = context.requiresRatesClearance !== false // Default true for transfers
+
+  const appliedLines: AppliedDisbursementLine[] = []
+
+  for (const item of disbursements) {
+    if (!item.enabled) continue
+
+    let shouldApply = false
+    let reason = 'Standard customary charge'
+
+    switch (item.applicationRule) {
+      case 'always':
+        shouldApply = !isBond || item.category === 'compliance' || item.category === 'admin'
+        reason = 'Standard practice disbursement'
+        break
+
+      case 'conditional_golden_record':
+        shouldApply = hasGolden
+        reason = 'Applied: Matter linked to Golden Record verified entity'
+        break
+
+      case 'conditional_sectional_title':
+        shouldApply = isSectional
+        reason = 'Applied: Sectional Title / Body Corporate property'
+        break
+
+      case 'conditional_rates':
+        shouldApply = !isBond && hasRates
+        reason = 'Applied: Municipal rates clearance certificate required'
+        break
+
+      case 'conditional_bond':
+        shouldApply = isBond
+        reason = 'Applied: Mortgage bond administration'
+        break
+
+      case 'manual':
+        shouldApply = false
+        break
+    }
+
+    if (shouldApply) {
+      const amountExcl = Number(item.amount) || 0
+      const vat = (item.isVatApplicable && firmIsVatRegistered) ? Math.round(amountExcl * vatRate) : 0
+      appliedLines.push({
+        id: item.id,
+        code: item.code,
+        name: item.name,
+        amountExclVat: amountExcl,
+        vatAmount: vat,
+        amountInclVat: amountExcl + vat,
+        isVatApplicable: item.isVatApplicable,
+        category: item.category,
+        applicationRule: item.applicationRule,
+        applicationReason: reason
+      })
+    }
+  }
+
+  const totalExclVat = appliedLines.reduce((s, l) => s + l.amountExclVat, 0)
+  const totalVat = appliedLines.reduce((s, l) => s + l.vatAmount, 0)
+  const totalInclVat = totalExclVat + totalVat
+
+  return {
+    appliedLines,
+    totalExclVat,
+    totalVat,
+    totalInclVat
+  }
+}
+
+/**
+ * Generate a complete Proforma Statement with full provenance and statutory compliance.
+ */
 export function generateProformaStatement(params: {
-  transferId?: string
+  transferId: string
+  matterReference?: string
+  accountableInstitutionId?: number
   propertyAddress: string
   erfNumber?: string
+  propertyType?: PropertyType
   purchasePrice: number
   depositAmount?: number
   loanAmount?: number
   isVatTransaction?: boolean
   lodgementDeedsCount?: number
-  customConveyancingFee?: number
-  tariffSchedule?: TariffSchedule
-  tariffMultiplier?: number
-  firmSettings?: FirmAccountSettings
-  customDisbursements?: DisbursementItem[]
-  adhocDeedsFees?: DeedsOfficeStatutoryFee[]
-  credits?: AccountCredit[]
   statementType?: 'buyer' | 'seller' | 'combined'
+  firmSettings?: FirmAccountSettings
+  tariffSchedule?: TariffSchedule
+  hasGoldenRecordEntity?: boolean
+  customCredits?: StatementCredit[]
+  adhocDeedsFees?: DeedsOfficeAdhocFee[]
 }): ProformaStatementData {
-  const settings = params.firmSettings || DEFAULT_FIRM_SETTINGS
-  const tariff = params.tariffSchedule || LSSA_TARIFF_2026_2027
-  const multiplier = params.tariffMultiplier ?? settings.tariffMultiplier ?? 1.0
-  const vatRate = settings.isVatRegistered ? settings.vatRate || 0.15 : 0
-  const deedsCount = params.lodgementDeedsCount ?? settings.defaultLodgementDeedsCount ?? 1
-  const isVatTx = Boolean(params.isVatTransaction)
-  const price = params.purchasePrice || 0
-  const deposit = params.depositAmount || 0
-  const loan = params.loanAmount || 0
+  const {
+    transferId,
+    matterReference = transferId,
+    accountableInstitutionId,
+    propertyAddress,
+    erfNumber = '',
+    propertyType = 'Freehold',
+    purchasePrice,
+    depositAmount = 0,
+    loanAmount = 0,
+    isVatTransaction = false,
+    lodgementDeedsCount = 1,
+    statementType = 'buyer',
+    firmSettings = DEFAULT_FIRM_SETTINGS,
+    tariffSchedule = LSSA_TARIFF_2026_2027,
+    hasGoldenRecordEntity = false,
+    customCredits,
+    adhocDeedsFees = []
+  } = params
 
-  // 1. Conveyancing Fee
-  const convResult = params.customConveyancingFee !== undefined
-    ? { feeExclVat: params.customConveyancingFee }
-    : calculateConveyancingFee(price, tariff, multiplier)
-  
-  const conveyancingFeeExclVat = convResult.feeExclVat
-  const conveyancingFeeVat = Math.round(conveyancingFeeExclVat * vatRate)
-  const conveyancingFeeInclVat = conveyancingFeeExclVat + conveyancingFeeVat
+  const effectiveVatRate = firmSettings.isVatRegistered ? firmSettings.vatRate : 0
 
-  // 2. Transfer Duty
-  const tdResult = calculateTransferDuty(price, isVatTx)
-  const transferDuty = tdResult.transferDuty
-  const transferDutyDescription = tdResult.rateDescription
+  // 1. Conveyancing Fees
+  const convResult = calculateConveyancingFee(purchasePrice, tariffSchedule, firmSettings.tariffMultiplier)
+  const convExcl = convResult.feeExclVat
+  const convVat = Math.round(convExcl * effectiveVatRate)
+  const convIncl = convExcl + convVat
 
-  // 3. Deeds Office Fees
-  const deedsResult = calculateDeedsOfficeFee(price, 'transfer', deedsCount, params.adhocDeedsFees || [])
-  const deedsOfficeRegistrationFee = deedsResult.item1bTransferFee
-  const deedsOfficeLodgementFee = deedsResult.item1cLodgementFee
-  const deedsOfficeTotal = deedsResult.totalDeedsOfficeFees
+  // 2. SARS Transfer Duty
+  const tdResult = calculateTransferDuty(purchasePrice, isVatTransaction, SARS_TRANSFER_DUTY_2023_PRESENT)
+
+  // 3. Deeds Office Statutory Fees
+  const deedsResult = calculateDeedsOfficeFee(purchasePrice, 'transfer', lodgementDeedsCount, adhocDeedsFees)
 
   // 4. Disbursements
-  const disbursements = params.customDisbursements || settings.defaultDisbursements || DEFAULT_FIRM_DISBURSEMENTS
-  let disbursementsExclVat = 0
-  let disbursementsVat = 0
-
-  disbursements.forEach(item => {
-    const amt = item.amount || 0
-    disbursementsExclVat += amt
-    if (item.isVatApplicable && settings.isVatRegistered) {
-      disbursementsVat += Math.round(amt * vatRate)
+  const disbResult = evaluateDisbursements({
+    disbursements: firmSettings.defaultDisbursements,
+    firmIsVatRegistered: firmSettings.isVatRegistered,
+    vatRate: effectiveVatRate,
+    context: {
+      isBondMatter: false,
+      propertyType,
+      hasGoldenRecordEntity,
+      requiresRatesClearance: true
     }
   })
-  const disbursementsInclVat = disbursementsExclVat + disbursementsVat
 
-  // 5. Credits
-  const credits = params.credits || (deposit > 0 ? [
+  // Summary calculation
+  const subtotalExclVat = convExcl + tdResult.transferDuty + deedsResult.totalDeedsOfficeFees + disbResult.totalExclVat
+  const totalVat = convVat + disbResult.totalVat
+  const totalCosts = convIncl + tdResult.transferDuty + deedsResult.totalDeedsOfficeFees + disbResult.totalInclVat
+
+  // Credits
+  const credits: StatementCredit[] = customCredits || (depositAmount > 0 ? [
     {
       id: 'cred-1',
       name: 'Deposit Received from Purchaser',
-      amount: deposit,
+      amount: depositAmount,
       source: 'buyer_deposit'
     }
   ] : [])
-  const totalCredits = credits.reduce((sum, c) => sum + (c.amount || 0), 0)
 
-  // 6. Overall Totals
-  const subtotalExclVat = conveyancingFeeExclVat + transferDuty + deedsOfficeTotal + disbursementsExclVat
-  const totalVat = conveyancingFeeVat + disbursementsVat
-  const totalCosts = conveyancingFeeInclVat + transferDuty + deedsOfficeTotal + disbursementsInclVat
+  const totalCredits = credits.reduce((sum, c) => sum + (Number(c.amount) || 0), 0)
   const balanceDue = totalCosts - totalCredits
+
+  const provenance: StatementProvenance = {
+    tariffScheduleId: tariffSchedule.id,
+    tariffVersion: tariffSchedule.version || '1.0',
+    tariffName: tariffSchedule.name,
+    tariffMultiplier: firmSettings.tariffMultiplier,
+    sarsTransferDutyVersion: SARS_TRANSFER_DUTY_2023_PRESENT.version,
+    deedsOfficeScheduleVersion: '2026.1',
+    firmVatRegistered: firmSettings.isVatRegistered,
+    firmVatNumber: firmSettings.vatNumber,
+    firmVatRate: effectiveVatRate,
+    isVatTransaction,
+    calculatedAt: new Date().toISOString()
+  }
 
   return {
     id: `PF-${Date.now().toString(36).toUpperCase()}`,
-    transferId: params.transferId,
-    matterReference: params.transferId || 'MAT-2026-TRF',
+    transferId,
+    matterReference,
+    accountableInstitutionId,
     date: new Date().toISOString(),
-    statementType: params.statementType || 'buyer',
-    propertyAddress: params.propertyAddress,
-    erfNumber: params.erfNumber,
-    purchasePrice: price,
-    depositAmount: deposit,
-    loanAmount: loan,
-    isVatTransaction: isVatTx,
-    lodgementDeedsCount: deedsCount,
-    
-    conveyancingFeeExclVat,
-    conveyancingFeeVat,
-    conveyancingFeeInclVat,
-    
-    transferDuty,
-    transferDutyDescription,
-    
-    deedsOfficeRegistrationFee,
-    deedsOfficeLodgementFee,
-    deedsOfficeAdhocFees: params.adhocDeedsFees || [],
-    deedsOfficeTotal,
-    
-    disbursements,
-    disbursementsExclVat,
-    disbursementsVat,
-    disbursementsInclVat,
-    
+    statementType,
+    propertyAddress,
+    erfNumber,
+    propertyType,
+    purchasePrice,
+    depositAmount,
+    loanAmount,
+    isVatTransaction,
+    lodgementDeedsCount,
+    provenance,
+    conveyancingFeeExclVat: convExcl,
+    conveyancingFeeVat: convVat,
+    conveyancingFeeInclVat: convIncl,
+    transferDuty: tdResult.transferDuty,
+    transferDutyDescription: tdResult.rateDescription,
+    isTransferDutyExempt: tdResult.isExempt,
+    statutoryScheduleItem: deedsResult.statutoryScheduleItem,
+    deedsOfficeRegistrationFee: deedsResult.statutoryRegistrationFee,
+    deedsOfficeLodgementFee: deedsResult.statutoryLodgementFee,
+    deedsOfficeAdhocFees: adhocDeedsFees.map(a => ({ id: a.id, name: a.name, amount: a.amount })),
+    deedsOfficeTotal: deedsResult.totalDeedsOfficeFees,
+    disbursements: disbResult.appliedLines,
+    disbursementsExclVat: disbResult.totalExclVat,
+    disbursementsVat: disbResult.totalVat,
+    disbursementsInclVat: disbResult.totalInclVat,
     subtotalExclVat,
     totalVat,
     totalCosts,
     credits,
     totalCredits,
     balanceDue,
-    
-    status: 'draft'
+    status: 'issued',
+    notes: 'Payment due on receipt of proforma into the firm Section 86 trust account.'
   }
 }
 
-/**
- * Currency Formatter for South African Rands
- */
-export function formatZAR(amount: number | string | null | undefined): string {
-  const num = typeof amount === 'number' ? amount : parseFloat(String(amount || '0')) || 0
+// ---------------------------------------------------------------------------
+// 6. Formatting Utilities
+// ---------------------------------------------------------------------------
+
+export function formatZAR(amount: number): string {
+  const num = Number(amount) || 0
   return new Intl.NumberFormat('en-ZA', {
     style: 'currency',
     currency: 'ZAR',

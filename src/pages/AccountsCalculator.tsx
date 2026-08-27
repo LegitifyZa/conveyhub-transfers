@@ -101,8 +101,8 @@ export const AccountsCalculator: React.FC = () => {
       transferDutyDescription: td.rateDescription,
       isExempt: td.isExempt,
       bracketTier: td.bracketTier,
-      deedsRegistrationFee: deeds.item1bTransferFee,
-      deedsLodgementFee: deeds.item1cLodgementFee,
+      deedsRegistrationFee: deeds.statutoryRegistrationFee,
+      deedsLodgementFee: deeds.statutoryLodgementFee,
       deedsTotal: deeds.totalDeedsOfficeFees,
       disbursementsExcl: disbExcl,
       disbursementsVat: disbVat,
@@ -126,9 +126,18 @@ export const AccountsCalculator: React.FC = () => {
     // Deeds Office Bond Fee (Item 1(c))
     const deeds = calculateDeedsOfficeFee(numericBond, 'bond', 1)
 
-    // Standard Bond Disbursements (Postage, FICA, Doc Gen, Bank compliance)
-    const bondDisbExcl = 1950
-    const bondDisbVat = firmSettings.isVatRegistered ? Math.round(bondDisbExcl * vatRate) : 0
+    // Configurable Bond Disbursements (Postage, FICA, Doc Gen, Bank compliance)
+    const bondDisb = (firmSettings.defaultDisbursements || []).filter(d => 
+      d.enabled && (d.applicationRule === 'conditional_bond' || d.category === 'compliance' || d.category === 'admin')
+    )
+    let bondDisbExcl = 0
+    let bondDisbVat = 0
+    bondDisb.forEach(d => {
+      bondDisbExcl += d.amount || 0
+      if (d.isVatApplicable && firmSettings.isVatRegistered) {
+        bondDisbVat += Math.round((d.amount || 0) * vatRate)
+      }
+    })
     const bondDisbTotal = bondDisbExcl + bondDisbVat
 
     const grandTotal = bondIncl + deeds.totalDeedsOfficeFees + bondDisbTotal
@@ -137,8 +146,8 @@ export const AccountsCalculator: React.FC = () => {
       bondVat,
       bondIncl,
       deedsTotal: deeds.totalDeedsOfficeFees,
-      deedsRegistrationFee: deeds.item1bTransferFee,
-      deedsLodgementFee: deeds.item1cLodgementFee,
+      deedsRegistrationFee: deeds.statutoryRegistrationFee,
+      deedsLodgementFee: deeds.statutoryLodgementFee,
       disbursementsTotal: bondDisbTotal,
       grandTotal
     }
@@ -168,6 +177,8 @@ export const AccountsCalculator: React.FC = () => {
   // Handle switching to generated Proforma tab
   const handleGenerateProforma = () => {
     const proforma = generateProformaStatement({
+      transferId: 'CALC-ESTIMATE',
+      matterReference: 'CALC-ESTIMATE',
       propertyAddress: '123 Coastal Boulevard, Camps Bay, Cape Town',
       erfNumber: 'Erf 1089',
       purchasePrice: numericPrice,

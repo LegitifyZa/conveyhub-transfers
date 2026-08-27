@@ -7,7 +7,8 @@ import {
   ProformaStatementData, 
   generateProformaStatement
 } from '@/utils/conveyancingAccounts'
-import { apiRequest } from './httpClient'
+import { apiRequest } from './http'
+import type { ApiResponse } from '../types'
 
 const SETTINGS_STORAGE_KEY = 'conveyhub_firm_account_settings'
 const TARIFFS_STORAGE_KEY = 'conveyhub_tariff_schedules'
@@ -48,7 +49,7 @@ export class AccountsApi {
    */
   static async getFirmSettings(): Promise<FirmAccountSettings> {
     try {
-      const response = await apiRequest<{ success: boolean; data: FirmAccountSettings }>('/api/accounts/settings')
+      const response = await apiRequest<ApiResponse<FirmAccountSettings>>('/api/accounts/settings')
       if (response && response.success && response.data) {
         saveLocalSettings(response.data)
         return response.data
@@ -64,7 +65,7 @@ export class AccountsApi {
    */
   static async updateFirmSettings(settings: Partial<FirmAccountSettings>): Promise<FirmAccountSettings> {
     try {
-      const response = await apiRequest<{ success: boolean; data: FirmAccountSettings; message?: string }>(
+      const response = await apiRequest<ApiResponse<FirmAccountSettings>>(
         '/api/accounts/settings',
         {
           method: 'PUT',
@@ -97,7 +98,7 @@ export class AccountsApi {
    */
   static async getTariffSchedules(): Promise<TariffSchedule[]> {
     try {
-      const response = await apiRequest<{ success: boolean; data: TariffSchedule[] }>('/api/accounts/tariffs')
+      const response = await apiRequest<ApiResponse<TariffSchedule[]>>('/api/accounts/tariffs')
       if (response && response.success && Array.isArray(response.data)) {
         localTariffsCache = response.data
         try {
@@ -130,7 +131,7 @@ export class AccountsApi {
    */
   static async saveTariffSchedule(schedule: TariffSchedule): Promise<TariffSchedule> {
     try {
-      const response = await apiRequest<{ success: boolean; data: TariffSchedule; message?: string }>(
+      const response = await apiRequest<ApiResponse<TariffSchedule>>(
         '/api/accounts/tariffs',
         {
           method: 'POST',
@@ -194,7 +195,7 @@ export class AccountsApi {
 
     try {
       const url = `/api/accounts/transfers/${encodeURIComponent(transferId)}/proforma?${params.toString()}`
-      const response = await apiRequest<{ success: boolean; data: ProformaStatementData }>(url)
+      const response = await apiRequest<ApiResponse<ProformaStatementData>>(url)
       if (response && response.success && response.data) {
         localStatementsCache[transferId] = response.data
         return response.data
@@ -243,7 +244,7 @@ export class AccountsApi {
   static async saveProformaStatement(statement: ProformaStatementData): Promise<ProformaStatementData> {
     const id = statement.transferId || statement.id || `PF-${Date.now()}`
     try {
-      const response = await apiRequest<{ success: boolean; data: ProformaStatementData; message?: string }>(
+      const response = await apiRequest<ApiResponse<ProformaStatementData>>(
         `/api/accounts/transfers/${encodeURIComponent(id)}/proforma`,
         {
           method: 'PUT',
