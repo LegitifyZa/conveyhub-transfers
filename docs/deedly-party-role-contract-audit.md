@@ -23,6 +23,19 @@ For ordinary transfer-side ownership movement, the canonical backend role codes 
 - `transferor`
 - `transferee`
 
+The business meaning of many classifications is already locked, but the following specialist role/capacity machine codes are not yet approved and must be defined during the role/capacity model design:
+
+- deceased-estate estate-side party;
+- heir/legatee receiving relationship;
+- executor / Master's Representative capacity;
+- Section 45 deceased-estate/deceased-side relationship;
+- Section 45 surviving-spouse relationship;
+- any other specialist relationship where the business meaning is locked but the stable code has not yet been approved.
+
+**Status of these specialist codes:** `MACHINE CODE TO BE DEFINED DURING ROLE/CAPACITY MODEL DESIGN`.
+
+The implementation must not infer a code merely from the friendly label.
+
 UI and document labels may vary by classification (for example, `Seller / Purchaser`, `Donor / Donee`, `Deceased Estate / Heir`), but those friendly labels must not redefine the underlying identity or role.
 
 ## 3. Multiple parties and primary contact
@@ -47,7 +60,7 @@ Locked rules:
 - DEEDLY may apply transaction-specific rules based on the Golden Record entity type.
 - `trust` must be a recognised DEEDLY entity type even if Golden Records trust workflows are not yet fully implemented.
 
-**Current repo constraint:** `src/lib/migrations/008_create_transfer_parties.sql` currently constrains `entity_type` to `('person', 'company')`. This is a known transitional limitation and must be relaxed in a future migration when trust support is implemented.
+**Current repo constraint:** `src/lib/migrations/008_create_transfer_parties.sql` currently constrains `entity_type` to `('person', 'company')`. This is a known transitional limitation. The future migration must not simply replace this with another restrictive `CHECK` list such as `('person','company','trust')`. Instead, the column should be extensible and validation should be reference-data-driven or performed server-side against the approved Golden Records/Entities entity-type contract.
 
 ## 5. Golden Record missing-entity rule
 
@@ -249,14 +262,16 @@ No schema changes are made in this step.
 
 The contract explicitly distinguishes these concepts. They must not be collapsed into a single `role` string.
 
-| Concept | Meaning | Example values |
-|---------|---------|----------------|
-| `identity` | The Golden Record entity | `golden_record_id` |
-| `entity_type` | What the entity is | `person`, `company`, `trust` |
-| `matter_role` | What the entity is doing in the matter | `transferor`, `transferee`, `developer`, `registered_owner`, `heir` |
-| `representative_capacity` | Legal capacity in which a person acts for another entity | `trustee`, `executor`, `representative` |
-| `signatory_authority` | Whether the person may sign | `is_required_signatory`, `authority_verified` |
-| `primary_contact` | Communication/UI convenience | `is_primary_contact` |
+| Concept | Meaning | Example values | Machine code status |
+|---------|---------|----------------|---------------------|
+| `identity` | The Golden Record entity | `golden_record_id` | `golden_record_id` is locked |
+| `entity_type` | What the entity is | `person`, `company`, `trust`, or future Golden Records-supported types | Stable codes to be aligned with the Golden Records/Entities entity-type contract; do not hard-code another restrictive `CHECK` list |
+| `matter_role` | What the entity is doing in the matter | `transferor`, `transferee` | `LOCKED` |
+| | | `developer`, `registered_owner`, `extension_right_holder` | Explicitly agreed descriptions; final machine codes to be confirmed during role/capacity model design |
+| | | estate-side party, heir, surviving spouse, etc. | `MACHINE CODE TO BE DEFINED DURING ROLE/CAPACITY MODEL DESIGN` |
+| `representative_capacity` | Legal capacity in which a person acts for another entity | `trustee`, `executor`, `representative` | `MACHINE CODE TO BE DEFINED DURING ROLE/CAPACITY MODEL DESIGN` |
+| `signatory_authority` | Whether the person may sign | `is_required_signatory`, `authority_verified` | Future fields, not final schema |
+| `primary_contact` | Communication/UI convenience | `is_primary_contact` | Concept locked; code to be confirmed |
 
 ## 14. Classification matrix
 
@@ -272,8 +287,8 @@ The contract explicitly distinguishes these concepts. They must not be collapsed
 | `transfer.sale_in_execution` | Sale | 1 transferor, 1 transferee | 1 | Yes | Yes | Seller / Purchaser | Execution/sheriff context later | LOCKED |
 | `transfer.property_in_possession` | Sale | 1 transferor, 1 transferee | 1 | Yes | Yes | Seller / Purchaser | Possession-specific workflow gates later | LOCKED |
 | `transfer.donation` | Donation | 1 transferor, 1 transferee | 1 | Yes | Yes | Donor / Donee | Backend roles remain transferor/transferee | LOCKED |
-| `transfer.deceased_estate_inheritance` | Estate | 1 estate-side party, 1 heir/legatee, 1 executor/representative | 1 | Yes (heir receives) | Yes | Deceased Estate / Heir / Executor | Representative capacity is DEEDLY-owned; representative is not the transferor | LOCKED |
-| `transfer.endorsement_section_45` | Endorsement | 1 estate-side party, 1 surviving spouse, 1 executor/representative | 1 | Yes (surviving spouse receives) | Yes | Deceased Estate / Surviving Spouse / Executor | Mortgage-bond status must be captured; not a normal sale | LOCKED |
+| `transfer.deceased_estate_inheritance` | Estate | 1 estate-side party (business label; machine code TBD), 1 heir/legatee receiving party (business label; machine code TBD), 1 executor/representative (business label; machine code TBD) | 1 | Yes (heir receives) | Yes | Deceased Estate / Heir / Executor | Business meaning locked; representative capacity is DEEDLY-owned; representative is not the transferor; `MACHINE CODE TO BE DEFINED DURING ROLE/CAPACITY MODEL DESIGN` | LOCKED |
+| `transfer.endorsement_section_45` | Endorsement | 1 estate-side/deceased-side party (business label; machine code TBD), 1 surviving-spouse receiving party (business label; machine code TBD), 1 executor/representative (business label; machine code TBD) | 1 | Yes (surviving spouse receives) | Yes | Deceased Estate / Surviving Spouse / Executor | Business meaning locked; mortgage-bond status must be captured; not a normal sale; `MACHINE CODE TO BE DEFINED DURING ROLE/CAPACITY MODEL DESIGN` | LOCKED |
 | `development.new_sectional_title_register` | Development | 1 developer | 1 underlying registered land | No | Yes (outputs) | Developer / Scheme | Resulting sections are outputs | LOCKED |
 | `development.new_township_register_establishment` | Development | 1 developer/township owner, optional registered_owner | 1 underlying registered land | No | Yes (outputs) | Developer / Township | Resulting erven/lots are outputs | LOCKED |
 | `development.scheme_extension_sections` | Development | 1 extension_right_holder | 1 existing scheme/register | No | Yes (outputs) | Extension Holder / Body Corporate / Successor | New sections are outputs; not individual section extension | LOCKED |
@@ -293,11 +308,17 @@ Do not implement or seed these classifications yet.
 A reference-data approach is preferred. The following shape is recommended but not implemented in this step.
 
 ```
+entity_type_definitions  -- aligns with Golden Records/Entities contract; extensible
+- entity_type_code   VARCHAR(40) PRIMARY KEY
+- label              VARCHAR(100) NOT NULL
+- golden_record_type TEXT         -- how the type maps to the Entities service
+- is_active          BOOLEAN DEFAULT TRUE
+
 party_role_definitions
 - role_code          VARCHAR(40) PRIMARY KEY
 - label              VARCHAR(100) NOT NULL
 - description        TEXT
-- allowed_entity_types TEXT[]      -- e.g., {'person','company','trust'}
+- allowed_entity_type_codes TEXT[]  -- references `entity_type_definitions`; do not hard-code `{'person','company','trust'}`
 - is_active          BOOLEAN DEFAULT TRUE
 
 transfer_classification_role_rules
@@ -307,13 +328,13 @@ transfer_classification_role_rules
 - max_count             INTEGER DEFAULT NULL  -- NULL = unlimited
 - is_required           BOOLEAN DEFAULT FALSE
 - allows_primary_contact BOOLEAN DEFAULT FALSE
-- entity_types          TEXT[]      -- override or subset
+- allowed_entity_type_codes TEXT[]  -- override or subset from `entity_type_definitions`
 - PRIMARY KEY (classification_code, role_code)
 
 party_representative_capacities  -- future
 - transfer_party_id     UUID
 - person_golden_record_id UUID
-- capacity              VARCHAR(50)  -- 'trustee', 'executor', 'representative'
+- capacity              VARCHAR(50)  -- machine code to be defined during role/capacity model design
 - authority_verified    BOOLEAN DEFAULT FALSE
 - is_required_signatory BOOLEAN DEFAULT FALSE
 ```
@@ -331,17 +352,20 @@ matter_properties
 - property_kind         VARCHAR(20)  -- 'input', 'output'
 - registration_status   VARCHAR(20)  -- 'proposed','surveyed','sg_approved','registered' (future)
 - role_in_matter        VARCHAR(50)  -- e.g., 'parent','resulting_section','resulting_erf','resulting_portion'
-- golden_record_link    TEXT         -- Loom/provider property key when known
+- external_property_id  TEXT         -- source reference when known
+- property_source       VARCHAR(100) -- origin of the reference; contract TO BE CONFIRMED
 ```
 
 A matter may therefore contain many properties, each marked as input or output. Outputs start as proposed and progress through registration lifecycle states.
+
+**Property source contract:** Golden Records is authoritative for people/legal-entity identity. The authoritative property registry/provider contract has not yet been locked. The `external_property_id` and `property_source` columns are deliberately neutral placeholders pending that decision. Do not introduce a new external provider or architecture assumption.
 
 ## 18. Implementation sequencing recommendation
 
 Proposed order, not to be implemented in this step:
 
 1. **Stable party role/capacity reference data** — seed `party_role_definitions` and `transfer_classification_role_rules` before any create validation can be strict.
-2. **Relax `transfer_parties.entity_type` constraint** — add `trust` and future entity types in a migration once the reference data is ready.
+2. **Relax `transfer_parties.entity_type` constraint** — replace the restrictive `CHECK` with an extensible column and reference-data-driven or server-side validation; do not simply hard-code `('person','company','trust')` into another `CHECK`.
 3. **Property input/output relationship model** — add the `matter_properties` or equivalent structure to support multiple properties and development outputs.
 4. **Tenant-safe Golden Record validation/linking contract** — implement the Entities service call, visibility/authorisation check, and display-cache refresh before accepting `golden_record_id` values.
 5. **Server-side classification-specific create validation** — implement the create route rules from the matrix above.
@@ -351,7 +375,7 @@ Proposed order, not to be implemented in this step:
 
 **Ordering concerns from the current repo:**
 
-- `src/lib/migrations/008_create_transfer_parties.sql` currently restricts `entity_type` to `('person', 'company')`. Trust support cannot be exercised until this constraint is relaxed.
+- `src/lib/migrations/008_create_transfer_parties.sql` currently restricts `entity_type` to `('person', 'company')`. Trust support cannot be exercised until the constraint is replaced with an extensible, reference-data-driven validation approach rather than another hard-coded `CHECK`.
 - `transfer_parties.role` is free text at the database level. Future reference data and validation must be enforced in application code until a `CHECK` or FK is added.
 - The legacy `matter_parties` and `parties` tables are deprecated. New implementation should target `transfer_parties` only and avoid entangling with the old schema.
 
@@ -360,7 +384,7 @@ Proposed order, not to be implemented in this step:
 | Layer | Current state | Implication |
 |-------|---------------|-------------|
 | `transfer_parties.role` | `VARCHAR(40) NOT NULL` with no `CHECK` | Validation must start in application code; future migration can add a reference FK or `CHECK` |
-| `transfer_parties.entity_type` | `CHECK (entity_type IN ('person', 'company'))` | Trust cannot be stored until the constraint is relaxed |
+| `transfer_parties.entity_type` | `CHECK (entity_type IN ('person', 'company'))` | Trust cannot be stored until the restrictive `CHECK` is replaced with extensible, reference-data-driven validation |
 | `transfer_parties` unique key | `(transfer_id, golden_record_id, role)` | Supports multiple parties with the same role as long as `golden_record_id` differs |
 | Legacy `matter_parties` | Fixed `CHECK` role list | Not authoritative; do not reuse for DEEDLY v1 |
 | Prototype frontend | Hard-coded `buyer`/`seller` | Must be replaced with canonical `transferor`/`transferee` and classification-friendly labels |
