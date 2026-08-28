@@ -31,6 +31,8 @@ BEGIN
         SELECT property_id FROM municipal_accounts WHERE property_id IS NOT NULL
         UNION
         SELECT property_id FROM compliance_certificates WHERE property_id IS NOT NULL
+        UNION
+        SELECT property_id FROM public.golden_record_links WHERE property_id IS NOT NULL
     );
 END $$;
 
@@ -261,7 +263,7 @@ BEGIN
         t.matter_id,
         t.property_id,
         'input',
-        'legacy_transfers'
+        'legacy_transfer_' || t.id::text
     FROM transfers t
     WHERE t.matter_id IS NOT NULL
       AND t.property_id IS NOT NULL
@@ -275,22 +277,21 @@ CREATE OR REPLACE FUNCTION sync_matter_properties_from_transfer()
 RETURNS TRIGGER AS $$
 BEGIN
     IF TG_OP = 'UPDATE' AND OLD.matter_id IS DISTINCT FROM NEW.matter_id AND OLD.matter_id IS NOT NULL THEN
-        -- The transfer has moved to a different matter; remove the legacy
-        -- property pointer from the previous matter.
+        -- The transfer has moved to a different matter; remove only this
+        -- transfer's own legacy property pointer from the previous matter.
         DELETE FROM matter_properties
         WHERE matter_id = OLD.matter_id
-          AND property_source = 'legacy_transfers'
+          AND property_source = 'legacy_transfer_' || OLD.id::text
           AND property_kind = 'input'
           AND property_id = OLD.property_id;
     END IF;
 
     IF NEW.matter_id IS NOT NULL AND NEW.property_id IS NOT NULL THEN
-        -- Remove the previous legacy pointer for this matter, if any, so that
-        -- transfers.property_id remains a single legacy value rather than the
-        -- full property set.
+        -- Remove this transfer's previous legacy property pointer, if any, so
+        -- that transfers.property_id remains a single legacy value per transfer.
         DELETE FROM matter_properties
         WHERE matter_id = NEW.matter_id
-          AND property_source = 'legacy_transfers'
+          AND property_source = 'legacy_transfer_' || NEW.id::text
           AND property_kind = 'input'
           AND property_id IS DISTINCT FROM NEW.property_id;
 
@@ -303,7 +304,7 @@ BEGIN
             NEW.matter_id,
             NEW.property_id,
             'input',
-            'legacy_transfers'
+            'legacy_transfer_' || NEW.id::text
         )
         ON CONFLICT (matter_id, property_id, property_kind) DO NOTHING;
     END IF;
