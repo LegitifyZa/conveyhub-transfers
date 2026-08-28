@@ -155,11 +155,64 @@ Locked rules:
 
 - Classification: `transfer.deceased_estate_sale`
 - Taxonomy classification: `APPROVED` (seeded in migration 019)
-- Detailed business workflow: `TO BE LOCKED`
+- Detailed business workflow: `LOCKED`
 - Specialist machine-readable party/capacity codes: `NOT YET APPROVED`
 - Classification-specific party validation rules: `NOT YET SEEDED`
 - A deceased-estate inheritance and a sale out of a deceased estate are different workflows.
 - Do not implement or seed party/role rules for this classification until its specialist machine codes and business validation rules are explicitly locked.
+
+### 9.1 Deceased estate sale
+
+**Matter context**
+
+- The deceased estate / Estate Late context must be captured.
+- Capture the deceased person and Master’s estate reference where available.
+- Do not invent a duplicate DEEDLY legal-entity identity merely to represent the estate context.
+
+**Estate representative**
+
+- The duly appointed executor/executrix, or other legally applicable Master’s Representative, acts in representative capacity.
+- Representative identity and representative capacity must remain separate concepts.
+- Do not assume the executor’s machine role code yet.
+
+**Purchaser / receiving side**
+
+- At least one Golden Record-backed purchaser/receiving party is required.
+- Multiple purchasers are allowed.
+
+**Property**
+
+- At least one property or property interest is required.
+- Multiple properties are supported.
+
+**Minimum live-matter create structure**
+
+Requires:
+
+- approved classification;
+- deceased-estate context;
+- Golden Record-backed estate representative;
+- Golden Record-backed purchaser/receiving party;
+- at least one property/property interest;
+- sufficient sale/source-instrument information to identify the transaction.
+
+### 9.2 Deceased-estate-sale origin branch
+
+- The business distinction between a sale concluded before death and a sale concluded by executor after death is locked.
+- These are different workflow branches.
+- The final machine codes for these values are not yet locked.
+- For a post-death executor sale, the workflow must support the applicable section 47 authority/manner-and-conditions analysis.
+- Do not model section 47 as a universal “all heirs must consent” checkbox; the legally applicable authority basis may differ by circumstances.
+
+### 9.3 Deceased-estate-sale workflow gates
+
+- **Executor authority:** the acting representative’s appointment/authority must be verified.
+- **Section 47:** the appropriate authority governing the manner and conditions of an executor sale must be established where applicable.
+- **Section 49:** DEEDLY must support a conflict/related-party check where the purchaser is the executor or falls within the controlled relationship categories contemplated by the Act.
+- **Section 42(2):** the Master’s section 42(2) endorsement/certificate/no-objection requirement must be represented as a pre-lodgement workflow gate where applicable.
+- **Mortgage bond:** if the property is mortgaged, the relevant bond/cancellation workflow must activate.
+
+**Explicit distinction:** `transfer.deceased_estate_sale` is a sale workflow; `transfer.deceased_estate_inheritance` is an inheritance allocation workflow. They are not interchangeable.
 
 ## 10. Section 45 endorsement
 
@@ -179,10 +232,52 @@ Locked rules:
 
 - Classification: `transfer.endorsement_section_45bis`
 - Taxonomy classification: `APPROVED` (seeded in migration 019)
-- Detailed business workflow: `TO BE LOCKED`
+- Detailed business workflow: `LOCKED`
 - Specialist machine-readable party/capacity codes: `NOT YET APPROVED`
 - Classification-specific party validation rules: `NOT YET SEEDED`
 - Do not implement or seed party/role rules for this classification until its specialist machine codes and business validation rules are explicitly locked.
+
+### 10.1 Section 45bis endorsement
+
+**Locked business rules**
+
+- Both relevant spouses/former spouses must be Golden Record-backed identities.
+- At least one property/property interest is required.
+- Multiple properties are allowed where legitimately covered by the same legal outcome.
+- A legally supported basis/source instrument for the endorsement must be identified.
+- The intended post-endorsement ownership outcome must be explicitly captured.
+- This is not an ordinary Seller/Purchaser transfer workflow.
+
+### 10.2 Section 45bis outcome branches
+
+**A. One spouse/former spouse acquires the other spouse’s share**
+
+- One party becomes entitled to the whole property.
+
+**B. Both spouses/former spouses retain the property in undivided shares**
+
+- Both remain entitled to defined undivided shares.
+
+- These business meanings are locked.
+- The final machine codes for these outcome values are not yet locked.
+
+### 10.3 Section 45bis lawful-acquisition gate
+
+- Section 45bis is a registration mechanism; it does not itself create the underlying ownership entitlement.
+- DEEDLY must therefore require a valid legal basis/source instrument establishing the relevant acquisition, award or division before the matter may reach endorsement readiness.
+- Do not treat “parties are divorced” as sufficient proof that one party automatically acquires the other’s property share.
+- Relevant source instruments may include a divorce order, settlement agreement, court order or other legally applicable basis.
+- The final machine codes for the legal-basis types are not yet locked.
+
+### 10.4 Section 45bis bond branch
+
+- Mortgage-bond status must be captured for each affected property.
+- The workflow must distinguish:
+  - no registered mortgage bond;
+  - one spouse becoming sole owner;
+  - both former spouses retaining undivided shares.
+- The applicable cancellation/release/substitution/consent requirements must activate from the actual legal outcome.
+- Detailed bond workflow implementation is not yet locked.
 
 ## 11. Development classifications
 
@@ -299,8 +394,8 @@ The contract explicitly distinguishes these concepts. They must not be collapsed
 | `development.new_township_register_establishment` | Development | 1 developer/township owner, optional registered_owner | 1 underlying registered land | No | Yes (outputs) | Developer / Township | Resulting erven/lots are outputs | LOCKED |
 | `development.scheme_extension_sections` | Development | 1 extension_right_holder | 1 existing scheme/register | No | Yes (outputs) | Extension Holder / Body Corporate / Successor | New sections are outputs; not individual section extension | LOCKED |
 | `development.subdivision` | Development | 1 registered_owner, optional developer | 1 parent property | No | Yes (outputs) | Owner / Developer | New portions are outputs; proposed lifecycle to come later | LOCKED |
-| `transfer.deceased_estate_sale` | Estate | To be defined during role/capacity model design | 1 | Yes (heir/beneficiary receives) | Yes | Deceased Estate / Heir / Executor | Taxonomy classification: APPROVED; detailed business workflow: TO BE LOCKED; specialist machine-readable party/capacity codes: NOT YET APPROVED; classification-specific party validation rules: NOT YET SEEDED | APPROVED — taxonomy row seeded in migration 019 |
-| `transfer.endorsement_section_45bis` | Endorsement | To be defined during role/capacity model design | 1 | Yes (surviving spouse receives) | Yes | Deceased Estate / Surviving Spouse / Executor | Taxonomy classification: APPROVED; detailed business workflow: TO BE LOCKED; specialist machine-readable party/capacity codes: NOT YET APPROVED; classification-specific party validation rules: NOT YET SEEDED | APPROVED — taxonomy row seeded in migration 019 |
+| `transfer.deceased_estate_sale` | Estate | Deceased-estate context; Golden Record-backed executor/representative; at least one Golden Record-backed purchaser; at least one property/property interest; sufficient sale/source-instrument | 1 | Yes (heir/beneficiary receives) | Yes | Deceased Estate / Heir / Executor | Taxonomy: APPROVED; business workflow: LOCKED; specialist machine codes: TO BE DEFINED; party validation rules: NOT YET SEEDED | APPROVED — taxonomy row seeded in migration 019 |
+| `transfer.endorsement_section_45bis` | Endorsement | Both spouses/former spouses as Golden Record identities; at least one property; valid legal basis/source instrument; post-endorsement ownership outcome captured; mortgage-bond status | 1 | Yes (surviving spouse receives) | Yes | Deceased Estate / Surviving Spouse / Executor | Taxonomy: APPROVED; business workflow: LOCKED; specialist machine codes: TO BE DEFINED; party validation rules: NOT YET SEEDED | APPROVED — taxonomy row seeded in migration 019 |
 
 ## 15. Recently approved taxonomy rows
 
@@ -474,8 +569,19 @@ Migration 017 introduces `matter_properties` while `transfers.property_id` remai
 - **Sale-type rule:** one transferor, one transferee, one property; all nine sale-type classifications are locked under this rule.
 - **Donation, deceased estate inheritance, and section 45 endorsement** each have locked, classification-specific rules.
 - **Development classifications** do not require a transferee at creation; they focus on developer/owner/holder plus input property and output properties.
-- **DEEDLY now has 18 approved classifications:** 16 original classifications are `LOCKED`, and 2 additional classifications (`transfer.deceased_estate_sale` and `transfer.endorsement_section_45bis`) are approved at the taxonomy level only.
-- **The two taxonomy-only classifications are seeded in migration 019.** Their detailed business workflow, specialist machine-readable party/capacity codes, and classification-specific party validation rules are not yet locked.
+- **DEEDLY now has 18 approved classifications:** 16 original classifications are `LOCKED`; 2 additional classifications (`transfer.deceased_estate_sale` and `transfer.endorsement_section_45bis`) are `APPROVED` at the taxonomy level and their detailed business workflow is now `LOCKED`, while their specialist machine-readable party/capacity codes and classification-specific party validation rules remain to be defined.
+- **The two taxonomy-only classifications are seeded in migration 019.** Do not invent or seed specialist party/capacity machine codes for them until their machine-code design is explicitly locked.
 - **Do not invent or seed specialist party/capacity machine codes** for the two newly approved classifications until their business validation rules are explicitly locked.
 - **Property-tenant isolation gap from Step 16S.5b resolved:** `properties` now has `accountable_institution_id` and `matter_properties` is protected by composite tenant FKs; legacy `transfers.property_id` is backfilled and kept in sync with `matter_properties` by a one-way compatibility trigger.
 - **Recommended implementation sequence:** reference data → entity-type constraint → property input/output model → Golden Record linking contract → server-side create validation → authenticated v1 create route → frontend → specialized workflow gates.
+
+## 22. Design-review note
+
+The existing `transfer.deceased_estate_inheritance` representation should be revisited during specialist role/capacity machine-code design so that the following are modelled precisely and not collapsed into the simplistic statement that the estate itself is necessarily the machine-code `transferor`:
+
+- estate context;
+- executor/representative identity;
+- representative capacity;
+- heir/legatee receiving relationship.
+
+This is a design-review note only; the locked inheritance workflow is not changed in this step and no replacement machine codes are invented.
