@@ -151,10 +151,13 @@ Locked rules:
 - Golden Records remains authoritative for identities.
 - DEEDLY owns representative capacity and estate-specific workflow.
 
-**Pending taxonomy confirmation:**
+**Approved taxonomy row:**
 
-- Proposed classification: `transfer.deceased_estate_sale`
-- Status: `APPROVED — taxonomy row only; do not invent specialist machine codes yet`
+- Classification: `transfer.deceased_estate_sale`
+- Taxonomy classification: `APPROVED` (seeded in migration 019)
+- Detailed business workflow: `TO BE LOCKED`
+- Specialist machine-readable party/capacity codes: `NOT YET APPROVED`
+- Classification-specific party validation rules: `NOT YET SEEDED`
 - A deceased-estate inheritance and a sale out of a deceased estate are different workflows.
 - Do not implement or seed party/role rules for this classification until its specialist machine codes and business validation rules are explicitly locked.
 
@@ -172,10 +175,13 @@ Locked rules:
 - Mortgage-bond status must be captured because it changes the workflow.
 - UI should use context-specific labels such as `Deceased Estate`, `Surviving Spouse`, and `Executor` rather than `Seller/Purchaser`.
 
-**Pending taxonomy confirmation:**
+**Approved taxonomy row:**
 
-- Proposed classification: `transfer.endorsement_section_45bis`
-- Status: `APPROVED — taxonomy row only; do not invent specialist machine codes yet`
+- Classification: `transfer.endorsement_section_45bis`
+- Taxonomy classification: `APPROVED` (seeded in migration 019)
+- Detailed business workflow: `TO BE LOCKED`
+- Specialist machine-readable party/capacity codes: `NOT YET APPROVED`
+- Classification-specific party validation rules: `NOT YET SEEDED`
 - Do not implement or seed party/role rules for this classification until its specialist machine codes and business validation rules are explicitly locked.
 
 ## 11. Development classifications
@@ -293,15 +299,17 @@ The contract explicitly distinguishes these concepts. They must not be collapsed
 | `development.new_township_register_establishment` | Development | 1 developer/township owner, optional registered_owner | 1 underlying registered land | No | Yes (outputs) | Developer / Township | Resulting erven/lots are outputs | LOCKED |
 | `development.scheme_extension_sections` | Development | 1 extension_right_holder | 1 existing scheme/register | No | Yes (outputs) | Extension Holder / Body Corporate / Successor | New sections are outputs; not individual section extension | LOCKED |
 | `development.subdivision` | Development | 1 registered_owner, optional developer | 1 parent property | No | Yes (outputs) | Owner / Developer | New portions are outputs; proposed lifecycle to come later | LOCKED |
-| `transfer.deceased_estate_sale` | Estate | To be defined during role/capacity model design | 1 | Yes (heir/beneficiary receives) | Yes | Deceased Estate / Heir / Executor | Taxonomy row approved; specialist role/capacity machine codes not yet locked | APPROVED (taxonomy row only) |
-| `transfer.endorsement_section_45bis` | Endorsement | To be defined during role/capacity model design | 1 | Yes (surviving spouse receives) | Yes | Deceased Estate / Surviving Spouse / Executor | Taxonomy row approved; specialist role/capacity machine codes not yet locked | APPROVED (taxonomy row only) |
+| `transfer.deceased_estate_sale` | Estate | To be defined during role/capacity model design | 1 | Yes (heir/beneficiary receives) | Yes | Deceased Estate / Heir / Executor | Taxonomy classification: APPROVED; detailed business workflow: TO BE LOCKED; specialist machine-readable party/capacity codes: NOT YET APPROVED; classification-specific party validation rules: NOT YET SEEDED | APPROVED — taxonomy row seeded in migration 019 |
+| `transfer.endorsement_section_45bis` | Endorsement | To be defined during role/capacity model design | 1 | Yes (surviving spouse receives) | Yes | Deceased Estate / Surviving Spouse / Executor | Taxonomy classification: APPROVED; detailed business workflow: TO BE LOCKED; specialist machine-readable party/capacity codes: NOT YET APPROVED; classification-specific party validation rules: NOT YET SEEDED | APPROVED — taxonomy row seeded in migration 019 |
 
-## 15. Pending taxonomy confirmation
+## 15. Recently approved taxonomy rows
 
-| Proposed classification | Reason | Status |
-|-------------------------|--------|--------|
-| `transfer.deceased_estate_sale` | Distinct from inheritance; sale out of a deceased estate | APPROVED — taxonomy row only |
-| `transfer.endorsement_section_45bis` | Distinct endorsement variant | APPROVED — taxonomy row only |
+These two classifications are now approved and seeded in migration 019. Their taxonomy rows are active and selectable, but their detailed business workflow, specialist machine-readable party/capacity codes, and classification-specific party validation rules are not yet locked.
+
+| Classification | Taxonomy classification | Detailed business workflow | Specialist machine codes | Party validation rules | Status |
+|----------------|-------------------------|----------------------------|--------------------------|------------------------|--------|
+| `transfer.deceased_estate_sale` | APPROVED | TO BE LOCKED | NOT YET APPROVED | NOT YET SEEDED | Taxonomy row active in migration 019 |
+| `transfer.endorsement_section_45bis` | APPROVED | TO BE LOCKED | NOT YET APPROVED | NOT YET SEEDED | Taxonomy row active in migration 019 |
 
 Do not invent specialist machine codes or seed classification-party role rules for these classifications yet.
 
@@ -421,9 +429,8 @@ Migration 017 introduces `matter_properties` while `transfers.property_id` remai
 
 ### 21.4 Newly approved taxonomy
 
-- `transfer.deceased_estate_sale` — APPROVED for addition as a `matter_classification_options` row only.
-- `transfer.endorsement_section_45bis` — APPROVED for addition as a `matter_classification_options` row only.
-- **Recommended migration:** `018_deedly_taxonomy_approved_classifications.sql` to insert the two approved rows without specialist role/capacity rules.
+- `transfer.deceased_estate_sale` — taxonomy row seeded in migration 019; no specialist role/capacity rules added.
+- `transfer.endorsement_section_45bis` — taxonomy row seeded in migration 019; no specialist role/capacity rules added.
 
 ## 21.5 Step 16S.5b — property-tenant isolation audit and migration 018 block
 
@@ -435,11 +442,11 @@ Migration 017 introduces `matter_properties` while `transfers.property_id` remai
 - The integration test `test_cross_tenant_property_link_is_rejected` in `python_server/tests/test_migrations_017.py` demonstrates this by creating an AI-A matter and an AI-B matter, linking a property to AI-B, and then attempting to link the same property to AI-A. The insert succeeds, so the test fails.
 - **Conclusion:** `matter_properties.accountable_institution_id` being derived from `matters` is insufficient for cross-tenant property isolation.
 
-### 21.5.2 Migration 018 decision
+### 21.5.2 Migration 018 and 019 decision
 
-- Because the property-tenant isolation gap is real, migration `018_deedly_taxonomy_approved_classifications.sql` is **not created** in this step.
-- The two classifications (`transfer.deceased_estate_sale` and `transfer.endorsement_section_45bis`) remain **APPROVED** for taxonomy, but their seeding must wait until the underlying property model is safe.
-- Do not invent specialist party/capacity codes or role rules for them.
+- Migration `018_deedly_property_tenant_isolation.sql` closes the cross-tenant property linking gap by adding `properties.accountable_institution_id`, enforcing composite tenant FKs, backfilling legacy `transfers.property_id` into `matter_properties`, and adding a one-way legacy sync trigger.
+- Migration `019_deedly_taxonomy_approved_classifications.sql` seeds the two approved taxonomy rows (`transfer.deceased_estate_sale` and `transfer.endorsement_section_45bis`) without specialist party/capacity codes or role rules.
+- Do not invent specialist party/capacity codes or role rules for the two newly approved classifications.
 
 ### 21.5.3 Legacy-property compatibility bridge
 
@@ -467,8 +474,8 @@ Migration 017 introduces `matter_properties` while `transfers.property_id` remai
 - **Sale-type rule:** one transferor, one transferee, one property; all nine sale-type classifications are locked under this rule.
 - **Donation, deceased estate inheritance, and section 45 endorsement** each have locked, classification-specific rules.
 - **Development classifications** do not require a transferee at creation; they focus on developer/owner/holder plus input property and output properties.
-- **All 16 original classifications are now `LOCKED`.**
-- **Newly approved taxonomy (row only):** `transfer.deceased_estate_sale` and `transfer.endorsement_section_45bis`. Their seeding in migration `018` is blocked until the property-tenant isolation gap is resolved.
+- **DEEDLY now has 18 approved classifications:** 16 original classifications are `LOCKED`, and 2 additional classifications (`transfer.deceased_estate_sale` and `transfer.endorsement_section_45bis`) are approved at the taxonomy level only.
+- **The two taxonomy-only classifications are seeded in migration 019.** Their detailed business workflow, specialist machine-readable party/capacity codes, and classification-specific party validation rules are not yet locked.
 - **Do not invent or seed specialist party/capacity machine codes** for the two newly approved classifications until their business validation rules are explicitly locked.
-- **Property-tenant isolation gap identified in Step 16S.5b:** `properties` has no `accountable_institution_id`, so `matter_properties` can currently link the same property to matters of different tenants.
+- **Property-tenant isolation gap from Step 16S.5b resolved:** `properties` now has `accountable_institution_id` and `matter_properties` is protected by composite tenant FKs; legacy `transfers.property_id` is backfilled and kept in sync with `matter_properties` by a one-way compatibility trigger.
 - **Recommended implementation sequence:** reference data → entity-type constraint → property input/output model → Golden Record linking contract → server-side create validation → authenticated v1 create route → frontend → specialized workflow gates.

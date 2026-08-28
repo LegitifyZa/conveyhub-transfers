@@ -193,10 +193,14 @@ class Migration015DbIntegrationTests(unittest.IsolatedAsyncioTestCase):
             )
             codes = {r["canonical_code"]: r["is_selectable"] for r in result.rows}
 
-            self.assertEqual(len(codes), 17)  # 16 selectable + generic
+            self.assertEqual(len(codes), 19)  # 18 selectable + generic
             self.assertEqual(
                 {c for c, s in codes.items() if s},
-                EXPECTED_SELECTABLE,
+                EXPECTED_SELECTABLE
+                | {
+                    "transfer.deceased_estate_sale",
+                    "transfer.endorsement_section_45bis",
+                },
             )
             self.assertFalse(codes.get("transfer.generic"))
             self.assertNotIn("divorce_settlement", codes)
