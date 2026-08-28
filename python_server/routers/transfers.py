@@ -590,8 +590,9 @@ async def create_transfer(body: dict):
                 """INSERT INTO properties (
                   property_id, street_address, suburb, city, postal_code, province,
                   country, property_type, erf_number, title_deed_number, extent_sqm, description,
-                  legal_description, lot_number, year_built, square_footage, created_for_transfer_id
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+                  legal_description, lot_number, year_built, square_footage, created_for_transfer_id,
+                  accountable_institution_id
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
                 RETURNING id""",
                 [
                     property_id_value,
@@ -611,6 +612,7 @@ async def create_transfer(body: dict):
                     to_number(property_data.get("yearBuilt")),
                     to_number(property_data.get("squareFootage")),
                     transfer_id,
+                    legacy_ai,
                 ],
                 connection=conn,
             )
@@ -699,6 +701,11 @@ async def create_transfer(body: dict):
             created_parties.append(map_party_row(party_result.rows[0]))
 
         matter_id = await get_or_create_matter_for_transfer(conn, transfer_uuid, transfer_id, legacy_ai)
+        await query(
+            "UPDATE transfers SET matter_id = $1 WHERE id = $2",
+            [matter_id, transfer_uuid],
+            connection=conn,
+        )
         await create_default_milestones(conn, matter_id)
         await seed_transfer_documents(conn, transfer_uuid)
 
@@ -817,8 +824,9 @@ async def update_transfer(id: str, body: dict):
                     """INSERT INTO properties (
                       property_id, street_address, suburb, city, postal_code, province,
                       country, property_type, erf_number, title_deed_number, extent_sqm, description,
-                      legal_description, lot_number, year_built, square_footage
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+                      legal_description, lot_number, year_built, square_footage,
+                      accountable_institution_id
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
                     RETURNING id""",
                     [
                         property_id_value,
@@ -837,6 +845,7 @@ async def update_transfer(id: str, body: dict):
                         property_data.get("lotNumber") if is_non_empty_string(property_data.get("lotNumber")) else None,
                         to_number(property_data.get("yearBuilt")),
                         to_number(property_data.get("squareFootage")),
+                        transfer_ai,
                     ],
                     connection=conn,
                 )
@@ -1060,7 +1069,12 @@ async def update_transfer(id: str, body: dict):
                         connection=conn,
                     )
 
-        await get_or_create_matter_for_transfer(conn, transfer_uuid, transfer_reference, transfer_ai)
+        matter_id = await get_or_create_matter_for_transfer(conn, transfer_uuid, transfer_reference, transfer_ai)
+        await query(
+            "UPDATE transfers SET matter_id = $1 WHERE id = $2",
+            [matter_id, transfer_uuid],
+            connection=conn,
+        )
 
         final_transfer = await query(
             """SELECT t.*, p.id as property_row_id, p.property_id, p.erf_number, p.street_address, p.suburb, p.city,

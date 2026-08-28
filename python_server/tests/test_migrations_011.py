@@ -129,7 +129,7 @@ class PropertyCreatedForTransferIdMigrationTests(unittest.TestCase):
     def test_py_post_sets_created_for_transfer_id(self):
         py = self._load_py_transfers()
         match = re.search(
-            r"INSERT INTO properties \(\s*property_id,.*?created_for_transfer_id\s*\) VALUES \(.*?\$17.*?\)",
+            r"INSERT INTO properties \(\s*property_id,.*?created_for_transfer_id\s*[,)].*?\) VALUES \(.*?\$17.*?\)",
             py,
             re.DOTALL,
         )

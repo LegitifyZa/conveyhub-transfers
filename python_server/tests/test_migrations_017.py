@@ -557,8 +557,8 @@ class Migration017DbIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
             await query(
                 """
-                INSERT INTO properties (id, property_id, street_address, city, province, property_type)
-                VALUES ($1, 'PROP-017-001', '1 Developer Ave', 'Cape Town', 'Western Cape', 'Freehold')
+                INSERT INTO properties (id, property_id, street_address, city, province, property_type, accountable_institution_id)
+                VALUES ($1, 'PROP-017-001', '1 Developer Ave', 'Cape Town', 'Western Cape', 'Freehold', 5)
                 """,
                 [property_id],
                 connection=conn,
@@ -623,8 +623,8 @@ class Migration017DbIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 prop_id = uuid.uuid4()
                 await query(
                     """
-                    INSERT INTO properties (id, property_id, street_address, city, province, property_type)
-                    VALUES ($1, $2, $3, 'Cape Town', 'Western Cape', 'Freehold')
+                    INSERT INTO properties (id, property_id, street_address, city, province, property_type, accountable_institution_id)
+                    VALUES ($1, $2, $3, 'Cape Town', 'Western Cape', 'Freehold', 5)
                     """,
                     [prop_id, f"PROP-017-MULTI-{i}", f"{i} Multi St"],
                     connection=conn,
@@ -762,8 +762,8 @@ class Migration017DbIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
             await query(
                 """
-                INSERT INTO properties (id, property_id, street_address, city, province, property_type)
-                VALUES ($1, 'PROP-017-X', '1 Cross St', 'Cape Town', 'Western Cape', 'Freehold')
+                INSERT INTO properties (id, property_id, street_address, city, province, property_type, accountable_institution_id)
+                VALUES ($1, 'PROP-017-X', '1 Cross St', 'Cape Town', 'Western Cape', 'Freehold', 2)
                 """,
                 [prop],
                 connection=conn,

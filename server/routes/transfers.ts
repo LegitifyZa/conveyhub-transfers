@@ -559,8 +559,9 @@ router.post(
           `INSERT INTO properties (
             property_id, street_address, suburb, city, postal_code, province,
             country, property_type, erf_number, title_deed_number, extent_sqm, description,
-            legal_description, lot_number, year_built, square_footage, created_for_transfer_id
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+            legal_description, lot_number, year_built, square_footage, created_for_transfer_id,
+            accountable_institution_id
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
           RETURNING id`,
           [
             propertyIdValue,
@@ -580,6 +581,7 @@ router.post(
             toNumber(property.yearBuilt),
             toNumber(property.squareFootage),
             transferId,
+            legacyAI,
           ]
         )
         propertyId = propertyResult.rows[0].id
@@ -666,6 +668,10 @@ router.post(
       }
 
       const matterId = await getOrCreateMatterForTransfer(client, transferUuid, transferId, legacyAI)
+      await client.query(
+        'UPDATE transfers SET matter_id = $1 WHERE id = $2',
+        [matterId, transferUuid]
+      )
       await createDefaultMilestones(client, matterId)
       await seedTransferDocuments(client, transferUuid)
 
@@ -782,8 +788,9 @@ router.put(
             `INSERT INTO properties (
               property_id, street_address, suburb, city, postal_code, province,
               country, property_type, erf_number, title_deed_number, extent_sqm, description,
-              legal_description, lot_number, year_built, square_footage
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+              legal_description, lot_number, year_built, square_footage,
+              accountable_institution_id
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
             RETURNING id`,
             [
               propertyIdValue,
@@ -802,6 +809,7 @@ router.put(
               isNonEmptyString(property.lotNumber) ? property.lotNumber : null,
               toNumber(property.yearBuilt),
               toNumber(property.squareFootage),
+              transferAi,
             ]
           )
           propertyId = insertResult.rows[0].id
@@ -1008,7 +1016,11 @@ router.put(
         }
       }
 
-      await getOrCreateMatterForTransfer(client, transferUuid, transferReference, transferAi)
+      const matterId = await getOrCreateMatterForTransfer(client, transferUuid, transferReference, transferAi)
+      await client.query(
+        'UPDATE transfers SET matter_id = $1 WHERE id = $2',
+        [matterId, transferUuid]
+      )
 
       const finalTransfer = await client.query(
         `SELECT t.*, p.id as property_row_id, p.property_id, p.erf_number, p.street_address, p.suburb, p.city,
