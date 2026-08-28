@@ -1,4 +1,14 @@
 // South African Transfer Cost Calculations
+// Powered by the comprehensive LSSA & Deeds Office Statutory Calculation Engine
+
+import {
+  calculateConveyancingFee,
+  calculateTransferDuty as calcTransferDuty,
+  calculateDeedsOfficeFee as calcDeedsFee,
+  formatZAR as formatCurrencyZAR,
+  LSSA_TARIFF_2026_2027,
+  DEFAULT_FIRM_SETTINGS
+} from './conveyancingAccounts'
 
 export interface SATransferCosts {
   transferDuty: number
@@ -13,72 +23,24 @@ export interface SATransferCosts {
 }
 
 // Format currency as ZAR
-export const formatZAR = (amount: number): string => {
-  return new Intl.NumberFormat('en-ZA', {
-    style: 'currency',
-    currency: 'ZAR',
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 0
-  }).format(amount)
+export const formatZAR = formatCurrencyZAR
+
+// South African Transfer Duty (Official SARS Graduated Rates)
+export const calculateTransferDuty = (propertyValue: number, isVatTransaction = false): number => {
+  return calcTransferDuty(propertyValue, isVatTransaction).transferDuty
 }
 
-// South African Transfer Duty Brackets (2024 rates)
-export const calculateTransferDuty = (propertyValue: number): number => {
-  if (propertyValue <= 1000000) {
-    return 0 // No transfer duty for properties ≤ R1,000,000
-  } else if (propertyValue <= 1250000) {
-    return (propertyValue - 1000000) * 0.03 // 3% on amount above R1,000,000
-  } else if (propertyValue <= 1500000) {
-    return 7500 + (propertyValue - 1250000) * 0.06 // R7,500 + 6% on amount above R1,250,000
-  } else if (propertyValue <= 2000000) {
-    return 22500 + (propertyValue - 1500000) * 0.08 // R22,500 + 8% on amount above R1,500,000
-  } else if (propertyValue <= 2500000) {
-    return 62500 + (propertyValue - 2000000) * 0.11 // R62,500 + 11% on amount above R2,000,000
-  } else if (propertyValue <= 10000000) {
-    return 117500 + (propertyValue - 2500000) * 0.13 // R117,500 + 13% on amount above R2,500,000
-  } else {
-    return 1092500 + (propertyValue - 10000000) * 0.18 // R1,092,500 + 18% on amount above R10,000,000
-  }
-}
-
-// Conveyancing Fees (Guideline rates - may vary by attorney)
+// Conveyancing Fees (Law Society of South Africa Sliding Scale Guideline)
 export const calculateConveyancingFees = (propertyValue: number): number => {
-  // These are approximate guideline fees for standard conveyancing
-  if (propertyValue <= 500000) {
-    return 8000 // R8,000 for properties ≤ R500,000
-  } else if (propertyValue <= 1000000) {
-    return 12000 // R12,000 for properties ≤ R1,000,000
-  } else if (propertyValue <= 2500000) {
-    return 15000 // R15,000 for properties ≤ R2,500,000
-  } else if (propertyValue <= 5000000) {
-    return 20000 // R20,000 for properties ≤ R5,000,000
-  } else if (propertyValue <= 10000000) {
-    return 25000 // R25,000 for properties ≤ R10,000,000
-  } else {
-    // For properties above R10M, fees are typically negotiated
-    // Using 0.25% as a rough estimate
-    return propertyValue * 0.0025
-  }
+  return calculateConveyancingFee(propertyValue, LSSA_TARIFF_2026_2027).feeExclVat
 }
 
-// Deeds Office Fees (2024 rates)
-export const calculateDeedsOfficeFees = (propertyValue: number): number => {
-  if (propertyValue <= 500000) {
-    return 1500 // R1,500 for properties ≤ R500,000
-  } else if (propertyValue <= 1000000) {
-    return 3000 // R3,000 for properties ≤ R1,000,000
-  } else if (propertyValue <= 2000000) {
-    return 6000 // R6,000 for properties ≤ R2,000,000
-  } else if (propertyValue <= 5000000) {
-    return 12000 // R12,000 for properties ≤ R5,000,000
-  } else if (propertyValue <= 10000000) {
-    return 18000 // R18,000 for properties ≤ R10,000,000
-  } else {
-    return 24000 // R24,000 for properties > R10,000,000
-  }
+// Deeds Office Statutory Fees (Item 1(a) Lodgement + Item 1(b) Registration)
+export const calculateDeedsOfficeFees = (propertyValue: number, deedsCount = 1): number => {
+  return calcDeedsFee(propertyValue, 'transfer', deedsCount).totalDeedsOfficeFees
 }
 
-// Calculate all transfer costs
+// Calculate all statutory & professional transfer costs
 export const calculateSATransferCosts = (propertyValue: number): SATransferCosts => {
   const transferDuty = calculateTransferDuty(propertyValue)
   const conveyancingFees = calculateConveyancingFees(propertyValue)
@@ -98,89 +60,57 @@ export const calculateSATransferCosts = (propertyValue: number): SATransferCosts
   }
 }
 
-// Get transfer duty bracket information
+// Get transfer duty bracket description
 export const getTransferDutyBracket = (propertyValue: number): {
   bracket: string
   rate: number
   description: string
 } => {
-  if (propertyValue <= 1000000) {
-    return {
-      bracket: '0 - R1,000,000',
-      rate: 0,
-      description: 'No transfer duty payable'
-    }
-  } else if (propertyValue <= 1250000) {
-    return {
-      bracket: 'R1,000,001 - R1,250,000',
-      rate: 3,
-      description: '3% on amount above R1,000,000'
-    }
-  } else if (propertyValue <= 1500000) {
-    return {
-      bracket: 'R1,250,001 - R1,500,000',
-      rate: 6,
-      description: 'R7,500 + 6% on amount above R1,250,000'
-    }
-  } else if (propertyValue <= 2000000) {
-    return {
-      bracket: 'R1,500,001 - R2,000,000',
-      rate: 8,
-      description: 'R22,500 + 8% on amount above R1,500,000'
-    }
-  } else if (propertyValue <= 2500000) {
-    return {
-      bracket: 'R2,000,001 - R2,500,000',
-      rate: 11,
-      description: 'R62,500 + 11% on amount above R2,000,000'
-    }
-  } else if (propertyValue <= 10000000) {
-    return {
-      bracket: 'R2,500,001 - R10,000,000',
-      rate: 13,
-      description: 'R117,500 + 13% on amount above R2,500,000'
-    }
-  } else {
-    return {
-      bracket: 'Above R10,000,000',
-      rate: 18,
-      description: 'R1,092,500 + 18% on amount above R10,000,000'
-    }
+  const res = calcTransferDuty(propertyValue)
+  return {
+    bracket: res.bracketTier,
+    rate: propertyValue > 0 ? (res.transferDuty / propertyValue) * 100 : 0,
+    description: res.rateDescription
   }
 }
 
-// Additional costs that might be applicable
-export const getAdditionalCosts = (propertyValue: number): {
+// Customary disbursements and VAT
+export const getAdditionalCosts = (propertyValue: number, isVatRegistered = true): {
   vat: number
   postPetty: number
   clearanceCertificate: number
   ratesClearance: number
+  ficaFee: number
+  docGenFee: number
+  deedsSearchFee: number
   totalAdditional: number
 } => {
-  // VAT on conveyancing fees (if applicable)
-  const vat = calculateConveyancingFees(propertyValue) * 0.15 // 15% VAT
-  
-  // Post and Petties (estimated)
-  const postPetty = 500
-  
-  // Rates Clearance Certificate (estimated)
-  const clearanceCertificate = 1000
-  
-  // Rates Clearance (estimated)
+  const convFee = calculateConveyancingFees(propertyValue)
+  const postPetty = 850
+  const ficaFee = 450
+  const docGenFee = 650
+  const deedsSearchFee = 250
+  const clearanceCertificate = 1150
   const ratesClearance = 2000
-  
-  const totalAdditional = vat + postPetty + clearanceCertificate + ratesClearance
-  
+
+  // 15% VAT on VAT-bearing legal fees & administrative services
+  const vatRate = isVatRegistered ? 0.15 : 0
+  const vat = Math.round((convFee + postPetty + ficaFee + docGenFee + deedsSearchFee) * vatRate)
+  const totalAdditional = vat + postPetty + ficaFee + docGenFee + deedsSearchFee + clearanceCertificate + ratesClearance
+
   return {
     vat,
     postPetty,
     clearanceCertificate,
     ratesClearance,
+    ficaFee,
+    docGenFee,
+    deedsSearchFee,
     totalAdditional
   }
 }
 
-// Calculate total costs including additional fees
+// Calculate total costs including disbursements and VAT
 export const calculateTotalTransferCosts = (propertyValue: number): {
   transferCosts: SATransferCosts
   additionalCosts: ReturnType<typeof getAdditionalCosts>
@@ -188,7 +118,7 @@ export const calculateTotalTransferCosts = (propertyValue: number): {
   effectiveRate: number
 } => {
   const transferCosts = calculateSATransferCosts(propertyValue)
-  const additionalCosts = getAdditionalCosts(propertyValue)
+  const additionalCosts = getAdditionalCosts(propertyValue, DEFAULT_FIRM_SETTINGS.isVatRegistered)
   const grandTotal = transferCosts.totalCosts + additionalCosts.totalAdditional
   const effectiveRate = propertyValue > 0 ? (grandTotal / propertyValue) * 100 : 0
 

@@ -1,9 +1,11 @@
 import React, { useEffect, useState } from 'react'
-import { User, Bell, Shield, Palette, Globe, CreditCard, HelpCircle, LogOut } from 'lucide-react'
+import { User, Bell, Shield, Palette, Globe, CreditCard, HelpCircle, LogOut, Receipt } from 'lucide-react'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui'
 import { Button } from '@/components/ui'
 import { Input } from '@/components/ui'
 import { apiRequest } from '@/lib/api/http'
+import { FirmAccountsSettings } from '@/components/accounts/FirmAccountsSettings'
+import { cn } from '@/utils/cn'
 
 interface UserProfile {
   id: string
@@ -81,17 +83,70 @@ const Settings: React.FC = () => {
     }
   }
 
+  const [settingsTab, setSettingsTab] = useState<'accounts' | 'profile' | 'preferences'>('accounts')
+
   const displayName = user?.name || `${firstName} ${lastName}`.trim() || '—'
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Settings</h1>
-        <p className="text-gray-600 dark:text-gray-400">Manage your account settings and preferences</p>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Settings & Firm Configuration</h1>
+          <p className="text-gray-600 dark:text-gray-400">Manage your practice VAT status, sliding scale tariffs, disbursements, and account settings</p>
+        </div>
       </div>
 
-      {/* Profile Section */}
-      <Card>
+      {/* Tab bar */}
+      <div className="border-b border-gray-200 dark:border-navy-700">
+        <div className="flex space-x-8">
+          <button
+            type="button"
+            onClick={() => setSettingsTab('accounts')}
+            className={cn(
+              'pb-3 text-sm font-semibold border-b-2 transition-colors duration-200 flex items-center gap-2',
+              settingsTab === 'accounts'
+                ? 'border-teal-600 text-teal-600 dark:border-teal-400 dark:text-teal-400'
+                : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
+            )}
+          >
+            <Receipt className="h-4 w-4" />
+            Firm Accounts, VAT & Tariffs
+          </button>
+          <button
+            type="button"
+            onClick={() => setSettingsTab('profile')}
+            className={cn(
+              'pb-3 text-sm font-semibold border-b-2 transition-colors duration-200 flex items-center gap-2',
+              settingsTab === 'profile'
+                ? 'border-teal-600 text-teal-600 dark:border-teal-400 dark:text-teal-400'
+                : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
+            )}
+          >
+            <User className="h-4 w-4" />
+            Personal Profile
+          </button>
+          <button
+            type="button"
+            onClick={() => setSettingsTab('preferences')}
+            className={cn(
+              'pb-3 text-sm font-semibold border-b-2 transition-colors duration-200 flex items-center gap-2',
+              settingsTab === 'preferences'
+                ? 'border-teal-600 text-teal-600 dark:border-teal-400 dark:text-teal-400'
+                : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
+            )}
+          >
+            <Shield className="h-4 w-4" />
+            Security & Preferences
+          </button>
+        </div>
+      </div>
+
+      {settingsTab === 'accounts' ? (
+        <FirmAccountsSettings />
+      ) : (
+        <>
+          {/* Profile Section */}
+          <Card>
         <CardHeader>
           <CardTitle className="text-lg">Profile Information</CardTitle>
         </CardHeader>
@@ -215,6 +270,8 @@ const Settings: React.FC = () => {
           </div>
         </CardContent>
       </Card>
+      </>
+      )}
     </div>
   )
 }

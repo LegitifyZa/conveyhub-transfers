@@ -6,6 +6,7 @@ import { Button } from '@/components/ui'
 import { Badge } from '@/components/ui'
 import { useTransfers, TransferAggregate } from '@/hooks/useTransfers'
 import { TransferDocumentsPanel } from '@/components/transfers/TransferDocumentsPanel'
+import { TransferAccountsTab } from '@/components/transfers/accounts/TransferAccountsTab'
 import { cn } from '@/utils/cn'
 import type { Party } from '@/components/transfers/TransferForm'
 
@@ -191,7 +192,7 @@ const TransferMilestones: React.FC = () => {
   const [isDetailsExpanded, setIsDetailsExpanded] = useState(false)
   const [transfer, setTransfer] = useState<TransferDetails>(() => emptyDetails(resolvedTransferId))
   const [isSaving, setIsSaving] = useState(false)
-  const [activeTab, setActiveTab] = useState<'milestones' | 'documents'>('milestones')
+  const [activeTab, setActiveTab] = useState<'milestones' | 'documents' | 'accounts'>('milestones')
   const noteValuesAtFocus = useRef(new Map<string, string>())
 
   // Load transfer, milestones and activity from the backend.
@@ -512,6 +513,18 @@ const TransferMilestones: React.FC = () => {
             >
               Documents
             </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('accounts')}
+              className={cn(
+                'pb-3 text-sm font-medium border-b-2 transition-colors duration-200',
+                activeTab === 'accounts'
+                  ? 'border-teal-600 text-teal-600 dark:border-teal-400 dark:text-teal-400'
+                  : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
+              )}
+            >
+              Accounts & Proforma
+            </button>
           </div>
         </div>
 
@@ -688,8 +701,17 @@ const TransferMilestones: React.FC = () => {
           </CardContent>
         </Card>
           </>
-        ) : (
+        ) : activeTab === 'documents' ? (
           <TransferDocumentsPanel transferId={resolvedTransferId} />
+        ) : (
+          <TransferAccountsTab
+            transferId={resolvedTransferId}
+            propertyAddress={transfer.property.address}
+            erfNumber={transfer.property.erfNumber}
+            purchasePrice={transfer.purchasePrice}
+            buyerName={transfer.buyer.fullName}
+            sellerName={transfer.seller.fullName}
+          />
         )}
       </div>
     </div>
