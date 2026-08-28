@@ -748,5 +748,67 @@ class Migration017DbIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         await with_test_transaction(_verify)
 
+    async def test_cross_tenant_property_link_is_rejected(self):
+        from db import query
+        from tests.db_test_utils import with_test_transaction
+
+        async def _verify(conn):
+            await self._run_migration_on_connection(conn)
+
+            # AI-A matter and AI-B matter (simulated through AI-specific links).
+            matter_a = uuid.uuid4()
+            matter_b = uuid.uuid4()
+            prop = uuid.uuid4()
+
+            await query(
+                """
+                INSERT INTO properties (id, property_id, street_address, city, province, property_type)
+                VALUES ($1, 'PROP-017-X', '1 Cross St', 'Cape Town', 'Western Cape', 'Freehold')
+                """,
+                [prop],
+                connection=conn,
+            )
+
+            await query(
+                """
+                INSERT INTO matters (id, reference_number, matter_type, status, source_record_id, accountable_institution_id)
+                VALUES ($1, 'REF-017-A', 'transfer', 'in_progress', 'test-source', 1)
+                """,
+                [matter_a],
+                connection=conn,
+            )
+
+            await query(
+                """
+                INSERT INTO matters (id, reference_number, matter_type, status, source_record_id, accountable_institution_id)
+                VALUES ($1, 'REF-017-B', 'transfer', 'in_progress', 'test-source', 2)
+                """,
+                [matter_b],
+                connection=conn,
+            )
+
+            # AI-B first links the property.
+            await query(
+                """
+                INSERT INTO matter_properties (matter_id, property_id, property_kind, accountable_institution_id)
+                VALUES ($1, $2, 'input', 2)
+                """,
+                [matter_b, prop],
+                connection=conn,
+            )
+
+            # AI-A must not be able to link the same property.
+            with self.assertRaises(Exception):
+                await query(
+                    """
+                    INSERT INTO matter_properties (matter_id, property_id, property_kind, accountable_institution_id)
+                    VALUES ($1, $2, 'input', 1)
+                    """,
+                    [matter_a, prop],
+                    connection=conn,
+                )
+
+        await with_test_transaction(_verify)
+
 if __name__ == "__main__":
     unittest.main()

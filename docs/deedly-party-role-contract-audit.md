@@ -397,11 +397,11 @@ Proposed order, not to be implemented in this step:
 
 Migration 017 introduces `matter_properties` while `transfers.property_id` remains in the schema. The two are not independently writable sources of truth for the same relationship:
 
-- **`transfers.property_id`** is the legacy single-property pointer used by existing Express/runtime routes. It was created in `002_add_properties_table.sql` and is still read and written by `python_server/routers/transfers.py`.
+- **`transfers.property_id`** is the legacy single-property pointer used by existing Python/FastAPI routes in `python_server/routers/transfers.py` and TypeScript/Express routes in `server/routes/transfers.ts`. It was created in `002_add_properties_table.sql`.
 - **`matter_properties`** is the DEEDLY-v1 canonical relationship. It supports multiple properties per matter and the `input`/`output` distinction required by development and multi-property transfers.
 - **No backfill is performed in Step 16S.5a.** Existing `transfers.property_id` values continue to satisfy the legacy runtime.
 - **Authoritative target:** future v1 create/read/update routes should treat `matter_properties` as authoritative. The legacy `transfers.property_id` is compatibility-only.
-- **Old Express/runtime code continues to work** because `transfers.property_id` is not removed or changed in this step.
+- **Legacy routes continue to work** because `transfers.property_id` is not removed or changed in this step.
 - **Later migration:** once the v1 routes and any consumers are migrated off `transfers.property_id`, a future migration should backfill it into `matter_properties` and then remove or deprecate the column.
 - **Contradiction prevented by contract:** the application must not write `transfers.property_id` and `matter_properties` for the same relationship independently. Until the legacy column is removed, new code should write `matter_properties` and, when a single primary input is required, mirror it to `transfers.property_id` at the application level if the legacy route still needs it.
 
@@ -425,6 +425,37 @@ Migration 017 introduces `matter_properties` while `transfers.property_id` remai
 - `transfer.endorsement_section_45bis` — APPROVED for addition as a `matter_classification_options` row only.
 - **Recommended migration:** `018_deedly_taxonomy_approved_classifications.sql` to insert the two approved rows without specialist role/capacity rules.
 
+## 21.5 Step 16S.5b — property-tenant isolation audit and migration 018 block
+
+### 21.5.1 Cross-tenant property linking
+
+- The `properties` table has no `accountable_institution_id` column.
+- The `matter_properties` table enforces only that its own `accountable_institution_id` matches `matters.accountable_institution_id`.
+- There is no constraint, trigger, or FK that prevents a property linked through `matter_properties` (or any other property relationship) from being associated with matters belonging to different accountable institutions.
+- The integration test `test_cross_tenant_property_link_is_rejected` in `python_server/tests/test_migrations_017.py` demonstrates this by creating an AI-A matter and an AI-B matter, linking a property to AI-B, and then attempting to link the same property to AI-A. The insert succeeds, so the test fails.
+- **Conclusion:** `matter_properties.accountable_institution_id` being derived from `matters` is insufficient for cross-tenant property isolation.
+
+### 21.5.2 Migration 018 decision
+
+- Because the property-tenant isolation gap is real, migration `018_deedly_taxonomy_approved_classifications.sql` is **not created** in this step.
+- The two classifications (`transfer.deceased_estate_sale` and `transfer.endorsement_section_45bis`) remain **APPROVED** for taxonomy, but their seeding must wait until the underlying property model is safe.
+- Do not invent specialist party/capacity codes or role rules for them.
+
+### 21.5.3 Legacy-property compatibility bridge
+
+- Existing rows where `transfers.property_id IS NOT NULL` but no corresponding `matter_properties` row exists are the legacy runtime records.
+- Recommended strategy:
+  1. Close the tenant-isolation gap first by scoping `properties` to an accountable institution (add `accountable_institution_id` and enforce it).
+  2. Backfill existing `transfers.property_id` values into `matter_properties` as `property_kind = 'input'` for the corresponding `matter_id` (creating matters where missing).
+  3. Update the Python/FastAPI and TypeScript/Express routes to read from `matter_properties`; keep `transfers.property_id` as a compatibility write target until all consumers are migrated.
+  4. Once consumers are migrated, remove `transfers.property_id`.
+- Preferred eventual model: `matter_properties` is the single authoritative property relationship.
+
+### 21.5.4 Current callers of `transfers.property_id`
+
+- **Python/FastAPI:** `python_server/routers/transfers.py` reads and writes `transfers.property_id` (e.g., `SELECT property_id FROM transfers WHERE id = $1`, `UPDATE transfers SET property_id = ...`).
+- **TypeScript/Express:** `server/routes/transfers.ts` reads and writes `transfers.property_id` (e.g., `SELECT property_id FROM transfers WHERE id = $1`, `UPDATE transfers SET property_id = ...`).
+
 ## 20. Summary report
 
 - **Step 16S.5 and 16S.5a foundation changes committed:** migration `017_deedly_party_property_contract_foundation.sql`, supporting tests, and this contract document.
@@ -437,6 +468,7 @@ Migration 017 introduces `matter_properties` while `transfers.property_id` remai
 - **Donation, deceased estate inheritance, and section 45 endorsement** each have locked, classification-specific rules.
 - **Development classifications** do not require a transferee at creation; they focus on developer/owner/holder plus input property and output properties.
 - **All 16 original classifications are now `LOCKED`.**
-- **Newly approved taxonomy (row only):** `transfer.deceased_estate_sale` and `transfer.endorsement_section_45bis`. Add them in the next migration, expected as `018`.
+- **Newly approved taxonomy (row only):** `transfer.deceased_estate_sale` and `transfer.endorsement_section_45bis`. Their seeding in migration `018` is blocked until the property-tenant isolation gap is resolved.
 - **Do not invent or seed specialist party/capacity machine codes** for the two newly approved classifications until their business validation rules are explicitly locked.
+- **Property-tenant isolation gap identified in Step 16S.5b:** `properties` has no `accountable_institution_id`, so `matter_properties` can currently link the same property to matters of different tenants.
 - **Recommended implementation sequence:** reference data → entity-type constraint → property input/output model → Golden Record linking contract → server-side create validation → authenticated v1 create route → frontend → specialized workflow gates.
