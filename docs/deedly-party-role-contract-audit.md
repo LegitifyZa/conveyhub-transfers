@@ -154,9 +154,9 @@ Locked rules:
 **Pending taxonomy confirmation:**
 
 - Proposed classification: `transfer.deceased_estate_sale`
-- Status: `PENDING LEGITIFY CONFIRMATION`
-- Do not implement or seed this classification yet.
+- Status: `APPROVED — taxonomy row only; do not invent specialist machine codes yet`
 - A deceased-estate inheritance and a sale out of a deceased estate are different workflows.
+- Do not implement or seed party/role rules for this classification until its specialist machine codes and business validation rules are explicitly locked.
 
 ## 10. Section 45 endorsement
 
@@ -175,8 +175,8 @@ Locked rules:
 **Pending taxonomy confirmation:**
 
 - Proposed classification: `transfer.endorsement_section_45bis`
-- Status: `PENDING LEGITIFY CONFIRMATION`
-- Do not implement or seed this classification yet.
+- Status: `APPROVED — taxonomy row only; do not invent specialist machine codes yet`
+- Do not implement or seed party/role rules for this classification until its specialist machine codes and business validation rules are explicitly locked.
 
 ## 11. Development classifications
 
@@ -293,15 +293,17 @@ The contract explicitly distinguishes these concepts. They must not be collapsed
 | `development.new_township_register_establishment` | Development | 1 developer/township owner, optional registered_owner | 1 underlying registered land | No | Yes (outputs) | Developer / Township | Resulting erven/lots are outputs | LOCKED |
 | `development.scheme_extension_sections` | Development | 1 extension_right_holder | 1 existing scheme/register | No | Yes (outputs) | Extension Holder / Body Corporate / Successor | New sections are outputs; not individual section extension | LOCKED |
 | `development.subdivision` | Development | 1 registered_owner, optional developer | 1 parent property | No | Yes (outputs) | Owner / Developer | New portions are outputs; proposed lifecycle to come later | LOCKED |
+| `transfer.deceased_estate_sale` | Estate | To be defined during role/capacity model design | 1 | Yes (heir/beneficiary receives) | Yes | Deceased Estate / Heir / Executor | Taxonomy row approved; specialist role/capacity machine codes not yet locked | APPROVED (taxonomy row only) |
+| `transfer.endorsement_section_45bis` | Endorsement | To be defined during role/capacity model design | 1 | Yes (surviving spouse receives) | Yes | Deceased Estate / Surviving Spouse / Executor | Taxonomy row approved; specialist role/capacity machine codes not yet locked | APPROVED (taxonomy row only) |
 
 ## 15. Pending taxonomy confirmation
 
 | Proposed classification | Reason | Status |
 |-------------------------|--------|--------|
-| `transfer.deceased_estate_sale` | Distinct from inheritance; sale out of a deceased estate | PENDING LEGITIFY CONFIRMATION |
-| `transfer.endorsement_section_45bis` | Distinct endorsement variant | PENDING LEGITIFY CONFIRMATION |
+| `transfer.deceased_estate_sale` | Distinct from inheritance; sale out of a deceased estate | APPROVED — taxonomy row only |
+| `transfer.endorsement_section_45bis` | Distinct endorsement variant | APPROVED — taxonomy row only |
 
-Do not implement or seed these classifications yet.
+Do not invent specialist machine codes or seed classification-party role rules for these classifications yet.
 
 ## 16. Recommended future role/capacity data shape
 
@@ -389,18 +391,52 @@ Proposed order, not to be implemented in this step:
 | Legacy `matter_parties` | Fixed `CHECK` role list | Not authoritative; do not reuse for DEEDLY v1 |
 | Prototype frontend | Hard-coded `buyer`/`seller` | Must be replaced with canonical `transferor`/`transferee` and classification-friendly labels |
 
+## 21. Step 16S.5a — property authority, tenant safety, and primary contact
+
+### 21.1 Transitional property authority contract
+
+Migration 017 introduces `matter_properties` while `transfers.property_id` remains in the schema. The two are not independently writable sources of truth for the same relationship:
+
+- **`transfers.property_id`** is the legacy single-property pointer used by existing Express/runtime routes. It was created in `002_add_properties_table.sql` and is still read and written by `python_server/routers/transfers.py`.
+- **`matter_properties`** is the DEEDLY-v1 canonical relationship. It supports multiple properties per matter and the `input`/`output` distinction required by development and multi-property transfers.
+- **No backfill is performed in Step 16S.5a.** Existing `transfers.property_id` values continue to satisfy the legacy runtime.
+- **Authoritative target:** future v1 create/read/update routes should treat `matter_properties` as authoritative. The legacy `transfers.property_id` is compatibility-only.
+- **Old Express/runtime code continues to work** because `transfers.property_id` is not removed or changed in this step.
+- **Later migration:** once the v1 routes and any consumers are migrated off `transfers.property_id`, a future migration should backfill it into `matter_properties` and then remove or deprecate the column.
+- **Contradiction prevented by contract:** the application must not write `transfers.property_id` and `matter_properties` for the same relationship independently. Until the legacy column is removed, new code should write `matter_properties` and, when a single primary input is required, mirror it to `transfers.property_id` at the application level if the legacy route still needs it.
+
+### 21.2 Tenant safety of `matter_properties`
+
+- `matter_properties` references `matters(id) ON DELETE CASCADE`.
+- `matter_properties.accountable_institution_id` is not nullable.
+- A `BEFORE INSERT OR UPDATE` trigger `trg_matter_properties_set_tenant` overrides `accountable_institution_id` with `matters.accountable_institution_id`, preventing cross-tenant property associations.
+- The existing `matters.accountable_institution_id` tenant boundary therefore extends to `matter_properties`.
+
+### 21.3 Primary contact semantics
+
+- `is_primary_contact` is a boolean on `transfer_parties` with `DEFAULT FALSE`.
+- Business rule: at most one party per `(transfer_id, role)` may be the primary communication contact; multiple primaries are allowed if they belong to different roles (e.g., one transferor primary, one transferee primary).
+- Enforcement is at the DB level through a partial unique index `idx_transfer_parties_one_primary_per_role` on `(transfer_id, role) WHERE is_primary_contact = TRUE`.
+- This carries no legal authority; it is a communication/UI convenience only.
+
+### 21.4 Newly approved taxonomy
+
+- `transfer.deceased_estate_sale` — APPROVED for addition as a `matter_classification_options` row only.
+- `transfer.endorsement_section_45bis` — APPROVED for addition as a `matter_classification_options` row only.
+- **Recommended migration:** `018_deedly_taxonomy_approved_classifications.sql` to insert the two approved rows without specialist role/capacity rules.
+
 ## 20. Summary report
 
-- **No runtime/schema/migration changes were made.**
-- **Working tree:** only the design document `docs/deedly-party-role-contract-audit.md` is changed.
+- **Step 16S.5 and 16S.5a foundation changes committed:** migration `017_deedly_party_property_contract_foundation.sql`, supporting tests, and this contract document.
 - **Canonical backend roles for ordinary transfers:** `transferor` and `transferee`.
 - **Friendly UI labels are allowed** (Seller/Purchaser, Donor/Donee, Deceased Estate/Heir, etc.) but must not replace canonical roles.
-- **Multiple parties per role are allowed.** `is_primary_contact` is UI/communication only and carries no legal authority.
+- **Multiple parties per role are allowed.** `is_primary_contact` is UI/communication only, carries no legal authority, and is enforced at the DB level by a partial unique index on `(transfer_id, role) WHERE is_primary_contact = TRUE`.
 - **Trust is a first-class DEEDLY entity type**, with the trust as the party and trustees as representatives.
 - **Golden Record is authoritative for identity;** missing entities must be created in Golden Records and then linked.
 - **Sale-type rule:** one transferor, one transferee, one property; all nine sale-type classifications are locked under this rule.
 - **Donation, deceased estate inheritance, and section 45 endorsement** each have locked, classification-specific rules.
 - **Development classifications** do not require a transferee at creation; they focus on developer/owner/holder plus input property and output properties.
-- **All 16 current classifications are now `LOCKED`.**
-- **Pending Legitify confirmations:** `transfer.deceased_estate_sale` and `transfer.endorsement_section_45bis`.
+- **All 16 original classifications are now `LOCKED`.**
+- **Newly approved taxonomy (row only):** `transfer.deceased_estate_sale` and `transfer.endorsement_section_45bis`. Add them in the next migration, expected as `018`.
+- **Do not invent or seed specialist party/capacity machine codes** for the two newly approved classifications until their business validation rules are explicitly locked.
 - **Recommended implementation sequence:** reference data → entity-type constraint → property input/output model → Golden Record linking contract → server-side create validation → authenticated v1 create route → frontend → specialized workflow gates.

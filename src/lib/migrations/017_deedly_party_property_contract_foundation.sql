@@ -69,6 +69,12 @@ CREATE INDEX IF NOT EXISTS idx_transfer_parties_is_primary_contact
     ON transfer_parties (is_primary_contact)
     WHERE is_primary_contact = TRUE;
 
+-- At most one primary communication contact per transfer and role.
+-- This is a UI/communication convenience only and carries no legal authority.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_transfer_parties_one_primary_per_role
+    ON transfer_parties (transfer_id, role)
+    WHERE is_primary_contact = TRUE;
+
 -- 5. Make transfer_parties.entity_type extensible.
 --    Drop the restrictive person/company CHECK constraint and add an FK to
 --    entity_type_definitions. The FK is reference-data-driven, not a hard-coded
@@ -117,9 +123,21 @@ END $$;
 
 -- 6. Matter property relationship table.
 --    This is the foundation for multiple properties per matter and the
---    input/output distinction required by Development matters. It does not
---    replace or duplicate transfers.property_id; the existing single-property
---    FK remains for the current working-data path.
+--    input/output distinction required by Development matters.
+--
+--    Transitional authority contract for transfers.property_id:
+--      - transfers.property_id remains the legacy single-property pointer used
+--        by existing Express routes and non-DEEDLY working data.
+--      - matter_properties is the DEEDLY-v1 canonical relationship.
+--      - During the transition, v1 create/read/update should treat
+--        matter_properties as authoritative; the legacy column must not be
+--        written independently for the same relationship.
+--      - A later migration will backfill any remaining transfers.property_id
+--        values into matter_properties and may then remove the legacy column.
+--
+--    Tenant safety: matter_properties.accountable_institution_id is derived
+--    from matters.accountable_institution_id via a trigger so a row cannot be
+--    associated with the wrong accountable institution.
 CREATE TABLE IF NOT EXISTS matter_properties (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     matter_id UUID NOT NULL REFERENCES matters(id) ON DELETE CASCADE,
@@ -144,6 +162,24 @@ CREATE INDEX IF NOT EXISTS idx_matter_properties_accountable_institution_id
     ON matter_properties(accountable_institution_id);
 CREATE INDEX IF NOT EXISTS idx_matter_properties_external_property_id
     ON matter_properties(external_property_id);
+
+-- 6a. Derive matter_properties.accountable_institution_id from matters so
+--     cross-tenant property associations cannot be introduced.
+CREATE OR REPLACE FUNCTION matter_properties_set_tenant()
+RETURNS TRIGGER AS $$
+BEGIN
+    SELECT accountable_institution_id
+    INTO NEW.accountable_institution_id
+    FROM matters
+    WHERE id = NEW.matter_id;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_matter_properties_set_tenant ON matter_properties;
+CREATE TRIGGER trg_matter_properties_set_tenant
+    BEFORE INSERT OR UPDATE ON matter_properties
+    FOR EACH ROW EXECUTE FUNCTION matter_properties_set_tenant();
 
 -- 7. Seed supported entity types.
 --    These are the only entity types approved for the DEEDLY party model now.

@@ -159,6 +159,23 @@ class Migration017StaticTests(unittest.TestCase):
         self.assertIn("external_property_id", sql)
         self.assertIn("property_source", sql)
 
+    def test_primary_contact_partial_unique_index(self):
+        sql = self._load_migration().lower()
+        self.assertIn(
+            "create unique index if not exists idx_transfer_parties_one_primary_per_role",
+            sql,
+        )
+        self.assertIn(
+            "where is_primary_contact = true",
+            sql,
+        )
+
+    def test_matter_properties_tenant_trigger(self):
+        sql = self._load_migration().lower()
+        self.assertIn("matter_properties_set_tenant", sql)
+        self.assertIn("trg_matter_properties_set_tenant", sql)
+        self.assertIn("accountable_institution_id", sql)
+
 
 @unittest.skipUnless(os.getenv("TEST_DATABASE_URL"), "TEST_DATABASE_URL not configured")
 class Migration017DbIntegrationTests(unittest.IsolatedAsyncioTestCase):
@@ -657,6 +674,79 @@ class Migration017DbIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         await with_test_transaction(_verify)
 
+    async def test_primary_contact_uniqueness_per_role(self):
+        from db import query
+        from tests.db_test_utils import with_test_transaction
+
+        async def _verify(conn):
+            await self._run_migration_on_connection(conn)
+
+            transfer_id = uuid.uuid4()
+            await query(
+                """
+                INSERT INTO transfers (id, transfer_id, property_address, purchase_price, status, accountable_institution_id)
+                VALUES ($1, 'TRF-017-2PRIMARY', '123 Double Primary St', 100000, 'in_progress', 5)
+                """,
+                [transfer_id],
+                connection=conn,
+            )
+
+            g1 = uuid.uuid4()
+            await query(
+                """
+                INSERT INTO transfer_parties (transfer_id, golden_record_id, entity_type, role, accountable_institution_id, is_primary_contact)
+                VALUES ($1, $2::uuid, 'person', 'transferor', 5, TRUE)
+                """,
+                [transfer_id, g1],
+                connection=conn,
+            )
+
+            with self.assertRaises(Exception):
+                await query(
+                    """
+                    INSERT INTO transfer_parties (transfer_id, golden_record_id, entity_type, role, accountable_institution_id, is_primary_contact)
+                    VALUES ($1, $2::uuid, 'person', 'transferor', 5, TRUE)
+                    """,
+                    [transfer_id, uuid.uuid4()],
+                    connection=conn,
+                )
+
+        await with_test_transaction(_verify)
+
+    async def test_matter_properties_tenant_is_derived(self):
+        from db import query
+        from tests.db_test_utils import with_test_transaction
+
+        async def _verify(conn):
+            await self._run_migration_on_connection(conn)
+
+            matter_id = uuid.uuid4()
+            await query(
+                """
+                INSERT INTO matters (id, reference_number, matter_type, status, source_record_id, accountable_institution_id)
+                VALUES ($1, 'REF-017-TENANT', 'transfer', 'in_progress', 'test-source', 5)
+                """,
+                [matter_id],
+                connection=conn,
+            )
+
+            await query(
+                """
+                INSERT INTO matter_properties (matter_id, property_id, property_kind, accountable_institution_id)
+                VALUES ($1, NULL, 'output', 99)
+                """,
+                [matter_id],
+                connection=conn,
+            )
+
+            result = await query(
+                "SELECT accountable_institution_id FROM matter_properties WHERE matter_id = $1",
+                [matter_id],
+                connection=conn,
+            )
+            self.assertEqual(result.rows[0]["accountable_institution_id"], 5)
+
+        await with_test_transaction(_verify)
 
 if __name__ == "__main__":
     unittest.main()
