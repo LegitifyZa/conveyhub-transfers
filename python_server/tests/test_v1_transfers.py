@@ -9,7 +9,11 @@ import jwt as pyjwt
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Allow both absolute package imports (python_server.*) and top-level python_server modules (db, config, tests).
+_project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_python_server = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _project_root)
+sys.path.insert(0, _python_server)
 
 from auth.current_user import CurrentUser
 from db import query as db_query
