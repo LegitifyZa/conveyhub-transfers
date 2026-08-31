@@ -81,7 +81,6 @@ CREATE TABLE IF NOT EXISTS matter_estate_contexts (
     transfer_id UUID NOT NULL,
     deceased_golden_record_id UUID,
     masters_estate_reference TEXT,
-    estate_reference TEXT,
     accountable_institution_id INTEGER NOT NULL,
     created_by_user_id INTEGER,
     updated_by_user_id INTEGER,

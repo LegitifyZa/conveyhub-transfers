@@ -158,8 +158,7 @@ These values must not be persisted as simple booleans in the capacity table.
 id                           UUID PRIMARY KEY
 transfer_id                  UUID NOT NULL REFERENCES transfers(id) ON DELETE CASCADE
 deceased_golden_record_id    UUID              -- subject of the estate; not the estate's identity
-masters_estate_reference     TEXT
-estate_reference             TEXT
+masters_estate_reference     TEXT  -- the Master of the High Court's estate reference; a single, unambiguous reference field
 accountable_institution_id   INTEGER NOT NULL
 created_by_actor_id          TEXT
 updated_by_actor_id          TEXT
