@@ -19,6 +19,13 @@ import tests.db_test_utils as db_test_utils
 
 TEST_JWT_SECRET = "test-jwt-secret-32-bytes-long!!"
 
+# Module-owned fixture prefixes.  These are used to identify and clean up
+# every fixture the specialist tests create, so the database is returned to
+# its pre-module state after the suite.
+_TRANSFER_CODE_PREFIX = "TX-SPEC-"
+_RELATIONSHIP_CODE_A = "test_spc_surviving_spouse"
+_RELATIONSHIP_CODE_B = "test_spc_co_heir"
+
 _TEST_TRANSFER_ID = None
 _TEST_PARTY_ID = None
 _TEST_ESTATE_CONTEXT_ID = None
@@ -57,13 +64,14 @@ async def _seed():
             await conn.execute('SET search_path = "transfers", public')
 
             transfer_id = uuid.uuid4()
+            transfer_code = f"{_TRANSFER_CODE_PREFIX}{transfer_id.hex[:8]}"
             await query(
                 """
                     INSERT INTO transfers (id, transfer_id, property_address, purchase_price, status,
                                            current_step, total_steps, progress, accountable_institution_id)
                     VALUES ($1::uuid, $2, $3, $4, 'in_progress', 1, 5, 0, 5)
                 """,
-                [transfer_id, f"TX-SPEC-{transfer_id.hex[:8]}", "1 Specialist Street, Cape Town", 1000000],
+                [transfer_id, transfer_code, "1 Specialist Street, Cape Town", 1000000],
                 connection=conn,
             )
 
@@ -95,13 +103,13 @@ async def _seed():
             await query(
                 """
                     INSERT INTO party_relationship_definitions (code, label, is_active) VALUES
-                        ('surviving_spouse', 'Surviving Spouse', TRUE),
-                        ('co_heir', 'Co-heir', TRUE)
+                        ($1, 'Surviving Spouse', TRUE),
+                        ($2, 'Co-heir', TRUE)
                     ON CONFLICT (code) DO UPDATE SET
                         label = EXCLUDED.label,
                         is_active = TRUE
                 """,
-                [],
+                [_RELATIONSHIP_CODE_A, _RELATIONSHIP_CODE_B],
                 connection=conn,
             )
 
@@ -110,10 +118,10 @@ async def _seed():
                     INSERT INTO party_relationship_assignments (
                         transfer_party_id, relationship_code, created_by_user_id, updated_by_user_id
                     )
-                    VALUES ($1, 'surviving_spouse', 1, 1)
+                    VALUES ($1, $2, 1, 1)
                     RETURNING id
                 """,
-                [party_id],
+                [party_id, _RELATIONSHIP_CODE_A],
                 connection=conn,
             )
 
@@ -144,11 +152,52 @@ def setUpModule():
     os.environ["JWT_SECRET"] = TEST_JWT_SECRET
     os.environ["DB_SCHEMA"] = "transfers"
 
+    asyncio.run(_pre_clean())
+
     global _TEST_TRANSFER_ID, _TEST_PARTY_ID, _TEST_ESTATE_CONTEXT_ID, _TEST_REPRESENTATIVE_ASSIGNMENT_ID
     _TEST_TRANSFER_ID, _TEST_PARTY_ID, _TEST_ESTATE_CONTEXT_ID, _TEST_REPRESENTATIVE_ASSIGNMENT_ID = asyncio.run(_seed())
 
 
 async def _cleanup():
+    """Delete all fixtures owned by this module, leaving the DB as it was."""
+    from db import close_pool, get_pool, query
+    from config import load_settings
+
+    await close_pool()
+    pool = await get_pool(load_settings())
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute('SET search_path = "transfers", public')
+
+            # Deleting the module-owned transfer cascades to matter_estate_contexts,
+            # transfer_parties, party_relationship_assignments, representative_assignments.
+            if _TEST_TRANSFER_ID:
+                await query(
+                    "DELETE FROM transfers WHERE id = $1::uuid",
+                    [_TEST_TRANSFER_ID],
+                    connection=conn,
+                )
+
+            # These definitions are not parented by a transfer, so remove them explicitly.
+            await query(
+                "DELETE FROM party_relationship_definitions WHERE code LIKE $1",
+                ["test_spc_%"],
+                connection=conn,
+            )
+
+            # Defensive: remove any stale module-owned transfers that were not
+            # cleaned by a previous interrupted run.
+            await query(
+                "DELETE FROM transfers WHERE transfer_id LIKE $1",
+                [f"{_TRANSFER_CODE_PREFIX}%"],
+                connection=conn,
+            )
+    finally:
+        await close_pool()
+
+
+async def _pre_clean():
+    """Remove any leftovers from a previous interrupted run before seeding."""
     from db import close_pool, get_pool, query
     from config import load_settings
 
@@ -158,8 +207,13 @@ async def _cleanup():
         async with pool.acquire() as conn:
             await conn.execute('SET search_path = "transfers", public')
             await query(
-                "DELETE FROM transfers WHERE id = $1::uuid",
-                [_TEST_TRANSFER_ID],
+                "DELETE FROM party_relationship_definitions WHERE code LIKE $1",
+                ["test_spc_%"],
+                connection=conn,
+            )
+            await query(
+                "DELETE FROM transfers WHERE transfer_id LIKE $1",
+                [f"{_TRANSFER_CODE_PREFIX}%"],
                 connection=conn,
             )
     finally:
@@ -167,8 +221,7 @@ async def _cleanup():
 
 
 def tearDownModule():
-    if _TEST_TRANSFER_ID:
-        asyncio.run(_cleanup())
+    asyncio.run(_cleanup())
 
 
 class V1SpecialistContextTests(unittest.TestCase):
@@ -220,23 +273,23 @@ class V1SpecialistContextTests(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         data = r.json()["data"]["relationships"]
         self.assertGreaterEqual(len(data), 1)
-        surviving = [d for d in data if d["relationshipCode"] == "surviving_spouse"]
+        surviving = [d for d in data if d["relationshipCode"] == _RELATIONSHIP_CODE_A]
         self.assertEqual(len(surviving), 1)
         self.assertEqual(surviving[0]["transferPartyId"], _TEST_PARTY_ID)
 
     def test_party_relationships_create_201(self):
         r = self.client.post(
             f"/api/v1/transfers/{_TEST_TRANSFER_ID}/parties/{_TEST_PARTY_ID}/relationships",
-            json={"relationship_code": "co_heir"},
+            json={"relationship_code": _RELATIONSHIP_CODE_B},
             headers=_auth_header(3, 5, ["api", "transfers:write"]),
         )
         self.assertEqual(r.status_code, 201)
-        self.assertEqual(r.json()["data"]["relationshipCode"], "co_heir")
+        self.assertEqual(r.json()["data"]["relationshipCode"], _RELATIONSHIP_CODE_B)
 
     def test_party_relationships_create_without_write_403(self):
         r = self.client.post(
             f"/api/v1/transfers/{_TEST_TRANSFER_ID}/parties/{_TEST_PARTY_ID}/relationships",
-            json={"relationship_code": "co_heir"},
+            json={"relationship_code": _RELATIONSHIP_CODE_B},
             headers=_auth_header(3, 5, ["api", "transfers:read"]),
         )
         self.assertEqual(r.status_code, 403)
@@ -252,7 +305,7 @@ class V1SpecialistContextTests(unittest.TestCase):
     def test_party_relationships_create_duplicate_409(self):
         r = self.client.post(
             f"/api/v1/transfers/{_TEST_TRANSFER_ID}/parties/{_TEST_PARTY_ID}/relationships",
-            json={"relationship_code": "surviving_spouse"},
+            json={"relationship_code": _RELATIONSHIP_CODE_A},
             headers=_auth_header(3, 5, ["api", "transfers:write"]),
         )
         self.assertEqual(r.status_code, 409)
@@ -260,7 +313,7 @@ class V1SpecialistContextTests(unittest.TestCase):
     def test_party_relationships_create_rejects_extra_fields_422(self):
         r = self.client.post(
             f"/api/v1/transfers/{_TEST_TRANSFER_ID}/parties/{_TEST_PARTY_ID}/relationships",
-            json={"relationship_code": "co_heir", "accountable_institution_id": 999},
+            json={"relationship_code": _RELATIONSHIP_CODE_B, "accountable_institution_id": 999},
             headers=_auth_header(3, 5, ["api", "transfers:write"]),
         )
         self.assertEqual(r.status_code, 422)
