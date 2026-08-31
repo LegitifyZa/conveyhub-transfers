@@ -1,0 +1,295 @@
+import asyncio
+import os
+import sys
+import time
+import unittest
+import uuid
+
+import jwt as pyjwt
+from fastapi.testclient import TestClient
+
+_project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_python_server = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _project_root)
+sys.path.insert(0, _python_server)
+
+from main import app
+import tests.db_test_utils as db_test_utils
+
+
+TEST_JWT_SECRET = "test-jwt-secret-32-bytes-long!!"
+
+_TEST_TRANSFER_ID = None
+_TEST_PARTY_ID = None
+_TEST_ESTATE_CONTEXT_ID = None
+_TEST_REPRESENTATIVE_ASSIGNMENT_ID = None
+
+
+def _token(role: int, ai: int, abilities=None):
+    if abilities is None:
+        abilities = ["api", "transfers:read"]
+    payload = {
+        "type": "access",
+        "user_id": 1,
+        "golden_record_id": str(uuid.uuid4()),
+        "abilities": abilities,
+        "accountable_institution_id": ai,
+        "user_roles_id": role,
+        "tenant_id": str(uuid.uuid4()),
+        "iat": int(time.time()),
+        "exp": int(time.time()) + 3600,
+    }
+    return pyjwt.encode(payload, TEST_JWT_SECRET, algorithm="HS256")
+
+
+def _auth_header(role: int, ai: int, abilities=None):
+    return {"Authorization": f"Bearer {_token(role, ai, abilities)}"}
+
+
+async def _seed():
+    from db import close_pool, get_pool, query
+    from config import load_settings
+
+    await close_pool()
+    pool = await get_pool(load_settings())
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute('SET search_path = "transfers", public')
+
+            transfer_id = uuid.uuid4()
+            await query(
+                """
+                    INSERT INTO transfers (id, transfer_id, property_address, purchase_price, status,
+                                           current_step, total_steps, progress, accountable_institution_id)
+                    VALUES ($1::uuid, $2, $3, $4, 'in_progress', 1, 5, 0, 5)
+                """,
+                [transfer_id, f"TX-SPEC-{transfer_id.hex[:8]}", "1 Specialist Street, Cape Town", 1000000],
+                connection=conn,
+            )
+
+            party_id = uuid.uuid4()
+            golden = uuid.uuid4()
+            await query(
+                """
+                    INSERT INTO transfer_parties (id, transfer_id, golden_record_id, entity_type,
+                                                  role, accountable_institution_id, cached_name)
+                    VALUES ($1::uuid, $2::uuid, $3::uuid, 'person', 'buyer', 5, 'Test Party')
+                """,
+                [party_id, transfer_id, golden],
+                connection=conn,
+            )
+
+            estate_id = uuid.uuid4()
+            dec_golden = uuid.uuid4()
+            await query(
+                """
+                    INSERT INTO matter_estate_contexts (id, transfer_id, deceased_golden_record_id,
+                                                        masters_estate_reference)
+                    VALUES ($1::uuid, $2::uuid, $3::uuid, 'ME-001')
+                    RETURNING id
+                """,
+                [estate_id, transfer_id, dec_golden],
+                connection=conn,
+            )
+
+            await query(
+                """
+                    INSERT INTO party_relationship_definitions (code, label, is_active) VALUES
+                        ('surviving_spouse', 'Surviving Spouse', TRUE),
+                        ('co_heir', 'Co-heir', TRUE)
+                    ON CONFLICT (code) DO UPDATE SET
+                        label = EXCLUDED.label,
+                        is_active = TRUE
+                """,
+                [],
+                connection=conn,
+            )
+
+            relationship_result = await query(
+                """
+                    INSERT INTO party_relationship_assignments (
+                        transfer_party_id, relationship_code, created_by_user_id, updated_by_user_id
+                    )
+                    VALUES ($1, 'surviving_spouse', 1, 1)
+                    RETURNING id
+                """,
+                [party_id],
+                connection=conn,
+            )
+
+            rep_golden = uuid.uuid4()
+            representative_result = await query(
+                """
+                    INSERT INTO representative_assignments (
+                        transfer_id, person_golden_record_id, capacity, represented_estate_context_id
+                    )
+                    VALUES ($1::uuid, $2::uuid, 'executor', $3::uuid)
+                    RETURNING id
+                """,
+                [transfer_id, rep_golden, estate_id],
+                connection=conn,
+            )
+
+            rep_id = representative_result.rows[0]["id"]
+            return str(transfer_id), str(party_id), str(estate_id), str(rep_id)
+    finally:
+        await close_pool()
+
+
+def setUpModule():
+    if not os.getenv("TEST_DATABASE_URL"):
+        raise unittest.SkipTest("TEST_DATABASE_URL not configured")
+
+    db_test_utils.require_test_database()
+    os.environ["JWT_SECRET"] = TEST_JWT_SECRET
+    os.environ["DB_SCHEMA"] = "transfers"
+
+    global _TEST_TRANSFER_ID, _TEST_PARTY_ID, _TEST_ESTATE_CONTEXT_ID, _TEST_REPRESENTATIVE_ASSIGNMENT_ID
+    _TEST_TRANSFER_ID, _TEST_PARTY_ID, _TEST_ESTATE_CONTEXT_ID, _TEST_REPRESENTATIVE_ASSIGNMENT_ID = asyncio.run(_seed())
+
+
+async def _cleanup():
+    from db import close_pool, get_pool, query
+    from config import load_settings
+
+    await close_pool()
+    pool = await get_pool(load_settings())
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute('SET search_path = "transfers", public')
+            await query(
+                "DELETE FROM transfers WHERE id = $1::uuid",
+                [_TEST_TRANSFER_ID],
+                connection=conn,
+            )
+    finally:
+        await close_pool()
+
+
+def tearDownModule():
+    if _TEST_TRANSFER_ID:
+        asyncio.run(_cleanup())
+
+
+class V1SpecialistContextTests(unittest.TestCase):
+    def setUp(self):
+        self.client = TestClient(app).__enter__()
+
+    def tearDown(self):
+        self.client.__exit__(None, None, None)
+
+    def test_estate_contexts_list_for_authorised_tenant(self):
+        r = self.client.get(
+            f"/api/v1/transfers/{_TEST_TRANSFER_ID}/estate-contexts",
+            headers=_auth_header(3, 5),
+        )
+        self.assertEqual(r.status_code, 200)
+        data = r.json()["data"]["estateContexts"]
+        self.assertEqual(len(data), 1)
+        self.assertEqual(data[0]["transferId"], _TEST_TRANSFER_ID)
+        self.assertEqual(data[0]["mastersEstateReference"], "ME-001")
+        self.assertIn("id", data[0])
+        self.assertIn("deceasedGoldenRecordId", data[0])
+        self.assertIn("createdAt", data[0])
+        self.assertIn("updatedAt", data[0])
+        self.assertNotIn("accountableInstitutionId", data[0])
+        self.assertNotIn("estateReference", data[0])
+
+    def test_estate_context_detail_for_authorised_tenant(self):
+        r = self.client.get(
+            f"/api/v1/transfers/{_TEST_TRANSFER_ID}/estate-contexts/{_TEST_ESTATE_CONTEXT_ID}",
+            headers=_auth_header(3, 5),
+        )
+        self.assertEqual(r.status_code, 200)
+        data = r.json()["data"]
+        self.assertEqual(data["id"], _TEST_ESTATE_CONTEXT_ID)
+        self.assertEqual(data["transferId"], _TEST_TRANSFER_ID)
+
+    def test_estate_contexts_foreign_tenant_404(self):
+        r = self.client.get(
+            f"/api/v1/transfers/{_TEST_TRANSFER_ID}/estate-contexts",
+            headers=_auth_header(3, 999),
+        )
+        self.assertEqual(r.status_code, 404)
+
+    def test_party_relationships_list_for_authorised_tenant(self):
+        r = self.client.get(
+            f"/api/v1/transfers/{_TEST_TRANSFER_ID}/parties/{_TEST_PARTY_ID}/relationships",
+            headers=_auth_header(3, 5),
+        )
+        self.assertEqual(r.status_code, 200)
+        data = r.json()["data"]["relationships"]
+        self.assertGreaterEqual(len(data), 1)
+        surviving = [d for d in data if d["relationshipCode"] == "surviving_spouse"]
+        self.assertEqual(len(surviving), 1)
+        self.assertEqual(surviving[0]["transferPartyId"], _TEST_PARTY_ID)
+
+    def test_party_relationships_create_201(self):
+        r = self.client.post(
+            f"/api/v1/transfers/{_TEST_TRANSFER_ID}/parties/{_TEST_PARTY_ID}/relationships",
+            json={"relationship_code": "co_heir"},
+            headers=_auth_header(3, 5, ["api", "transfers:write"]),
+        )
+        self.assertEqual(r.status_code, 201)
+        self.assertEqual(r.json()["data"]["relationshipCode"], "co_heir")
+
+    def test_party_relationships_create_without_write_403(self):
+        r = self.client.post(
+            f"/api/v1/transfers/{_TEST_TRANSFER_ID}/parties/{_TEST_PARTY_ID}/relationships",
+            json={"relationship_code": "co_heir"},
+            headers=_auth_header(3, 5, ["api", "transfers:read"]),
+        )
+        self.assertEqual(r.status_code, 403)
+
+    def test_party_relationships_create_unknown_code_400(self):
+        r = self.client.post(
+            f"/api/v1/transfers/{_TEST_TRANSFER_ID}/parties/{_TEST_PARTY_ID}/relationships",
+            json={"relationship_code": "nonexistent"},
+            headers=_auth_header(3, 5, ["api", "transfers:write"]),
+        )
+        self.assertEqual(r.status_code, 400)
+
+    def test_party_relationships_create_duplicate_409(self):
+        r = self.client.post(
+            f"/api/v1/transfers/{_TEST_TRANSFER_ID}/parties/{_TEST_PARTY_ID}/relationships",
+            json={"relationship_code": "surviving_spouse"},
+            headers=_auth_header(3, 5, ["api", "transfers:write"]),
+        )
+        self.assertEqual(r.status_code, 409)
+
+    def test_party_relationships_create_rejects_extra_fields_422(self):
+        r = self.client.post(
+            f"/api/v1/transfers/{_TEST_TRANSFER_ID}/parties/{_TEST_PARTY_ID}/relationships",
+            json={"relationship_code": "co_heir", "accountable_institution_id": 999},
+            headers=_auth_header(3, 5, ["api", "transfers:write"]),
+        )
+        self.assertEqual(r.status_code, 422)
+
+    def test_representative_assignments_list_for_authorised_tenant(self):
+        r = self.client.get(
+            f"/api/v1/transfers/{_TEST_TRANSFER_ID}/representative-assignments",
+            headers=_auth_header(3, 5),
+        )
+        self.assertEqual(r.status_code, 200)
+        data = r.json()["data"]["representativeAssignments"]
+        self.assertEqual(len(data), 1)
+        self.assertEqual(data[0]["capacity"], "executor")
+        self.assertEqual(data[0]["representedTarget"]["type"], "estate_context")
+        self.assertEqual(data[0]["representedTarget"]["id"], _TEST_ESTATE_CONTEXT_ID)
+
+    def test_representative_assignment_detail_for_authorised_tenant(self):
+        r = self.client.get(
+            f"/api/v1/transfers/{_TEST_TRANSFER_ID}/representative-assignments/{_TEST_REPRESENTATIVE_ASSIGNMENT_ID}",
+            headers=_auth_header(3, 5),
+        )
+        self.assertEqual(r.status_code, 200)
+        data = r.json()["data"]
+        self.assertEqual(data["id"], _TEST_REPRESENTATIVE_ASSIGNMENT_ID)
+        self.assertEqual(data["capacity"], "executor")
+
+    def test_representative_assignment_foreign_tenant_404(self):
+        r = self.client.get(
+            f"/api/v1/transfers/{_TEST_TRANSFER_ID}/representative-assignments/{_TEST_REPRESENTATIVE_ASSIGNMENT_ID}",
+            headers=_auth_header(3, 999),
+        )
+        self.assertEqual(r.status_code, 404)
