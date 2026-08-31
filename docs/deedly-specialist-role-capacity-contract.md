@@ -6,14 +6,14 @@
 
 ## 1. Objective
 
-Step 16S.6a defines the canonical machine-readable specialist role/capacity taxonomy that Step 16S.5f left as `MACHINE CODE TO BE DEFINED DURING ROLE/CAPACITY MODEL DESIGN`.  It separates Golden Record identity, matter role, legal relationship, representative capacity, authority basis, authority status, signing eligibility and ownership outcome, and provides the contract for later implementation.
+Step 16S.6a/6a.1 defines the canonical machine-readable specialist role/capacity taxonomy that Step 16S.5f left as `MACHINE CODE TO BE DEFINED DURING ROLE/CAPACITY MODEL DESIGN`.  It separates Golden Record identity, matter role, legal relationship, representative capacity, represented target, authority basis, evidence state, authority effectiveness, signing eligibility and ownership outcome, and provides the corrected contract for later implementation.
 
 ## 2. Findings summary
 
-- The current `transfer_parties` table (migration 008, widened by migration 017) only supports `role` as a single free-text column and already seeds `transferor` and `transferee` through `party_role_definitions`.
+- The current `transfer_parties` table (migration 008, widened by migration 017) supports one row per `(transfer_id, golden_record_id, role)` and already seeds `transferor` and `transferee` through `party_role_definitions`.
 - Migration 017 creates `entity_type_definitions` (`person`, `company`, `trust`) and `classification_party_role_rules`, but **no specialist role/capacity codes have been seeded** (verified by `test_migrations_017.py` and `test_migrations_019.py`).
 - `is_primary_contact` is implemented as a communication-only flag and is enforced by a partial unique index on `(transfer_id, role)`.
-- No runtime code currently stores `executor`, `executrix`, `masters_representative` or `trustee` in production payloads.
+- No runtime code currently stores `executor`, `executrix`, `masters_representative`, `trustee`, `heir`, `legatee`, `surviving_spouse` or `beneficiary` in production payloads.
 - The existing `deedly-party-role-contract-audit.md` explicitly defers the machine codes for the concepts defined in this document.
 
 ## 3. Current-state inventory
@@ -22,28 +22,28 @@ Step 16S.6a defines the canonical machine-readable specialist role/capacity taxo
 |-------|---------------|---------------|------------------------------|----------------|
 | `transfer_parties.golden_record_id` | UUID, NOT NULL | Golden Record identity | 1. Identity only | Correctly separate; no duplication allowed |
 | `transfer_parties.entity_type` | `VARCHAR(40)` FK to `entity_type_definitions` | What the entity is (`person`, `company`, `trust`) | 2. Entity type only | No `estate` / `deceased_estate` entity type yet |
-| `transfer_parties.role` | `VARCHAR(40)` free text | Matter-party role | 2/3/4 overloaded potential; currently only `transferor`/`transferee` are validated by reference data | Cannot hold `executor` as capacity without conflating it with the matter role |
+| `transfer_parties.role` | `VARCHAR(40)` free text | Matter-party role | 2/3 potential overlap; currently only `transferor`/`transferee` are validated by reference data | Cannot hold specialist concepts as roles |
 | `transfer_parties.is_primary_contact` | `BOOLEAN` default `FALSE` | Primary communication contact | 10. Contact designation only | Correctly isolated |
 | `entity_type_definitions` | Reference table | Entity type taxonomy | 2. Entity type | `estate`/`deceased_estate` not defined |
 | `party_role_definitions` | Reference table | Matter role taxonomy | 3. Matter-party role | Only `transferor`, `transferee` seeded |
 | `classification_party_role_rules` | Reference table | Per-classification role rules | 3. Matter-party role | No specialist classification rules seeded |
 | `matter_properties` | Table | Property input/output relationship | Property relationship, not party | No party relationship or ownership outcome columns |
 
-No existing field currently represents: representative capacity, represented legal context, authority basis, authority status, signing eligibility, or ownership outcome.
+No existing field currently represents: matter-specific legal relationship, representative capacity, represented target, estate context, authority basis, evidence state, authority effectiveness, signing eligibility, or ownership outcome.
 
 ## 4. Definitions of the ten required concepts
 
-| # | Concept | Meaning | DEEDLY ownership | Example canonical code |
-|---|---------|---------|------------------|------------------------|
+| # | Concept | Meaning | DEEDLY ownership | Example canonical code / field |
+|---|---------|---------|------------------|--------------------------------|
 | 1 | **Golden Record identity** | Authoritative person/entity identity | Golden Records / Entities service | `golden_record_id` |
-| 2 | **Canonical matter-party role** | What the entity is doing in the matter | DEEDLY | `transferor`, `transferee`, `estate_party` |
-| 3 | **Matter-specific legal relationship** | The legal relationship the party has to the matter context | DEEDLY | `heir`, `surviving_spouse`, `deceased_side` |
+| 2 | **Canonical matter-party role** | What the entity is doing in the matter | DEEDLY | `transferor`, `transferee` |
+| 3 | **Matter-specific legal relationship** | The legal relationship the party has to the matter context | DEEDLY | `heir`, `surviving_spouse`, `purchaser`, `beneficiary` |
 | 4 | **Representative capacity** | The legal capacity in which a person acts for another party or legal context | DEEDLY | `executor`, `masters_representative`, `trustee` |
-| 5 | **Represented party or legal context** | The entity/estate/trust being represented | DEEDLY (link) | `estate_party` row or `trust` `transfer_party` row |
-| 6 | **Authority basis** | The legal instrument or statutory power that supports the capacity | DEEDLY | `letters_of_executorship`, `trust_deed`, `section_45bis_source_instrument` |
-| 7 | **Authority-document status** | Where the supplied authority evidence sits in a verification lifecycle | DEEDLY | `claimed`, `supplied`, `verified`, `effective`, `lapsed` |
-| 8 | **Signing eligibility** | Whether the person may legally sign in the matter, derived from 3, 4, 5, 6 and 7 | DEEDLY | `is_eligible_to_sign` (derived) |
-| 9 | **Ownership outcome** | The resulting ownership configuration where the classification requires one | DEEDLY | `sole_ownership`, `undivided_shares` |
+| 5 | **Represented target** | The party or non-GR matter context being represented | DEEDLY (link) | a trust `transfer_party`, or a `matter_estate_context` |
+| 6 | **Authority basis** | The legal instrument or statutory power that supports the capacity | DEEDLY | `letters_of_executorship`, `trust_deed` |
+| 7 | **Evidence / document status** | Whether the supporting document has been supplied and verified | DEEDLY | `uploaded`, `verified`, `rejected` |
+| 8 | **Authority effectiveness** | Whether the verified authority is still effective for the matter | DEEDLY | `effective`, `lapsed`, `revoked` |
+| 9 | **Signing eligibility** | Whether the person may legally sign, derived from 3-8 and classification rules | DEEDLY | `is_eligible_to_sign` (derived) |
 | 10 | **Primary-contact status** | Communication/UI convenience | DEEDLY | `is_primary_contact` |
 
 `is_primary_contact` must not confer or imply any of 1-9.
@@ -52,64 +52,77 @@ No existing field currently represents: representative capacity, represented leg
 
 ### 5.1 Canonical matter-party roles
 
-| Code | Domain | Plain-language meaning | Valid classifications | Permitted entity types | Type | Cardinality per matter | Multiple for same GR | Validation | Contributes to signing? | Required? |
-|------|--------|------------------------|----------------------|------------------------|------|------------------------|----------------------|------------|------------------------|-----------|
-| `transferor` | All sale/donation/endorsement | Entity transferring ownership or interest | All sales, `transfer.donation`, `transfer.endorsement_section_45`, `transfer.endorsement_section_45bis` | `person`, `company`, `trust`, future GR types | Role | 1+ | Yes | Must be GR-backed | Indirectly (role + capacity) | Mandatory where rule requires |
-| `transferee` | All sale/donation/endorsement/inheritance | Entity receiving ownership or interest | All sales, `transfer.donation`, `transfer.deceased_estate_inheritance`, `transfer.endorsement_section_45`, `transfer.endorsement_section_45bis` | `person`, `company`, `trust`, future GR types | Role | 1+ | Yes | Must be GR-backed | Indirectly | Mandatory where rule requires |
-| `estate_party` | Estate / Section 45 | The deceased estate or estate-side interest in the matter | `transfer.deceased_estate_inheritance`, `transfer.deceased_estate_sale`, `transfer.endorsement_section_45` (conditional) | `deceased_estate` / `estate` if GR supports it; otherwise a synthetic context | Role | 1 per estate context | No | Requires estate reference; no duplicate local GR | No — the representative signs | Mandatory for estate-side matters |
+| Code | Domain | Plain-language meaning | Valid classifications | Permitted GR entity types | Type | Cardinality per matter | Multiple for same GR | Validation | Contributes to signing? | Required? |
+|------|--------|------------------------|----------------------|---------------------------|------|------------------------|----------------------|------------|------------------------|-----------|
+| `transferor` | All sale/donation/endorsement/inter-spousal | Golden Record-backed entity transferring ownership or interest | All sales, `transfer.donation`, `transfer.endorsement_section_45bis` | `person`, `company`, `trust`, future GR types | Role | 1+ | Yes | Must be GR-backed | Only if it has signing power or a representative | Mandatory where rule requires |
+| `transferee` | All sale/donation/endorsement/inheritance | Golden Record-backed entity receiving ownership or interest | All sales, `transfer.donation`, `transfer.deceased_estate_inheritance`, `transfer.endorsement_section_45`, `transfer.endorsement_section_45bis` | `person`, `company`, `trust`, future GR types | Role | 1+ | Yes | Must be GR-backed | Only if it has signing power or a representative | Mandatory where rule requires |
+
+A deceased estate is **not** a Golden Record-backed matter party and therefore does **not** appear as a `transferor` or `estate_party` row in `transfer_parties`. The estate is represented as a `matter_estate_context` that may have one or more associated representative assignments.
 
 ### 5.2 Matter-specific legal relationships
 
-| Code | Domain | Plain-language meaning | Valid classifications | Permitted GR entity types | Type | Cardinality | Multiple for same GR | Validation | Contributes to signing? | Required? |
-|------|--------|------------------------|----------------------|---------------------------|------|-------------|----------------------|------------|------------------------|-----------|
+| Code | Domain | Plain-language meaning | Valid classifications | Permitted GR entity types | Type | Cardinality | Multiple per transfer party | Validation | Contributes to signing? | Required? |
+|------|--------|------------------------|----------------------|---------------------------|------|-------------|-----------------------------|------------|------------------------|-----------|
 | `heir` | Deceased estate inheritance | Person entitled under intestate succession | `transfer.deceased_estate_inheritance` | `person` | Relationship | 1+ | Yes | Role must be `transferee` | No | Mandatory for inheritance |
 | `legatee` | Deceased estate inheritance | Person entitled under a will (specific bequest) | `transfer.deceased_estate_inheritance` | `person` | Relationship | 1+ | Yes | Role must be `transferee` | No | Optional |
-| `surviving_spouse` | Section 45 | Spouse who survives the deceased and is the receiving party | `transfer.endorsement_section_45` | `person` | Relationship | 1 | No per deceased | Role must be `transferee` | No | Mandatory for Section 45 |
-| `deceased_side` | Section 45 / estate | The deceased-side interest / estate context in the matter | `transfer.endorsement_section_45`, `transfer.deceased_estate_inheritance` | `person` (deceased) or `estate` context | Relationship | 1 | No | Role must be `transferor` or `estate_party` | No | Mandatory where applicable |
+| `surviving_spouse` | Section 45 | Spouse who survives the deceased and is the receiving party | `transfer.endorsement_section_45` | `person` | Relationship | 1 | No | Role must be `transferee` | No | Mandatory for Section 45 |
 | `purchaser` | Deceased estate sale | Business label for the receiving buyer | `transfer.deceased_estate_sale` | `person`, `company`, `trust` | Relationship | 1+ | Yes | Role must be `transferee` | No | Optional (UI label only) |
-| `beneficiary` | Trust | Person who has an interest as a beneficiary of a trust | Trust matters | `person` | Relationship | 1+ | Yes | Usually `transferee` if receiving | No | Optional |
+| `beneficiary` | Trust | Person with an interest as a beneficiary of a trust | Trust matters | `person` | Relationship | 1+ | Yes | Usually `transferee` if receiving | No | Optional |
 
 ### 5.3 Representative capacities
 
-| Code | Domain | Plain-language meaning | Valid classifications | Permitted GR entity types | Type | Cardinality | Multiple for same GR | Validation | Contributes to signing? | Required? |
-|------|--------|------------------------|----------------------|---------------------------|------|-------------|----------------------|------------|------------------------|-----------|
-| `executor` | Deceased estates | Duly appointed executor of a deceased estate | `transfer.deceased_estate_inheritance`, `transfer.deceased_estate_sale`, `transfer.endorsement_section_45` (conditional) | `person` | Capacity | 1+ per estate | Yes across different estates | Must have `letters_of_executorship` or equivalent | Yes, if verified | Mandatory where an executor is the representative |
-| `masters_representative` | Deceased estates | Master of the High Court's representative, e.g. curator, tutor, ad litem | Same as `executor` plus other Master-appointment matters | `person` | Capacity | 1+ | Yes | Must have Master's appointment certificate | Yes, if verified | Optional / conditional |
-| `trustee` | Trusts | Person appointed to represent and sign for a trust | Any trust `transferor`/`transferee` matter | `person` | Capacity | 1+ per trust | Yes across different trusts | Trust deed / letters of authority | Yes, if verified | Mandatory where a trust signs |
+| Code | Domain | Plain-language meaning | Valid represented targets | Permitted GR entity types | Type | Cardinality | Multiple for same GR | Validation | Contributes to signing? | Required? |
+|------|--------|------------------------|--------------------------|---------------------------|------|-------------|----------------------|------------|------------------------|-----------|
+| `executor` | Deceased estates | Duly appointed executor of a deceased estate | `matter_estate_context` | `person` | Capacity | 1+ per estate context | Yes across different estate contexts | Must have `letters_of_executorship` or equivalent evidence | Yes, if effective | Mandatory where an executor is the representative |
+| `masters_representative` | Deceased estates | Master of the High Court's representative, e.g. curator, tutor, ad litem | `matter_estate_context` | `person` | Capacity | 1+ per estate context | Yes | Must have Master's appointment evidence | Yes, if effective | Optional / conditional |
+| `trustee` | Trusts | Person appointed to represent and sign for a trust | `transfer_party` whose `entity_type` is `trust` | `person` | Capacity | 1+ per trust | Yes across different trusts | Trust deed / authority | Yes, if effective and the trust signing rule is satisfied | Mandatory where a trust acts through a person |
 
-`executrix` must not be a separate machine code. UI/document labels may render `Executor` or `Executrix` from `executor` with a label override.
+`executrix` must not be a separate machine code. UI/document labels may render `Executor` or `Executrix` from `executor` in presentation logic, not in the canonical persistence model.
 
-### 5.4 Authority basis
+### 5.4 Authority basis codes
 
 | Code | Domain | Plain-language meaning | Valid classifications | Type | Cardinality | Validation | Required? |
 |------|--------|------------------------|----------------------|------|-------------|------------|-----------|
-| `letters_of_executorship` | Deceased estates | Letters of executorship issued by the Master | Estate inheritance, estate sale, Section 45 | Authority basis | 1 per `executor` capacity | Must be supplied and verified | Mandatory for `executor` capacity |
-| `masters_appointment_certificate` | Master appointment | Master's certificate appointing a representative | Estate / Section 45 / other Master matters | Authority basis | 1 per `masters_representative` capacity | Must be supplied and verified | Mandatory for `masters_representative` |
-| `section_42_2_endorsement` | Estate sale | Master's section 42(2) no-objection / endorsement | `transfer.deceased_estate_sale` | Authority basis | 0 or 1 per matter | Supplied and verified before lodgement | Conditional on property/mortgage |
+| `letters_of_executorship` | Deceased estates | Letters of executorship issued by the Master | Estate inheritance, estate sale, Section 45 | Authority basis | 0+ per `executor` assignment | Evidence must be supplied and verified | Mandatory for `executor` capacity |
+| `masters_appointment_certificate` | Master appointment | Master's certificate appointing a representative | Estate / Section 45 / other Master matters | Authority basis | 0+ per `masters_representative` assignment | Evidence must be supplied and verified | Mandatory for `masters_representative` |
+| `section_42_2_endorsement` | Estate sale | Master’s section 42(2) no-objection / endorsement | `transfer.deceased_estate_sale` | Authority basis | 0 or 1 per matter | Supplied and verified before lodgement | Conditional on property/mortgage |
 | `section_47_authority` | Estate sale | Authority governing manner and conditions of an executor sale | `transfer.deceased_estate_sale` | Authority basis | 0 or 1 per matter | Establish applicable basis | Conditional on post-death sale |
 | `trust_deed` | Trusts | Trust deed or equivalent founding instrument | Any trust matter | Authority basis | 1 per trust | Supplied and verified | Mandatory for `trustee` capacity |
-| `letters_of_authority_for_trust` | Trusts | Letters of authority / trustee resolution | Any trust matter | Authority basis | 1 per trustee per matter | Supplied and verified | Conditional |
-| `section_45bis_source_instrument` | Section 45bis | Legal basis for the 45bis endorsement (divorce order, settlement agreement, court order) | `transfer.endorsement_section_45bis` | Authority basis | 1 per matter | Supplied and verified | Mandatory for 45bis |
+| `letters_of_authority_for_trust` | Trusts | Letters of authority / trustee resolution | Any trust matter | Authority basis | 0+ per trustee assignment | Supplied and verified | Conditional |
+| `section_45bis_source_instrument` | Section 45bis | Legal basis for the 45bis endorsement | `transfer.endorsement_section_45bis` | Authority basis | 0+ per matter | Supplied and verified | Mandatory for 45bis |
 
-### 5.5 Authority-document status
+These codes are reference-data candidates pending legal/conveyancing confirmation.
+
+### 5.5 Evidence / document status
 
 | Code | Meaning | Type |
 |------|---------|------|
-| `claimed` | Capacity has been asserted by the party but no evidence yet | Authority status |
-| `evidence_supplied` | Document/evidence has been uploaded or recorded but not verified | Authority status |
-| `verified` | Evidence has been checked and accepted as valid and current | Authority status |
-| `effective_for_matter` | Authority is verified and applicable to this specific matter | Authority status |
-| `lapsed` / `revoked` | Authority has expired, been revoked or superseded | Authority status |
+| `not_supplied` | No evidence recorded yet | Evidence status |
+| `uploaded` | Document or evidence has been supplied | Evidence status |
+| `pending_verification` | Evidence is awaiting review | Evidence status |
+| `verified` | Evidence has been checked and accepted as valid and current | Evidence status |
+| `rejected` | Evidence has been checked and rejected | Evidence status |
 
-### 5.6 Signing-eligibility and signatory selection
+### 5.6 Authority effectiveness
+
+| Code | Meaning | Type |
+|------|---------|------|
+| `not_effective` | Authority is not yet established for the matter | Authority effectiveness |
+| `effective` | Authority is verified and currently applicable to the matter | Authority effectiveness |
+| `lapsed` | Authority has expired | Authority effectiveness |
+| `revoked` | Authority has been revoked or superseded | Authority effectiveness |
+
+### 5.7 Signing-eligibility and signatory selection
 
 | Concept | Meaning | Type | Source |
 |---------|---------|------|--------|
-| `is_eligible_to_sign` | Person may legally sign in this matter | Derived | `capacity` + `authority_verified` + `effective_for_matter` + no conflict/disqualification |
-| `is_required_signatory` | The classification/workflow requires this person's signature | Derived | Classification rule + capacity + represented context |
+| `is_eligible_to_sign` | Person may legally sign in this matter | Derived | `capacity` + effective authority + no conflict/disqualification |
+| `is_required_signatory` | The classification/workflow requires this person's signature | Derived | Classification rule + capacity + represented target |
 | `is_actual_signatory` | The person has actually been selected to sign this document | Selection | Workflow/user selection (not inferred) |
 
-### 5.7 Ownership outcome
+These values must not be persisted as simple booleans in the capacity table.
+
+### 5.8 Ownership outcome
 
 | Code | Domain | Plain-language meaning | Valid classifications | Type | Cardinality |
 |------|--------|------------------------|----------------------|------|-------------|
@@ -119,148 +132,291 @@ No existing field currently represents: representative capacity, represented leg
 
 ## 6. Classification applicability matrix
 
-| Classification | Required matter roles | Permitted relationships | Permitted capacities | Required authority basis | Ownership outcome | Signing rule |
-|----------------|----------------------|-------------------------|----------------------|--------------------------|-------------------|--------------|
-| `transfer.deceased_estate_inheritance` | `estate_party`, `transferee` (1+) | `heir`, `legatee` | `executor`, `masters_representative` (for `estate_party`) | `letters_of_executorship` or `masters_appointment_certificate` | `heir_ownership` | Representative of `estate_party` signs; heirs do not by default |
-| `transfer.deceased_estate_sale` | `estate_party` (transferor/seller), `transferee` (purchaser, 1+) | `purchaser` (UI label) | `executor`, `masters_representative` | `letters_of_executorship` / `masters_appointment_certificate`; `section_47_authority`; `section_42_2_endorsement` (conditional) | Sale to purchaser | Representative of `estate_party` signs; purchasers sign as transferees |
-| `transfer.endorsement_section_45` | `estate_party` (deceased side), `transferee` | `deceased_side`, `surviving_spouse` | `executor`, `masters_representative` | `letters_of_executorship` / `masters_appointment_certificate` | Transfer to surviving spouse | Executor / Master's representative signs for the estate; surviving spouse signs as transferee |
-| `transfer.endorsement_section_45bis` | `transferor`, `transferee` (or both, depending on outcome) | — | `executor` / `masters_representative` only if one side is an estate | `section_45bis_source_instrument` | `sole_ownership` or `undivided_shares` | Signatories depend on the chosen ownership outcome; both GRs sign if transferring shares |
-| Trust participation (classification-agnostic) | `transferor` or `transferee` for the trust | `beneficiary` (optional) | `trustee` | `trust_deed` / `letters_of_authority_for_trust` | As determined by classification | Trustee(s) with verified capacity sign for the trust; the trust itself never signs |
+| Classification | Required matter roles | Permitted relationships | Permitted capacities / represented targets | Required authority basis | Ownership outcome | Signing rule |
+|----------------|----------------------|-------------------------|-------------------------------------------|--------------------------|-------------------|--------------|
+| `transfer.deceased_estate_inheritance` | `transferee` (1+) | `heir`, `legatee` | `executor` / `masters_representative` targeting a `matter_estate_context` | `letters_of_executorship` or `masters_appointment_certificate` | `heir_ownership` | Representative of the estate context signs; heirs do not by default |
+| `transfer.deceased_estate_sale` | `transferee` (purchaser, 1+) | `purchaser` | `executor` / `masters_representative` targeting a `matter_estate_context` | `letters_of_executorship` / `masters_appointment_certificate`; `section_47_authority`; `section_42_2_endorsement` (conditional) | Sale to purchaser | Representative of the estate context signs; purchasers sign as transferees |
+| `transfer.endorsement_section_45` | `transferee` | `surviving_spouse` | `executor` / `masters_representative` targeting a `matter_estate_context` | `letters_of_executorship` / `masters_appointment_certificate` | Transfer to surviving spouse | Executor / Master’s representative signs for the estate context; surviving spouse signs as transferee |
+| `transfer.endorsement_section_45bis` | `transferor`, `transferee` (or both, depending on outcome) | — | `executor` / `masters_representative` only if the represented target is a `matter_estate_context` | `section_45bis_source_instrument` | `sole_ownership` or `undivided_shares` | Signatories depend on the chosen ownership outcome and the represented target. Trust signing threshold remains unresolved |
+| Trust participation (classification-agnostic) | `transferor` or `transferee` for the trust | `beneficiary` (optional) | `trustee` targeting the trust `transfer_party` | `trust_deed` / `letters_of_authority_for_trust` | As determined by classification | Trustee(s) with effective capacity sign for the trust; the trust itself never signs |
 
-## 7. Representation semantics
+## 7. Conceptual entity and persistence model
 
-A representative-capacity assignment is a first-class record that must never alter the person's Golden Record identity and must never replace or silently add a canonical matter role.
+### 7.1 Core entities
 
-Required elements of a representative-capacity assignment:
+- `transfer_parties` — one row per `(transfer_id, golden_record_id, role)` for Golden Record-backed parties only.
+- `matter_estate_contexts` — conceptual, matter-owned, non-GR record representing a deceased estate or estate-side interest. A matter may have more than one.
+- `party_relationship_assignments` — zero or more relationship codes per `transfer_parties` row.
+- `representative_assignments` — one row per person-capacity-target combination.
+- `authority_bases` — reference data for legal instruments.
+- `authority_documents` — evidence records attached to an assignment.
+- `authority_effectiveness` — derived or cached legal-effectiveness state per assignment.
 
-- `person_golden_record_id` — the Golden Record that holds the capacity.
-- `represented_party_id` — the `transfer_party` or synthetic legal-context row being represented (e.g. the trust, the `estate_party`).
-- `matter_id` / `transfer_id` — the matter in which the capacity applies.
-- `capacity` — one of `executor`, `masters_representative`, `trustee`.
-- `authority_basis` — the legal instrument that supports the capacity.
-- `authority_status` — one of `claimed`, `evidence_supplied`, `verified`, `effective_for_matter`, `lapsed`/`revoked`.
+### 7.2 `matter_estate_contexts` (conceptual table)
 
-One Golden Record must appear in the matter only once per canonical matter role. Capacities are attached to the relevant represented party, not duplicated as new local identities.
-
-## 8. Authority and signing state model
-
-### 8.1 State transitions
-
-```
-claimed
-  |
-  v
-evidence_supplied
-  |
-  v
-verified
-  |
-  v (if still current and applicable)
-effective_for_matter
-  |
-  |---> lapsed / revoked (on expiry, death of authority, conflict finding)
+```text
+id                           UUID PRIMARY KEY
+transfer_id                  UUID NOT NULL REFERENCES transfers(id) ON DELETE CASCADE
+deceased_golden_record_id    UUID              -- subject of the estate; not the estate's identity
+masters_estate_reference     TEXT
+estate_reference             TEXT
+accountable_institution_id   INTEGER NOT NULL
+created_by_actor_id          TEXT
+updated_by_actor_id          TEXT
+created_at                   TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+updated_at                   TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 ```
 
-- **Claimed** → **evidence_supplied**: a document or reference is uploaded.
-- **evidence_supplied** → **verified**: the firm/workflow confirms the evidence is valid and current.
-- **verified** → **effective_for_matter**: the authority applies to this specific matter and no conflict/disqualification exists.
-- **effective_for_matter** → **lapsed** / **revoked**: the authority expires, is superseded, or a related-party conflict is found.
+- A matter may have many `matter_estate_contexts`.
+- `deceased_golden_record_id` references the deceased person; it is not the estate's identity.
+- `accountable_institution_id` is derived from `transfers` via a trigger.
+- No `transfer_parties` row is created for the estate.
 
-### 8.2 Signing-eligibility rule
+### 7.3 `party_relationship_assignments`
 
-A person is `is_eligible_to_sign` when all of the following are true:
+```text
+id                           UUID PRIMARY KEY
+transfer_party_id            UUID NOT NULL REFERENCES transfer_parties(id) ON DELETE CASCADE
+relationship_code            VARCHAR(40) NOT NULL  -- e.g. heir, surviving_spouse, purchaser, beneficiary
+accountable_institution_id   INTEGER NOT NULL
+created_by_actor_id          TEXT
+updated_by_actor_id          TEXT
+created_at                   TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+updated_at                   TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+UNIQUE (transfer_party_id, relationship_code)
+```
 
-1. They hold a representative capacity that is applicable to the matter (or they are an ordinary `transferor`/`transferee` with signing power).
-2. The `authority_status` for that capacity is `effective_for_matter`.
-3. No related-party or conflict rule (e.g. Section 49) disqualifies them for this matter.
-4. The represented party or legal context is still the active party in the matter.
+- Zero or more relationships per transfer party.
+- Same Golden Record can therefore be both an `heir` and a `surviving_spouse` through separate `transfer_parties` rows or the same row with multiple relationship assignments, depending on the matter structure.
+- Tenant anchoring is derived from `transfer_parties`.
 
-`is_primary_contact` is never used in this derivation.
+### 7.4 `representative_assignments`
 
-## 9. Multi-capacity behaviour
+```text
+id                              UUID PRIMARY KEY
+transfer_id                     UUID NOT NULL REFERENCES transfers(id) ON DELETE CASCADE
+person_golden_record_id         UUID NOT NULL
+capacity                        VARCHAR(40) NOT NULL  -- executor, masters_representative, trustee
+represented_transfer_party_id   UUID REFERENCES transfer_parties(id) ON DELETE CASCADE
+represented_estate_context_id   UUID REFERENCES matter_estate_contexts(id) ON DELETE CASCADE
+authority_basis                 VARCHAR(40)
+accountable_institution_id      INTEGER NOT NULL
+created_by_actor_id             TEXT
+updated_by_actor_id             TEXT
+created_at                      TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+updated_at                      TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+
+CHECK (num_nonnull(represented_transfer_party_id, represented_estate_context_id) = 1)
+UNIQUE (transfer_id, person_golden_record_id, capacity, represented_transfer_party_id) WHERE represented_transfer_party_id IS NOT NULL
+UNIQUE (transfer_id, person_golden_record_id, capacity, represented_estate_context_id) WHERE represented_estate_context_id IS NOT NULL
+```
+
+- The represented target is exactly one of: a `transfer_party` (e.g. a trust) or a `matter_estate_context`.
+- The design preserves foreign-key integrity by using two explicit nullable columns with a `CHECK` constraint, not a generic `target_type`/`target_id` pair.
+- `person_golden_record_id` is the representative person; `represented_*` is what they represent.
+- A Golden Record may hold many representative assignments, even in the same matter, as long as the represented target differs.
+- No `is_required_signatory` or `is_eligible_to_sign` column is persisted here.
+
+### 7.5 `authority_documents`
+
+```text
+id                           UUID PRIMARY KEY
+assignment_id                UUID NOT NULL REFERENCES representative_assignments(id) ON DELETE CASCADE
+document_catalogue_id        UUID
+document_type                VARCHAR(40)  -- e.g. letters_of_executorship, trust_deed
+evidence_status              VARCHAR(40) NOT NULL DEFAULT 'not_supplied'  -- uploaded, pending_verification, verified, rejected
+verified_at                  TIMESTAMPTZ
+verified_by_actor_id         TEXT
+accountable_institution_id   INTEGER NOT NULL
+created_by_actor_id          TEXT
+updated_by_actor_id          TEXT
+created_at                   TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+updated_at                   TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+```
+
+- Separates the evidence record from the assignment itself.
+- One assignment may have multiple documents (e.g. letters of executorship plus supplementary evidence).
+
+### 7.6 `authority_effectiveness`
+
+```text
+id                           UUID PRIMARY KEY
+assignment_id                UUID NOT NULL REFERENCES representative_assignments(id) ON DELETE CASCADE
+effective_status             VARCHAR(40) NOT NULL DEFAULT 'not_effective'  -- effective, lapsed, revoked
+reason                       TEXT
+evaluated_at                 TIMESTAMPTZ
+accountable_institution_id   INTEGER NOT NULL
+created_by_actor_id          TEXT
+updated_by_actor_id          TEXT
+created_at                   TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+updated_at                   TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+```
+
+- Tracks the legal-effectiveness state for the matter independently of the document verification state.
+- Derived from verified evidence, conflicts, expiry and revocation.
+
+## 8. Cardinality rules
+
+- `transfer_parties`: one row per `(transfer_id, golden_record_id, role)`.
+- `matter_estate_contexts`: one row per estate context; many per matter allowed.
+- `party_relationship_assignments`: one row per `(transfer_party_id, relationship_code)`; many per transfer party allowed.
+- `representative_assignments`: one row per `(transfer_id, person_golden_record_id, capacity, represented target)`; multiple per person allowed across different targets or matters.
+- `authority_documents`: many per `representative_assignment`.
+- `authority_effectiveness`: one current row per assignment; historical rows may be retained for audit.
+
+## 9. Multi-capacity examples
 
 ### 9.1 Surviving spouse and executor
 
-- The surviving spouse is one Golden Record.
-- They appear as a `transferee` with relationship `surviving_spouse`.
-- If they are also the executor, the same GR also has a `party_representative_capacities` row with `capacity = 'executor'` linked to the `estate_party`.
-- They sign the estate-side documents in their `executor` capacity, and the Section 45 receiving documents in their `transferee` capacity.
+- One Golden Record for the surviving spouse.
+- A `transfer_parties` row with role `transferee` and `party_relationship_assignments` containing `surviving_spouse`.
+- A `matter_estate_context` row records the deceased estate context.
+- A `representative_assignments` row for the same Golden Record with `capacity = 'executor'`, `represented_estate_context_id` pointing to the estate context.
+- The person signs estate-side documents by virtue of the effective `executor` assignment and signs as transferee for the Section 45 receiving documents.
+- No fake estate `transfer_parties` row is created and the person’s Golden Record is not duplicated.
 
 ### 9.2 Beneficiary and executor
 
-- A person is an heir/beneficiary (`transferee` with relationship `heir` or `beneficiary`).
-- The same GR may also hold an `executor` capacity for the `estate_party`.
-- These are separate records; the GR is not duplicated.
+- A person is a `transferee` with relationship `heir` (or `beneficiary`).
+- The same Golden Record also has a `representative_assignments` row as `executor` for the `matter_estate_context`.
+- The `heir` relationship and the `executor` capacity are separate records.
 
-### 9.3 Trustee and purchaser / transferee
+### 9.3 Trustee and personal purchaser
 
-- A trust is the `transferee` (purchaser). Its GR appears in `transfer_parties`.
-- The trustee(s) are natural persons whose GRs are linked to the trust `transfer_party` through `party_representative_capacities` with `capacity = 'trustee'`.
-- If one of those trustees is also purchasing personally, that same GR has a separate `transfer_parties` row as `transferee` in their own right — distinct from the `trustee` capacity row.
+- A trust has a `transfer_parties` row as `transferee` (purchaser) with `entity_type = 'trust'`.
+- A natural person has a `representative_assignments` row with `capacity = 'trustee'` and `represented_transfer_party_id` pointing to the trust row.
+- If the same natural person also purchases in a personal capacity, that same Golden Record has a second `transfer_parties` row as `transferee` for the personal purchase.
+- The two capacities are distinct and the Golden Record is not duplicated.
 
-### 9.4 Primary contact and legal representative
+### 9.4 Multiple estate contexts
 
-- `is_primary_contact` can be set on any `transfer_parties` row for communication purposes.
-- A `trustee` or `executor` may also be marked `is_primary_contact`, but this does not make them eligible to sign; signing eligibility is derived from capacity and authority.
+- A matter may involve two deceased co-owners.
+- Two `matter_estate_contexts` rows are created.
+- Each estate context may have its own `executor` or `masters_representative` assignment.
+- The purchaser is the same `transferee`.
 
-### 9.5 More than one valid representative capacity
+## 10. Authority and signing state model
 
-- One Golden Record may hold `executor` for one estate and `trustee` for a trust in the same matter if the legal facts support it.
-- Each capacity is recorded against the relevant `represented_party_id`.
-- The same GR is never inserted as a new local identity for each capacity.
+### 10.1 State separation
 
-## 10. Backward-compatibility assessment
+| Dimension | State / values | Notes |
+|-----------|----------------|-------|
+| A. Representative assignment | `active`, `withdrawn`, `superseded` | Lifecycle of the capacity assignment |
+| B. Authority basis / grant | `letters_of_executorship`, `masters_appointment_certificate`, `trust_deed`, `section_45bis_source_instrument`, etc. | Reference-data codes pending legal confirmation |
+| C. Evidence / document status | `not_supplied`, `uploaded`, `pending_verification`, `verified`, `rejected` | Document-level verification |
+| D. Authority effectiveness | `not_effective`, `effective`, `lapsed`, `revoked` | Matter-level legal effectiveness |
+| E. Signing eligibility | `is_eligible_to_sign` | Derived: capacity + effective authority + no conflict |
+| F. Actual signatory selection | `is_actual_signatory` | Workflow selection, not persisted in the capacity table |
 
-- No production data currently uses `executor`, `executrix`, `masters_representative`, `trustee` or `surviving_spouse` in the `transfer_parties.role` column.
-- If any legacy or prototype payload stores these values as `role`, the migration strategy is:
-  1. Leave `golden_record_id` untouched.
-  2. Determine the actual canonical matter role (`transferor`, `transferee`, `estate_party`) from the classification and business context.
-  3. Convert `role = 'executor'`, `'executrix'`, `'masters_representative'` or `'trustee'` into a `party_representative_capacities` row linked to the represented party.
-  4. Normalise `executrix` → `executor`; store the gendered label as a display override, not as a machine code.
-  5. Map `surviving_spouse` to the `surviving_spouse` relationship code on the relevant `transferee` row.
-- Existing `transferor`/`transferee` data remains valid and does not need migration.
-- The `is_primary_contact` flag remains valid and continues to mean communication only.
+### 10.2 Typical state flow
 
-## 11. Schema / API / runtime implications for later implementation
+```
+assignment active
+  |
+  v
+evidence uploaded
+  |
+  v
+evidence verified
+  |
+  v
+authority effective
+  |
+  v
+person is eligible to sign
+  |
+  v
+workflow selects actual signatory
+```
 
-### 11.1 Likely data-model additions
+A transition to `lapsed` or `revoked` can occur from any later state.
 
-- `party_representative_capacities` (or equivalent) table with at least:
-  - `transfer_party_id` / `represented_party_id` UUID
-  - `person_golden_record_id` UUID
-  - `capacity` (`executor`, `masters_representative`, `trustee`)
-  - `authority_basis`
-  - `authority_status`
-  - `is_required_signatory` (derived flag)
-- Reference-data seeding of new role codes (e.g. `estate_party`), relationship codes, capacity codes, authority basis codes and ownership-outcome codes.
-- Possible new entity type `deceased_estate` / `estate` in `entity_type_definitions`, subject to Golden Records contract.
-- A matter-level estate-context record or `represented_context` table may be required to avoid duplicating the deceased's identity.
+### 10.3 Signing-eligibility rule
 
-### 11.2 API changes
+A person is `is_eligible_to_sign` when all of the following are true:
 
-- `GET /api/v1/transfers/{id}/parties` should expose `role`, `relationship`, `capacities`, `authority`, and `is_eligible_to_sign` as separate fields.
-- `POST` / `PUT` party endpoints must accept `capacity`, `authority_basis`, `authority_status` and `represented_party_id` separately from `role`.
+1. They hold a representative assignment that is applicable to the matter, or they are an ordinary `transferor`/`transferee` with legal signing power.
+2. The corresponding evidence is `verified` and the authority is `effective`.
+3. No related-party or conflict rule disqualifies them.
+4. The represented target is still active in the matter.
 
-### 11.3 Validation changes
+`is_primary_contact` is never used in this derivation.
 
-- Classification-specific party validation must use `classification_party_role_rules` plus capacity rules.
-- `executor` must not be accepted as a `role` value; it is a `capacity`.
-- `is_primary_contact` must not imply `is_eligible_to_sign`.
+## 11. Backward-compatibility strategy
 
-### 11.4 Migration implications
+The later implementation must first audit the actual existing data for any of the following values stored in `transfer_parties.role`, in cache columns, or in legacy payload fields:
 
-- A future migration will be needed to create the capacity table, add reference data, and possibly add the `estate` entity type / synthetic context.
-- No migration is created in Step 16S.6a.
+- `executor`
+- `executrix`
+- `masters_representative`
+- `trustee`
+- `surviving_spouse`
+- `heir`
+- `legatee`
+- `beneficiary`
 
-## 12. Unresolved questions requiring business confirmation
+If any such rows exist, the migration must:
 
-1. Is `estate_party` a canonical matter role, or should the estate be modelled as a non-GR `represented_context` with a representative capacity?  
-2. Does Golden Records support a `deceased_estate` or `estate` entity type, or must the estate context be synthetic?  
-3. Should `heir` and `legatee` remain separate relationship codes, or be merged into a single `heir_legatee` / `beneficiary` code with a sub-type?  
-4. For `transfer.endorsement_section_45bis`, is an `estate_party`/`executor` required only when one of the parties is deceased, or for all 45bis endorsements?  
-5. Should `surviving_spouse` be a relationship on a `transferee` role, or a separate matter role for Section 45?  
-6. What are the exact Master's certificate / appointment codes that fall under `masters_representative`?  
-7. What is the signing threshold for trusts — any single trustee, all trustees, or majority?  
-8. Should `is_primary_contact` be allowed on a capacity row, or only on the main `transfer_parties` row?  
-9. What is the precise legal-basis taxonomy for `section_45bis_source_instrument` (divorce order, settlement agreement, court order, etc.)?  
-10. How should the UI label `executrix` be stored and rendered while keeping the machine code `executor`?
+1. Leave `golden_record_id` untouched.
+2. Map the canonical matter role from the classification and business context.
+3. Convert `executor`, `executrix`, `masters_representative` and `trustee` into `representative_assignments` targeting the correct represented target.
+4. Normalise `executrix` to the machine code `executor`; gendered rendering is presentation logic only.
+5. Convert `surviving_spouse`, `heir`, `legatee`, `beneficiary` and `purchaser` into `party_relationship_assignments` linked to the correct `transfer_parties` row.
+6. If `estate` values were stored, create or reference a `matter_estate_context` and re-target representative assignments accordingly.
+
+No destructive translation should be performed until the audit results are known.
+
+## 12. Tenant isolation and provenance
+
+- Every matter-owned table (`matter_estate_contexts`, `party_relationship_assignments`, `representative_assignments`, `authority_documents`, `authority_effectiveness`) carries `accountable_institution_id`.
+- `accountable_institution_id` is derived from the parent (`transfers` or `transfer_parties`) via a `BEFORE INSERT OR UPDATE` trigger, matching the existing `matter_properties` pattern.
+- Cross-tenant parent/child associations must be rejected at the database level and tested in implementation.
+- Actor provenance is stored as UUID/text references to the central identity service (`created_by_actor_id`, `updated_by_actor_id`, `verified_by_actor_id`), without foreign keys to deprecated DEEDLY-local user tables.
+- `created_at`, `updated_at` and `update_updated_at_column` triggers are applied to every new table.
+
+## 13. Schema / API / runtime implications for later implementation
+
+### 13.1 Data model
+
+- Create the conceptual tables listed in §7.
+- Seed `representative_capacity_definitions` with `executor`, `masters_representative`, `trustee` only after confirmation.
+- Seed `party_relationship_definitions` with `heir`, `legatee`, `surviving_spouse`, `purchaser`, `beneficiary` after confirmation.
+- Add `estate` / `deceased_estate` to `entity_type_definitions` only if and when Golden Records supports it.
+- Do not add `estate_party` to `party_role_definitions`.
+
+### 13.2 API changes
+
+- `GET /api/v1/transfers/{id}/parties` should expose `role`, `relationships`, `representative_assignments`, `authority_documents`, `authority_effectiveness`, and `ownership_outcome` as separate concepts.
+- `POST` / `PUT` party endpoints must accept `relationship_code` and `representative_assignment` (capacity + target) separately from `role`.
+
+### 13.3 Validation changes
+
+- `executor`, `trustee`, `masters_representative` must not be accepted as `role` values.
+- A `representative_assignment` must specify exactly one represented target.
+- `is_primary_contact` must not imply signing eligibility.
+
+## 14. Unresolved questions and confirmation required
+
+| # | Unresolved question | Required confirmation |
+|---|---------------------|----------------------|
+| 1 | Does Golden Records support an `estate` or `deceased_estate` entity type? | Architecture |
+| 2 | Exact Master’s certificate / appointment codes that fall under `masters_representative` | Legal/conveyancing |
+| 3 | Executor authority subtypes and exact evidence requirements | Legal/conveyancing |
+| 4 | Trust signing threshold and trustee resolution rules | Legal/conveyancing + Legitify business |
+| 5 | Section 45bis source-instrument subtypes (divorce order, settlement agreement, court order, etc.) | Legal/conveyancing |
+| 6 | Section 45bis estate involvement and when an executor is required | Legal/conveyancing |
+| 7 | Heir versus legatee validation consequences and reporting differences | Legal/conveyancing + Legitify business |
+| 8 | Ownership-outcome rules and share modelling for Section 45bis and inheritance | Legal/conveyancing + Legitify business |
+| 9 | Presentation logic for `executrix` and other gendered labels | Legitify business (UX) |
+| 10 | Whether `is_primary_contact` may be shown on capacity-related UI rows | Legitify business |
+
+## 15. Smallest safe scope for Step 16S.6b
+
+1. Create `party_relationship_assignments` and `representative_assignments` tables with the dual FK target pattern, tenant triggers and actor provenance columns.
+2. Add the `authority_documents` table to separate evidence status from the capacity.
+3. Seed only the three confirmed representative-capacity codes (`executor`, `masters_representative`, `trustee`) and the five relationship codes (`heir`, `legatee`, `surviving_spouse`, `purchaser`, `beneficiary`) as reference data.
+4. Add the `matter_estate_contexts` table as a non-GR, matter-owned structure only after architecture confirms the synthetic-context approach.
+5. Do **not** implement classification-specific validation, signing routing, or the `estate` entity type in `entity_type_definitions`.
+6. Do **not** implement `authority_effectiveness` as a workflow engine; keep it as a derived state for now.
+
+This scope builds the structural foundation while keeping unresolved legal and business rules open.
