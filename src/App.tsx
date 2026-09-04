@@ -1,7 +1,7 @@
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider, useAuth } from '@/hooks/useAuth'
 import { MainLayout } from '@/layouts'
-import { Dashboard, Cases, Documents, DocumentCatalogue, DataDictionary, TemplateEngine, ClauseLibrary, DocumentGenerator, Settings, Login, NewTransfer, Transfers, Bonds, Cancellations, TransfersDashboard, TransferMilestones } from '@/pages'
+import { Dashboard, Cases, Documents, DocumentCatalogue, DataDictionary, TemplateEngine, ClauseLibrary, DocumentGenerator, Settings, Login, NewTransfer, Transfers, Bonds, Cancellations, TransfersDashboard, TransferMilestones, AccountsCalculator } from '@/pages'
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const { isAuthenticated } = useAuth()
@@ -27,6 +27,8 @@ function AuthenticatedRoutes() {
       <Route path="/transfers/new" element={<RequireAuth><MainLayout><NewTransfer /></MainLayout></RequireAuth>} />
       <Route path="/transfers/workflow" element={<RequireAuth><MainLayout><Transfers /></MainLayout></RequireAuth>} />
       <Route path="/transfers/:transferId/milestones" element={<RequireAuth><MainLayout><TransferMilestones /></MainLayout></RequireAuth>} />
+      <Route path="/accounts" element={<RequireAuth><MainLayout><AccountsCalculator /></MainLayout></RequireAuth>} />
+      <Route path="/calculators" element={<RequireAuth><MainLayout><AccountsCalculator /></MainLayout></RequireAuth>} />
       <Route path="/bonds" element={<RequireAuth><MainLayout><Bonds /></MainLayout></RequireAuth>} />
       <Route path="/cancellations" element={<RequireAuth><MainLayout><Cancellations /></MainLayout></RequireAuth>} />
     </Routes>
