@@ -243,4 +243,3 @@ class Migration020DbIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(int(result.rows[0]["total"]), 0, code)
 
         await with_test_transaction(_verify)
-
