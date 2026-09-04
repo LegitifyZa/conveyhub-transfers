@@ -26,7 +26,7 @@ class DBPoolSettingsTests(unittest.TestCase):
             "db_ssl": False,
             "node_env": "test",
             "secret_key": "test-secret",
-            "entities_service_url": "http://entities:8000",
+            "legitify_api_base_url": "http://localhost:8000",
             "redis_url": "redis://redis:6379/1",
             "audit_database_url": None,
         }

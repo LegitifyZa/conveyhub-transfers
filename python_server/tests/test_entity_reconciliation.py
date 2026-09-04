@@ -206,13 +206,14 @@ class EntityReconciliationServiceTests(unittest.IsolatedAsyncioTestCase):
                 db_ssl=False,
                 node_env="development",
                 secret_key="super-secret-key-do-not-leak",
-                entities_service_url="http://entities:8003",
+                legitify_api_base_url="http://localhost:8000",
                 redis_url="redis://localhost:6379/0",
                 audit_database_url=None,
             )
             client = EntitiesClient(settings)
-            text = repr(client._client)
-            self.assertNotIn("super-secret-key-do-not-leak", text)
+            self.assertNotIn("super-secret-key-do-not-leak", repr(client._client))
+            self.assertNotIn("super-secret-key-do-not-leak", repr(client))
+            self.assertNotIn("super-secret-key-do-not-leak", repr(settings))
 
 
 class EntityServiceErrorSanitisationTests(unittest.TestCase):
