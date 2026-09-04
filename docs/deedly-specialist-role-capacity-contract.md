@@ -10,8 +10,8 @@ Step 16S.6a/6a.1 defines the canonical machine-readable specialist role/capacity
 
 ## 2. Findings summary
 
-- The current `transfer_parties` table (migration 008, widened by migration 017) supports one row per `(transfer_id, golden_record_id, role)` and already seeds `transferor` and `transferee` through `party_role_definitions`.
-- Migration 017 creates `entity_type_definitions` (`person`, `company`, `trust`) and `classification_party_role_rules`, but **no specialist role/capacity codes have been seeded** (verified by `test_migrations_017.py` and `test_migrations_019.py`).
+- The current `transfer_parties` table (migration 008, widened by migration 018) supports one row per `(transfer_id, golden_record_id, role)` and already seeds `transferor` and `transferee` through `party_role_definitions`.
+- Migration 018 creates `entity_type_definitions` (`person`, `company`, `trust`) and `classification_party_role_rules`, but **no specialist role/capacity codes have been seeded** (verified by `test_migrations_018.py` and `test_migrations_020.py`).
 - `is_primary_contact` is implemented as a communication-only flag and is enforced by a partial unique index on `(transfer_id, role)`.
 - No runtime code currently stores `executor`, `executrix`, `masters_representative`, `trustee`, `heir`, `legatee`, `surviving_spouse` or `beneficiary` in production payloads.
 - The existing `deedly-party-role-contract-audit.md` explicitly defers the machine codes for the concepts defined in this document.

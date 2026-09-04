@@ -1,4 +1,4 @@
--- Migration: 018_deedly_property_tenant_isolation.sql
+-- Migration: 019_deedly_property_tenant_isolation.sql
 -- Purpose: Add accountable-institution ownership to properties, enforce that
 --          matter_properties can only link a matter to a property in the same
 --          accountable institution, backfill legacy transfers.property_id into
@@ -90,7 +90,7 @@ BEGIN
     ) c;
 
     IF conflict_count > 0 THEN
-        RAISE EXCEPTION '% properties are referenced by more than one accountable institution. Resolve before migration 018.', conflict_count;
+        RAISE EXCEPTION '% properties are referenced by more than one accountable institution. Resolve before migration 019.', conflict_count;
     END IF;
 
     -- Backfill from the single deterministic source where one exists.
@@ -141,7 +141,7 @@ BEGIN
     WHERE accountable_institution_id IS NULL;
 
     IF unresolved_count > 0 THEN
-        RAISE EXCEPTION '% properties have no determinable accountable_institution_id. Resolve before migration 018.', unresolved_count;
+        RAISE EXCEPTION '% properties have no determinable accountable_institution_id. Resolve before migration 019.', unresolved_count;
     END IF;
 END $$;
 
@@ -320,8 +320,8 @@ CREATE TRIGGER trg_sync_matter_properties_from_transfer
     EXECUTE FUNCTION sync_matter_properties_from_transfer();
 
 -- 8. Keep the matter_properties tenant column derived from the parent matter.
---    This was created in migration 017; recreate it here to be safe after any
---    017 re-run.
+--    This was created in migration 018; recreate it here to be safe after any
+--    018 re-run.
 CREATE OR REPLACE FUNCTION matter_properties_set_tenant()
 RETURNS TRIGGER AS $$
 BEGIN

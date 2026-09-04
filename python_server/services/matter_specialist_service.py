@@ -38,7 +38,7 @@ from services.golden_record_visibility import (
     resolve_visible_golden_record,
 )
 
-# Guide §6.2 / migration 020: capacity is constrained by what is being represented.
+# Guide §6.2 / migration 021: capacity is constrained by what is being represented.
 ESTATE_CONTEXT_CAPACITIES = frozenset({"executor", "masters_representative"})
 TRUST_PARTY_CAPACITY = "trustee"
 

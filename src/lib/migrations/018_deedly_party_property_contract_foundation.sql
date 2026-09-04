@@ -1,4 +1,4 @@
--- Migration: 017_deedly_party_property_contract_foundation.sql
+-- Migration: 018_deedly_party_property_contract_foundation.sql
 -- Purpose: DEEDLY party and property contract schema foundation.
 --          Extends transfer_parties for extensible entity types and primary-contact,
 --          creates reference tables for entity types and party roles,

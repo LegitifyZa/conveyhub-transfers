@@ -1,4 +1,4 @@
--- Migration: 020_deedly_specialist_role_capacity_persistence.sql
+-- Migration: 021_deedly_specialist_role_capacity_persistence.sql
 -- Purpose: Add the foundational specialist role/capacity persistence tables:
 --          representative-capacity definitions, party-relationship definitions,
 --          matter-owned estate contexts, normalized party relationships and

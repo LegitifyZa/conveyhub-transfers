@@ -1,4 +1,4 @@
--- Migration: 019_deedly_taxonomy_approved_classifications.sql
+-- Migration: 020_deedly_taxonomy_approved_classifications.sql
 -- Purpose: Add the two newly approved DEEDLY classification taxonomy rows.
 --          This is a taxonomy-only migration: no party/capacity machine codes,
 --          no classification_party_role_rules, and no workflow rules are seeded.
