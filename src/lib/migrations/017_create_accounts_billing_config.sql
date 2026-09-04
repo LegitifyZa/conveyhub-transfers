@@ -30,6 +30,7 @@ CREATE INDEX IF NOT EXISTS idx_account_firm_settings_ai
 -- 2. Versioned tariff schedules (Global official schedules have NULL accountable_institution_id)
 CREATE TABLE IF NOT EXISTS transfers.tariff_schedules (
     id VARCHAR(100) NOT NULL,
+    schedule_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     accountable_institution_id INTEGER,
     name VARCHAR(255) NOT NULL,
     version VARCHAR(50) NOT NULL DEFAULT '1.0',
@@ -39,12 +40,14 @@ CREATE TABLE IF NOT EXISTS transfers.tariff_schedules (
     description TEXT,
     brackets JSONB NOT NULL DEFAULT '[]'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (id, COALESCE(accountable_institution_id, 0))
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_tariff_schedules_ai
     ON transfers.tariff_schedules (accountable_institution_id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_tariff_schedules_id_ai
+    ON transfers.tariff_schedules (id, COALESCE(accountable_institution_id, 0));
 
 -- 3. Proforma statements anchored to transfer_id (UUID) and accountable_institution_id
 CREATE TABLE IF NOT EXISTS transfers.proforma_statements (
