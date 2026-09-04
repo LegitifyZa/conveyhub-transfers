@@ -14,6 +14,7 @@ _python_server = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _project_root)
 sys.path.insert(0, _python_server)
 
+from clients.entities import EntityServiceError
 from main import app
 import tests.db_test_utils as db_test_utils
 
@@ -279,7 +280,12 @@ class V1SpecialistContextTests(unittest.TestCase):
             client.get_client_by_golden_record.side_effect = get_client_by_golden_record
             client.get_entity.side_effect = get_entity
         else:
-            client.get_client_by_golden_record.return_value = None
+            client.get_client_by_golden_record.side_effect = EntityServiceError(
+                "unknown or not a client",
+                operation="get_client_by_golden_record",
+                status_code=404,
+                category="not_found",
+            )
         return client
 
     def test_estate_contexts_list_for_authorised_tenant(self):
@@ -289,15 +295,17 @@ class V1SpecialistContextTests(unittest.TestCase):
         )
         self.assertEqual(r.status_code, 200)
         data = r.json()["data"]["estateContexts"]
-        self.assertEqual(len(data), 1)
-        self.assertEqual(data[0]["transferId"], _TEST_TRANSFER_ID)
-        self.assertEqual(data[0]["mastersEstateReference"], "ME-001")
-        self.assertIn("id", data[0])
-        self.assertIn("deceasedGoldenRecordId", data[0])
-        self.assertIn("createdAt", data[0])
-        self.assertIn("updatedAt", data[0])
-        self.assertNotIn("accountableInstitutionId", data[0])
-        self.assertNotIn("estateReference", data[0])
+        # Other tests in this module create additional estate contexts in the
+        # shared fixture transfer; verify the seeded record is present.
+        seed = [d for d in data if d["id"] == _TEST_ESTATE_CONTEXT_ID]
+        self.assertEqual(len(seed), 1)
+        self.assertEqual(seed[0]["transferId"], _TEST_TRANSFER_ID)
+        self.assertEqual(seed[0]["mastersEstateReference"], "ME-001")
+        self.assertIn("deceasedGoldenRecordId", seed[0])
+        self.assertIn("createdAt", seed[0])
+        self.assertIn("updatedAt", seed[0])
+        self.assertNotIn("accountableInstitutionId", seed[0])
+        self.assertNotIn("estateReference", seed[0])
 
     def test_estate_context_detail_for_authorised_tenant(self):
         r = self.client.get(
@@ -376,10 +384,13 @@ class V1SpecialistContextTests(unittest.TestCase):
         )
         self.assertEqual(r.status_code, 200)
         data = r.json()["data"]["representativeAssignments"]
-        self.assertEqual(len(data), 1)
-        self.assertEqual(data[0]["capacity"], "executor")
-        self.assertEqual(data[0]["representedTarget"]["type"], "estate_context")
-        self.assertEqual(data[0]["representedTarget"]["id"], _TEST_ESTATE_CONTEXT_ID)
+        # Other tests in this module create additional representative assignments
+        # in the shared fixture transfer; verify the seeded record is present.
+        seed = [d for d in data if d["id"] == _TEST_REPRESENTATIVE_ASSIGNMENT_ID]
+        self.assertEqual(len(seed), 1)
+        self.assertEqual(seed[0]["capacity"], "executor")
+        self.assertEqual(seed[0]["representedTarget"]["type"], "estate_context")
+        self.assertEqual(seed[0]["representedTarget"]["id"], _TEST_ESTATE_CONTEXT_ID)
 
     def test_representative_assignment_detail_for_authorised_tenant(self):
         r = self.client.get(
