@@ -5,7 +5,11 @@ import sys
 import uuid
 import unittest
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Allow both absolute package imports (python_server.*) and top-level python_server modules (db, config, tests).
+_project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_python_server = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _project_root)
+sys.path.insert(0, _python_server)
 
 from db import query as db_query, close_pool
 import python_server.routers.transfers as legacy_transfers
@@ -99,7 +103,7 @@ async def _insert_matter(conn, source_record_id, matter_type="transfer", propert
         INSERT INTO matters (id, reference_number, matter_type, title, status, priority,
                              opened_date, source_record_id, property_id, metadata,
                              accountable_institution_id, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, 'draft', 'medium', '2026-01-01', $5, $6, '{}',
+        VALUES ($1, $2, $3, $4, 'in_progress', 'medium', '2026-01-01', $5, $6, '{}',
                 5, $7, $7)
         """,
         [matter_uuid, ref, matter_type, f"Matter {ref}",

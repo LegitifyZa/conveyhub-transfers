@@ -1,13 +1,22 @@
 import re
 import uuid
+from typing import AbstractSet, Any, Optional
 
+import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from auth.current_user import CurrentUser
 from auth.dependencies import require_jwt
 from auth.policy import is_cross_tenant
-from db import query
+from clients.dependencies import get_entities_client
+from db import query, with_transaction
+from services.golden_record_visibility import GoldenRecordVisibilityError
+from services.matter_specialist_service import (
+    MatterSpecialistServiceError,
+    create_estate_context,
+    create_representative_assignment,
+)
 
 router = APIRouter()
 
@@ -480,3 +489,481 @@ async def get_transfer(
         raise HTTPException(status_code=404, detail="Not found")
 
     return {"message": "OK", "data": _map_transfer(transfer)}
+
+
+def _map_estate_context(row: dict) -> dict:
+    return {
+        "id": row["id"],
+        "transferId": row["transfer_id"],
+        "deceasedGoldenRecordId": row["deceased_golden_record_id"],
+        "mastersEstateReference": row["masters_estate_reference"],
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+    }
+
+
+def _map_party_relationship(row: dict) -> dict:
+    return {
+        "id": row["id"],
+        "transferPartyId": row["transfer_party_id"],
+        "relationshipCode": row["relationship_code"],
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+    }
+
+
+def _map_representative_assignment(row: dict) -> dict:
+    target = None
+    if row["represented_estate_context_id"] is not None:
+        target = {"type": "estate_context", "id": row["represented_estate_context_id"]}
+    elif row["represented_transfer_party_id"] is not None:
+        target = {"type": "transfer_party", "id": row["represented_transfer_party_id"]}
+
+    return {
+        "id": row["id"],
+        "transferId": row["transfer_id"],
+        "personGoldenRecordId": row["person_golden_record_id"],
+        "capacity": row["capacity"],
+        "representedTarget": target,
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+    }
+
+
+def _require_body_keys(body: Any, *, required: AbstractSet[str], optional: AbstractSet[str] = frozenset()) -> None:
+    """Reject anything not explicitly allowed.
+
+    An allow-list is the only safe shape here: it rejects protected fields such
+    as accountable_institution_id, assignment_state, estate_reference and the
+    actor id columns without having to enumerate them.
+    """
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="A JSON object body is required")
+
+    keys = set(body.keys())
+    missing = required - keys
+    if missing:
+        raise HTTPException(
+            status_code=422, detail=f"Missing required field(s): {', '.join(sorted(missing))}"
+        )
+
+    unexpected = keys - required - set(optional)
+    if unexpected:
+        raise HTTPException(
+            status_code=422, detail=f"Unexpected field(s): {', '.join(sorted(unexpected))}"
+        )
+
+
+def _require_uuid_field(body: dict, field: str) -> str:
+    value = body.get(field)
+    if not isinstance(value, str) or not _is_valid_uuid(value):
+        raise HTTPException(status_code=422, detail=f"{field} must be a UUID")
+    return value
+
+
+def _optional_uuid_field(body: dict, field: str) -> Optional[str]:
+    value = body.get(field)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not _is_valid_uuid(value):
+        raise HTTPException(status_code=422, detail=f"{field} must be a UUID")
+    return value
+
+
+def _visibility_error_response(exc: GoldenRecordVisibilityError) -> JSONResponse:
+    """Map a visibility outcome to the API, preserving the 400/503 distinction.
+
+    Rejections (unknown Golden Record, not a client of this institution, wrong
+    entity type, unusable record) are 400 with one tenant-safe message, so the
+    caller cannot tell them apart. Upstream faults are 503 and are never
+    reported as a tenant decision.
+    """
+    return JSONResponse(
+        status_code=exc.http_status,
+        content={"success": False, "error": exc.public_message},
+    )
+
+
+def _specialist_error_response(exc: MatterSpecialistServiceError) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"success": False, "error": exc.public_message},
+    )
+
+
+async def _authorize_transfer_party(
+    user: CurrentUser,
+    transfer_id: str,
+    transfer_party_id: str,
+) -> bool:
+    """Verify that transfer_party_id belongs to transfer_id and the user's tenant."""
+    cross_tenant = is_cross_tenant(user)
+
+    sql = """
+        SELECT 1
+        FROM transfer_parties
+        WHERE id = $1
+          AND transfer_id = $2
+    """
+    params = [transfer_party_id, transfer_id]
+
+    if not cross_tenant:
+        sql += " AND accountable_institution_id = $3"
+        params.append(user.accountable_institution_id)
+
+    result = await query(sql, params)
+    return bool(result.rows)
+
+
+@router.get("/{id}/estate-contexts")
+async def get_transfer_estate_contexts(
+    id: str,
+    user: CurrentUser = Depends(require_jwt),
+):
+    """List estate contexts for a transfer, scoped to the authorised tenant."""
+
+    # Client access is not documented; fail closed.
+    if user.is_client:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    if not user.has_ability("transfers:read"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    transfer = await _authorize_transfer(user, id)
+    if not transfer:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    cross_tenant = is_cross_tenant(user)
+
+    list_sql = """
+        SELECT id, transfer_id, deceased_golden_record_id, masters_estate_reference,
+               created_at, updated_at
+        FROM matter_estate_contexts
+        WHERE transfer_id = $1
+    """
+    list_params = [id]
+    if not cross_tenant:
+        list_sql += " AND accountable_institution_id = $2"
+        list_params.append(user.accountable_institution_id)
+    list_sql += " ORDER BY created_at"
+
+    result = await query(list_sql, list_params)
+    contexts = [_map_estate_context(row) for row in result.rows]
+
+    return {"message": "OK", "data": {"estateContexts": contexts}}
+
+
+@router.get("/{id}/estate-contexts/{estate_context_id}")
+async def get_transfer_estate_context(
+    id: str,
+    estate_context_id: str,
+    user: CurrentUser = Depends(require_jwt),
+):
+    """Retrieve a single estate context, scoped to the authorised tenant."""
+
+    if user.is_client:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    if not user.has_ability("transfers:read"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    transfer = await _authorize_transfer(user, id)
+    if not transfer:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    cross_tenant = is_cross_tenant(user)
+
+    detail_sql = """
+        SELECT id, transfer_id, deceased_golden_record_id, masters_estate_reference,
+               created_at, updated_at
+        FROM matter_estate_contexts
+        WHERE id = $1
+          AND transfer_id = $2
+    """
+    detail_params = [estate_context_id, id]
+    if not cross_tenant:
+        detail_sql += " AND accountable_institution_id = $3"
+        detail_params.append(user.accountable_institution_id)
+
+    result = await query(detail_sql, detail_params)
+    if not result.rows:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    return {"message": "OK", "data": _map_estate_context(result.rows[0])}
+
+
+@router.get("/{id}/parties/{transfer_party_id}/relationships")
+async def get_transfer_party_relationships(
+    id: str,
+    transfer_party_id: str,
+    user: CurrentUser = Depends(require_jwt),
+):
+    """List relationship assignments for a transfer party."""
+
+    if user.is_client:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    if not user.has_ability("transfers:read"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    transfer = await _authorize_transfer(user, id)
+    if not transfer:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    if not await _authorize_transfer_party(user, id, transfer_party_id):
+        raise HTTPException(status_code=404, detail="Not found")
+
+    list_sql = """
+        SELECT id, transfer_party_id, relationship_code, created_at, updated_at
+        FROM party_relationship_assignments
+        WHERE transfer_party_id = $1
+        ORDER BY created_at
+    """
+    result = await query(list_sql, [transfer_party_id])
+    relationships = [_map_party_relationship(row) for row in result.rows]
+
+    return {"message": "OK", "data": {"relationships": relationships}}
+
+
+@router.post("/{id}/parties/{transfer_party_id}/relationships", status_code=201)
+async def create_transfer_party_relationship(
+    id: str,
+    transfer_party_id: str,
+    body: dict,
+    user: CurrentUser = Depends(require_jwt),
+):
+    """Assign a relationship code to a transfer party."""
+
+    if not user.has_ability("transfers:write"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    if set(body.keys()) != {"relationship_code"}:
+        raise HTTPException(status_code=422, detail="Only relationship_code is accepted")
+
+    relationship_code = body.get("relationship_code")
+    if not isinstance(relationship_code, str) or not relationship_code.strip():
+        raise HTTPException(status_code=422, detail="relationship_code is required")
+
+    transfer = await _authorize_transfer(user, id)
+    if not transfer:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    if not await _authorize_transfer_party(user, id, transfer_party_id):
+        raise HTTPException(status_code=404, detail="Not found")
+
+    # Verify the relationship definition exists and is active.
+    definition_result = await query(
+        "SELECT code FROM party_relationship_definitions WHERE code = $1 AND is_active = TRUE",
+        [relationship_code],
+    )
+    if not definition_result.rows:
+        return JSONResponse(
+            status_code=400,
+            content={"success": False, "error": "Unknown or inactive relationship code"},
+        )
+
+    async def _do_insert(connection):
+        return await query(
+            """
+                INSERT INTO party_relationship_assignments (
+                    transfer_party_id,
+                    relationship_code,
+                    created_by_user_id,
+                    updated_by_user_id
+                )
+                VALUES ($1, $2, $3, $4)
+                RETURNING id, transfer_party_id, relationship_code, created_at, updated_at
+            """,
+            [
+                transfer_party_id,
+                relationship_code,
+                user.user_id,
+                user.user_id,
+            ],
+            connection=connection,
+        )
+
+    try:
+        insert_result = await with_transaction(_do_insert)
+    except asyncpg.exceptions.UniqueViolationError:
+        return JSONResponse(
+            status_code=409,
+            content={"success": False, "error": "Relationship already assigned"},
+        )
+    except asyncpg.exceptions.ForeignKeyViolationError:
+        return JSONResponse(
+            status_code=400,
+            content={"success": False, "error": "Unknown or inactive relationship code"},
+        )
+
+    return {
+        "message": "Created",
+        "data": _map_party_relationship(insert_result.rows[0]),
+    }
+
+
+@router.get("/{id}/representative-assignments")
+async def get_transfer_representative_assignments(
+    id: str,
+    user: CurrentUser = Depends(require_jwt),
+):
+    """List representative assignments for a transfer."""
+
+    if user.is_client:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    if not user.has_ability("transfers:read"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    transfer = await _authorize_transfer(user, id)
+    if not transfer:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    cross_tenant = is_cross_tenant(user)
+
+    list_sql = """
+        SELECT id, transfer_id, person_golden_record_id, capacity,
+               represented_transfer_party_id, represented_estate_context_id,
+               created_at, updated_at
+        FROM representative_assignments
+        WHERE transfer_id = $1
+    """
+    list_params = [id]
+    if not cross_tenant:
+        list_sql += " AND accountable_institution_id = $2"
+        list_params.append(user.accountable_institution_id)
+    list_sql += " ORDER BY created_at"
+
+    result = await query(list_sql, list_params)
+    assignments = [_map_representative_assignment(row) for row in result.rows]
+
+    return {"message": "OK", "data": {"representativeAssignments": assignments}}
+
+
+@router.get("/{id}/representative-assignments/{assignment_id}")
+async def get_transfer_representative_assignment(
+    id: str,
+    assignment_id: str,
+    user: CurrentUser = Depends(require_jwt),
+):
+    """Retrieve a single representative assignment, scoped to the authorised tenant."""
+
+    if user.is_client:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    if not user.has_ability("transfers:read"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    transfer = await _authorize_transfer(user, id)
+    if not transfer:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    cross_tenant = is_cross_tenant(user)
+
+    detail_sql = """
+        SELECT id, transfer_id, person_golden_record_id, capacity,
+               represented_transfer_party_id, represented_estate_context_id,
+               created_at, updated_at
+        FROM representative_assignments
+        WHERE id = $1
+          AND transfer_id = $2
+    """
+    detail_params = [assignment_id, id]
+    if not cross_tenant:
+        detail_sql += " AND accountable_institution_id = $3"
+        detail_params.append(user.accountable_institution_id)
+
+    result = await query(detail_sql, detail_params)
+    if not result.rows:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    return {"message": "OK", "data": _map_representative_assignment(result.rows[0])}
+
+
+@router.post("/{id}/estate-contexts", status_code=201)
+async def post_transfer_estate_context(
+    id: str,
+    body: dict,
+    user: CurrentUser = Depends(require_jwt),
+    entities_client=Depends(get_entities_client),
+):
+    """Create an estate context for a transfer, deriving tenant from the transfer."""
+
+    if not user.has_ability("transfers:write"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    transfer = await _authorize_transfer(user, id)
+    if not transfer:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    _require_body_keys(
+        body,
+        required={"deceased_golden_record_id"},
+        optional={"masters_estate_reference"},
+    )
+
+    try:
+        row = await create_estate_context(
+            transfer_id=uuid.UUID(id),
+            deceased_golden_record_id=_require_uuid_field(
+                body, "deceased_golden_record_id"
+            ),
+            masters_estate_reference=body.get("masters_estate_reference"),
+            entities_client=entities_client,
+            actor_user_id=user.user_id,
+        )
+    except GoldenRecordVisibilityError as exc:
+        return _visibility_error_response(exc)
+    except MatterSpecialistServiceError as exc:
+        return _specialist_error_response(exc)
+
+    return {"message": "Created", "data": _map_estate_context(row)}
+
+
+@router.post("/{id}/representative-assignments", status_code=201)
+async def post_transfer_representative_assignment(
+    id: str,
+    body: dict,
+    user: CurrentUser = Depends(require_jwt),
+    entities_client=Depends(get_entities_client),
+):
+    """Assign a person, in a capacity, to represent an estate context or a trust party."""
+
+    if not user.has_ability("transfers:write"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    transfer = await _authorize_transfer(user, id)
+    if not transfer:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    _require_body_keys(
+        body,
+        required={"person_golden_record_id", "capacity"},
+        optional={"represented_estate_context_id", "represented_transfer_party_id"},
+    )
+
+    try:
+        row = await create_representative_assignment(
+            transfer_id=uuid.UUID(id),
+            person_golden_record_id=_require_uuid_field(body, "person_golden_record_id"),
+            capacity=body["capacity"],
+            represented_estate_context_id=_optional_uuid_field(
+                body, "represented_estate_context_id"
+            ),
+            represented_transfer_party_id=_optional_uuid_field(
+                body, "represented_transfer_party_id"
+            ),
+            entities_client=entities_client,
+            actor_user_id=user.user_id,
+        )
+    except GoldenRecordVisibilityError as exc:
+        return _visibility_error_response(exc)
+    except MatterSpecialistServiceError as exc:
+        return _specialist_error_response(exc)
+    except asyncpg.exceptions.UniqueViolationError:
+        return JSONResponse(
+            status_code=409,
+            content={"success": False, "error": "Representative assignment already exists"},
+        )
+
+    return {"message": "Created", "data": _map_representative_assignment(row)}

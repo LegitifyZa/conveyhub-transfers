@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse
 
 from config import load_settings
 from db import query, with_transaction
-from utils.validate import is_non_empty_string, is_sa_postal_code, is_uuid, is_valid_status, to_number
+from utils.validate import is_non_empty_string, is_sa_postal_code, is_uuid, is_valid_transfer_status, to_number
 
 router = APIRouter()
 
@@ -158,7 +158,7 @@ def map_transfer_row(row):
         "transferId": row["transfer_id"],
         "propertyAddress": row["property_address"],
         "purchasePrice": _num(row["purchase_price"]),
-        "status": "completed" if milestone_completed else row["status"],
+        "status": row["status"],
         "currentStep": row["current_step"],
         "totalSteps": row["total_steps"],
         "progress": _num(milestone_progress) if milestone_progress is not None else _num(row["progress"]),
@@ -300,7 +300,7 @@ async def get_or_create_matter_for_transfer(conn, transfer_id, transfer_referenc
             transfer_reference,
             "transfer",
             f"Transfer {transfer_reference}",
-            "draft",
+            "in_progress",
             transfer_id,
             accountable_institution_id,
         ],
@@ -452,10 +452,8 @@ async def transfer_stats():
     result = await query("""
       SELECT
         COUNT(*) as total,
-        COUNT(*) FILTER (WHERE status = 'completed') as completed,
-        COUNT(*) FILTER (WHERE status = 'in_progress') as in_progress,
-        COUNT(*) FILTER (WHERE status = 'draft') as draft,
-        COUNT(*) FILTER (WHERE status = 'cancelled') as cancelled
+        COUNT(*) FILTER (WHERE status = 'complete') as complete,
+        COUNT(*) FILTER (WHERE status = 'in_progress') as in_progress
       FROM transfers
     """)
     return {"success": True, "data": dict(result.rows[0])}
@@ -535,7 +533,7 @@ async def get_transfer(id: str):
         "data": {
             "id": transfer_row["id"],
             "transferId": transfer_row["transfer_id"],
-            "status": "completed" if transfer_row["milestone_completed"] else transfer_row["status"],
+            "status": transfer_row["status"],
             "currentStep": transfer_row["current_step"],
             "totalSteps": transfer_row["total_steps"],
             "progress": transfer_row["milestone_progress"] if transfer_row["milestone_progress"] is not None else transfer_row["progress"],
@@ -554,7 +552,6 @@ async def create_transfer(body: dict):
     property_data = body.get("property") or {}
     parties = _resolve_parties(body.get("parties"))
     financials = body.get("financials") or {}
-    status = body.get("status")
     current_step = body.get("currentStep")
     total_steps = body.get("totalSteps")
     progress = body.get("progress")
@@ -593,8 +590,9 @@ async def create_transfer(body: dict):
                 """INSERT INTO properties (
                   property_id, street_address, suburb, city, postal_code, province,
                   country, property_type, erf_number, title_deed_number, extent_sqm, description,
-                  legal_description, lot_number, year_built, square_footage, created_for_transfer_id
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+                  legal_description, lot_number, year_built, square_footage, created_for_transfer_id,
+                  accountable_institution_id
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
                 RETURNING id""",
                 [
                     property_id_value,
@@ -614,12 +612,13 @@ async def create_transfer(body: dict):
                     to_number(property_data.get("yearBuilt")),
                     to_number(property_data.get("squareFootage")),
                     transfer_id,
+                    legacy_ai,
                 ],
                 connection=conn,
             )
             property_id = property_result.rows[0]["id"]
 
-        status_value = status if is_valid_status(status) else "draft"
+        status_value = "in_progress"
         current_step_value = current_step if isinstance(current_step, (int, float)) else 1
         total_steps_value = total_steps if isinstance(total_steps, (int, float)) else 5
         progress_value = progress if isinstance(progress, (int, float)) else 0
@@ -702,6 +701,11 @@ async def create_transfer(body: dict):
             created_parties.append(map_party_row(party_result.rows[0]))
 
         matter_id = await get_or_create_matter_for_transfer(conn, transfer_uuid, transfer_id, legacy_ai)
+        await query(
+            "UPDATE transfers SET matter_id = $1 WHERE id = $2",
+            [matter_id, transfer_uuid],
+            connection=conn,
+        )
         await create_default_milestones(conn, matter_id)
         await seed_transfer_documents(conn, transfer_uuid)
 
@@ -781,7 +785,7 @@ async def update_transfer(id: str, body: dict):
             transfer_params.append(purchase_price)
             param_idx += 1
 
-        if is_valid_status(status):
+        if is_valid_transfer_status(status):
             transfer_updates.append(f"status = ${param_idx}")
             transfer_params.append(status)
             param_idx += 1
@@ -820,8 +824,9 @@ async def update_transfer(id: str, body: dict):
                     """INSERT INTO properties (
                       property_id, street_address, suburb, city, postal_code, province,
                       country, property_type, erf_number, title_deed_number, extent_sqm, description,
-                      legal_description, lot_number, year_built, square_footage
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+                      legal_description, lot_number, year_built, square_footage,
+                      accountable_institution_id
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
                     RETURNING id""",
                     [
                         property_id_value,
@@ -840,6 +845,7 @@ async def update_transfer(id: str, body: dict):
                         property_data.get("lotNumber") if is_non_empty_string(property_data.get("lotNumber")) else None,
                         to_number(property_data.get("yearBuilt")),
                         to_number(property_data.get("squareFootage")),
+                        transfer_ai,
                     ],
                     connection=conn,
                 )
@@ -1063,7 +1069,12 @@ async def update_transfer(id: str, body: dict):
                         connection=conn,
                     )
 
-        await get_or_create_matter_for_transfer(conn, transfer_uuid, transfer_reference, transfer_ai)
+        matter_id = await get_or_create_matter_for_transfer(conn, transfer_uuid, transfer_reference, transfer_ai)
+        await query(
+            "UPDATE transfers SET matter_id = $1 WHERE id = $2",
+            [matter_id, transfer_uuid],
+            connection=conn,
+        )
 
         final_transfer = await query(
             """SELECT t.*, p.id as property_row_id, p.property_id, p.erf_number, p.street_address, p.suburb, p.city,

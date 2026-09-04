@@ -1,3 +1,4 @@
+import asyncio
 import os
 import sys
 import time
@@ -8,11 +9,66 @@ import jwt as pyjwt
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Allow both absolute package imports (python_server.*) and top-level python_server modules (db, config, tests).
+_project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_python_server = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _project_root)
+sys.path.insert(0, _python_server)
 
 from auth.current_user import CurrentUser
+from db import query as db_query
 from main import app
 import tests.db_test_utils as db_test_utils
+
+
+def setUpModule():
+    """Seed 8 persisted DEEDLY Transfers for v1 auth/policy tests."""
+    if not os.getenv("TEST_DATABASE_URL"):
+        return
+
+    db_test_utils.require_test_database()
+
+    async def _seed():
+        from db import get_pool, close_pool
+        from config import load_settings
+
+        await close_pool()
+        pool = await get_pool(load_settings())
+        try:
+            async with pool.acquire() as conn:
+                await conn.execute('SET search_path = "transfers", public')
+                existing = await db_query(
+                    "SELECT COUNT(*) AS n FROM transfers",
+                    connection=conn,
+                )
+                if existing.rows[0]["n"] >= 8:
+                    return
+                for i in range(8):
+                    tx = uuid.uuid4()
+                    await db_query(
+                        """
+                        INSERT INTO transfers (id, transfer_id, property_address, purchase_price, status,
+                                               current_step, total_steps, progress, accountable_institution_id)
+                        VALUES ($1::uuid, $2, $3, $4, 'in_progress', 1, 5, 0, 5)
+                        """,
+                        [tx, f"TP-SEED-{i:03d}", f"{i} Seed Street, Cape Town", 1000000],
+                        connection=conn,
+                    )
+                    await db_query(
+                        """
+                        INSERT INTO transfer_financials (
+                            transfer_id, purchase_price, deposit_amount, loan_amount, interest_rate, loan_term_years,
+                            transfer_duty, conveyancing_fees, deeds_office_fees, vat, post_and_petties,
+                            clearance_certificate_fee, rates_clearance_amount, total_costs, net_proceeds
+                        ) VALUES ($1, $2, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+                        """,
+                        [tx, 1000000],
+                        connection=conn,
+                    )
+        finally:
+            await close_pool()
+
+    asyncio.run(_seed())
 
 
 TEST_JWT_SECRET = "test-jwt-secret-32-bytes-long!!"
@@ -421,8 +477,8 @@ class TransferPartiesPolicyTests(unittest.IsolatedAsyncioTestCase):
 
             await db_query(
                 """
-                INSERT INTO transfers (id, transfer_id, property_address, purchase_price, accountable_institution_id)
-                VALUES ($1::uuid, $2, $3, $4, $5)
+                INSERT INTO transfers (id, transfer_id, property_address, purchase_price, status, accountable_institution_id)
+                VALUES ($1::uuid, $2, $3, $4, 'in_progress', $5)
                 """,
                 [transfer_id, "TP-TEST", "Test address", 100000, 5],
                 connection=conn,
@@ -871,8 +927,8 @@ class TransferMilestonesPolicyTests(unittest.IsolatedAsyncioTestCase):
 
             await db_query(
                 """
-                INSERT INTO transfers (id, transfer_id, property_address, purchase_price, accountable_institution_id)
-                VALUES ($1::uuid, $2, $3, $4, $5)
+                INSERT INTO transfers (id, transfer_id, property_address, purchase_price, status, accountable_institution_id)
+                VALUES ($1::uuid, $2, $3, $4, 'in_progress', $5)
                 """,
                 [transfer_id, "TP-MS-EMPTY", "Milestone empty address", 100000, 5],
                 connection=conn,
@@ -883,7 +939,7 @@ class TransferMilestonesPolicyTests(unittest.IsolatedAsyncioTestCase):
                 INSERT INTO matters (id, reference_number, matter_type, title, status, source_record_id, accountable_institution_id)
                 VALUES ($1::uuid, $2, $3, $4, $5, $6, $7)
                 """,
-                [matter_id, "REF-EMPTY", "transfer", "Empty matter", "draft", transfer_id, 5],
+                [matter_id, "REF-EMPTY", "transfer", "Empty matter", "in_progress", transfer_id, 5],
                 connection=conn,
             )
 
@@ -923,8 +979,8 @@ class TransferMilestonesPolicyTests(unittest.IsolatedAsyncioTestCase):
 
             await db_query(
                 """
-                INSERT INTO transfers (id, transfer_id, property_address, purchase_price, accountable_institution_id)
-                VALUES ($1::uuid, $2, $3, $4, $5)
+                INSERT INTO transfers (id, transfer_id, property_address, purchase_price, status, accountable_institution_id)
+                VALUES ($1::uuid, $2, $3, $4, 'in_progress', $5)
                 """,
                 [transfer_id, "TP-MS-MAIN", "Main address", 100000, 5],
                 connection=conn,
@@ -932,8 +988,8 @@ class TransferMilestonesPolicyTests(unittest.IsolatedAsyncioTestCase):
 
             await db_query(
                 """
-                INSERT INTO transfers (id, transfer_id, property_address, purchase_price, accountable_institution_id)
-                VALUES ($1::uuid, $2, $3, $4, $5)
+                INSERT INTO transfers (id, transfer_id, property_address, purchase_price, status, accountable_institution_id)
+                VALUES ($1::uuid, $2, $3, $4, 'in_progress', $5)
                 """,
                 [other_transfer_id, "TP-MS-OTHER", "Other address", 100000, 5],
                 connection=conn,
@@ -944,7 +1000,7 @@ class TransferMilestonesPolicyTests(unittest.IsolatedAsyncioTestCase):
                 INSERT INTO matters (id, reference_number, matter_type, title, status, source_record_id, accountable_institution_id)
                 VALUES ($1::uuid, $2, $3, $4, $5, $6, $7)
                 """,
-                [matter_id, "REF-MAIN", "transfer", "Main matter", "draft", transfer_id, 5],
+                [matter_id, "REF-MAIN", "transfer", "Main matter", "in_progress", transfer_id, 5],
                 connection=conn,
             )
 
@@ -953,7 +1009,7 @@ class TransferMilestonesPolicyTests(unittest.IsolatedAsyncioTestCase):
                 INSERT INTO matters (id, reference_number, matter_type, title, status, source_record_id, accountable_institution_id)
                 VALUES ($1::uuid, $2, $3, $4, $5, $6, $7)
                 """,
-                [other_matter_id, "REF-OTHER", "transfer", "Other matter", "draft", other_transfer_id, 5],
+                [other_matter_id, "REF-OTHER", "transfer", "Other matter", "in_progress", other_transfer_id, 5],
                 connection=conn,
             )
 
@@ -1001,8 +1057,8 @@ class TransferMilestonesPolicyTests(unittest.IsolatedAsyncioTestCase):
 
             await db_query(
                 """
-                INSERT INTO transfers (id, transfer_id, property_address, purchase_price, accountable_institution_id)
-                VALUES ($1::uuid, $2, $3, $4, $5)
+                INSERT INTO transfers (id, transfer_id, property_address, purchase_price, status, accountable_institution_id)
+                VALUES ($1::uuid, $2, $3, $4, 'in_progress', $5)
                 """,
                 [transfer_id, "TP-MS-DUP", "Duplicate source address", 100000, 5],
                 connection=conn,
@@ -1014,7 +1070,7 @@ class TransferMilestonesPolicyTests(unittest.IsolatedAsyncioTestCase):
                 INSERT INTO matters (id, reference_number, matter_type, title, status, source_record_id, accountable_institution_id)
                 VALUES ($1::uuid, $2, $3, $4, $5, $6, $7)
                 """,
-                [local_matter_id, "REF-DUP-LOCAL", "transfer", "Local matter", "draft", transfer_id, 5],
+                [local_matter_id, "REF-DUP-LOCAL", "transfer", "Local matter", "in_progress", transfer_id, 5],
                 connection=conn,
             )
 
@@ -1024,7 +1080,7 @@ class TransferMilestonesPolicyTests(unittest.IsolatedAsyncioTestCase):
                 INSERT INTO matters (id, reference_number, matter_type, title, status, source_record_id, accountable_institution_id)
                 VALUES ($1::uuid, $2, $3, $4, $5, $6, $7)
                 """,
-                [foreign_matter_id, "REF-DUP-FOR", "transfer", "Foreign matter", "draft", transfer_id, 99],
+                [foreign_matter_id, "REF-DUP-FOR", "transfer", "Foreign matter", "in_progress", transfer_id, 99],
                 connection=conn,
             )
 
@@ -1085,8 +1141,8 @@ class TransferDocumentsPolicyTests(unittest.IsolatedAsyncioTestCase):
             transfer_id = str(uuid.uuid4())
             await db_query(
                 """
-                INSERT INTO transfers (id, transfer_id, property_address, purchase_price, accountable_institution_id)
-                VALUES ($1::uuid, $2, $3, $4, $5)
+                INSERT INTO transfers (id, transfer_id, property_address, purchase_price, status, accountable_institution_id)
+                VALUES ($1::uuid, $2, $3, $4, 'in_progress', $5)
                 """,
                 [transfer_id, "TP-DOC-TEST", "Document test address", 100000, 5],
                 connection=conn,
@@ -1141,8 +1197,8 @@ class TransferFinancialsPolicyTests(unittest.IsolatedAsyncioTestCase):
             transfer_id = str(uuid.uuid4())
             await db_query(
                 """
-                INSERT INTO transfers (id, transfer_id, property_address, purchase_price, accountable_institution_id)
-                VALUES ($1::uuid, $2, $3, $4, $5)
+                INSERT INTO transfers (id, transfer_id, property_address, purchase_price, status, accountable_institution_id)
+                VALUES ($1::uuid, $2, $3, $4, 'in_progress', $5)
                 """,
                 [transfer_id, "TP-FIN-TEST", "Financial test address", 100000, 5],
                 connection=conn,
@@ -1181,8 +1237,8 @@ class TransferFinancialsPolicyTests(unittest.IsolatedAsyncioTestCase):
             transfer_id = str(uuid.uuid4())
             await db_query(
                 """
-                INSERT INTO transfers (id, transfer_id, property_address, purchase_price, accountable_institution_id)
-                VALUES ($1::uuid, $2, $3, $4, $5)
+                INSERT INTO transfers (id, transfer_id, property_address, purchase_price, status, accountable_institution_id)
+                VALUES ($1::uuid, $2, $3, $4, 'in_progress', $5)
                 """,
                 [transfer_id, "TP-FIN-UNAUTH", "Unauth address", 100000, 5],
                 connection=conn,
@@ -1235,8 +1291,8 @@ class ClientPartiesPolicyTests(unittest.IsolatedAsyncioTestCase):
 
             await db_query(
                 """
-                INSERT INTO transfers (id, transfer_id, property_address, purchase_price, accountable_institution_id)
-                VALUES ($1::uuid, $2, $3, $4, $5)
+                INSERT INTO transfers (id, transfer_id, property_address, purchase_price, status, accountable_institution_id)
+                VALUES ($1::uuid, $2, $3, $4, 'in_progress', $5)
                 """,
                 [transfer_id, "TP-CLIENT-TEST", "Client test address", 100000, 5],
                 connection=conn,
@@ -1308,8 +1364,8 @@ class ClientPartiesPolicyTests(unittest.IsolatedAsyncioTestCase):
 
             await db_query(
                 """
-                INSERT INTO transfers (id, transfer_id, property_address, purchase_price, accountable_institution_id)
-                VALUES ($1::uuid, $2, $3, $4, $5)
+                INSERT INTO transfers (id, transfer_id, property_address, purchase_price, status, accountable_institution_id)
+                VALUES ($1::uuid, $2, $3, $4, 'in_progress', $5)
                 """,
                 [transfer_id, "TP-CLIENT-NO-MATCH", "No match address", 100000, 5],
                 connection=conn,

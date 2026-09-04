@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from clients.entities import EntitiesClient
 from config import load_settings
 from db import close_pool, get_pool
 from routers import address, clauses, document_catalogue, documents, generated_documents, health, milestones, template_data_fields, transfers, users
@@ -17,8 +18,21 @@ from routers.v1 import transfers as v1_transfers
 async def lifespan(app: FastAPI):
     app.state.settings = load_settings()
     await get_pool(app.state.settings)
-    yield
-    await close_pool()
+    # One Legitify client for the process. httpx pools connections inside the
+    # client, so a per-request client would create a new pool on every call.
+    # Routes reach it through clients.dependencies.get_entities_client.
+    app.state.entities_client = EntitiesClient(app.state.settings)
+    try:
+        yield
+    finally:
+        # Clear the reference before closing so an in-flight request cannot pick
+        # up a half-closed client; it gets a 503 from the dependency instead.
+        entities_client, app.state.entities_client = app.state.entities_client, None
+        try:
+            await entities_client.close()
+        finally:
+            # The database pool must be released even if the HTTP client fails to close.
+            await close_pool()
 
 
 app = FastAPI(

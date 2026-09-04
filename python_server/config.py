@@ -1,5 +1,5 @@
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -27,8 +27,8 @@ class Settings:
     db_schema: str
     db_ssl: bool
     node_env: str
-    secret_key: str
-    entities_service_url: str
+    secret_key: str = field(repr=False)
+    legitify_api_base_url: str
     redis_url: str
     audit_database_url: Optional[str]
     jwt_secret: Optional[str] = None
@@ -90,7 +90,7 @@ def load_settings() -> Settings:
         node_env=node_env,
         secret_key=secret_key,
         jwt_secret=raw_jwt_secret,
-        entities_service_url=os.getenv("ENTITIES_SERVICE_URL", "http://localhost:8003"),
+        legitify_api_base_url=os.getenv("LEGITIFY_API_BASE_URL", "http://localhost:8000"),
         redis_url=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
         audit_database_url=os.getenv("AUDIT_DATABASE_URL"),
         legacy_accountable_institution_id=legacy_ai,

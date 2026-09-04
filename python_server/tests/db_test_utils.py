@@ -36,7 +36,10 @@ def require_test_database() -> str:
 
     # Set the single production-resolved key that Settings.load() looks for first.
     os.environ["ConveyHub_Transfers_POSTGRES_URL"] = url
-    os.environ.setdefault("DB_SCHEMA", "transfers")
+    # Force the test schema to lower-case "transfers" so a .env with a
+    # different casing (e.g. "Transfers") or a prior test patch cannot leave
+    # the connection looking at a schema that does not exist.
+    os.environ["DB_SCHEMA"] = "transfers"
     return url
 
 

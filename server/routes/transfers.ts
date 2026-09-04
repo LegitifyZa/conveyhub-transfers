@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express'
 import { query, withTransaction } from '../db'
 import { asyncHandler } from '../utils/asyncHandler'
-import { isNonEmptyString, isSaPostalCode, isValidStatus, toNumber } from '../utils/validate'
+import { isNonEmptyString, isSaPostalCode, isValidTransferStatus, toNumber } from '../utils/validate'
 import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
@@ -56,7 +56,7 @@ function mapTransferRow(row: any) {
     transferId: row.transfer_id,
     propertyAddress: row.property_address,
     purchasePrice: row.purchase_price != null ? Number(row.purchase_price) : undefined,
-    status: milestoneCompleted ? 'completed' : row.status,
+    status: row.status,
     currentStep: row.current_step,
     totalSteps: row.total_steps,
     progress: milestoneProgress != null ? milestoneProgress : (row.progress != null ? Number(row.progress) : undefined),
@@ -278,7 +278,7 @@ async function getOrCreateMatterForTransfer(
       transferReference,
       'transfer',
       `Transfer ${transferReference}`,
-      'draft',
+      'in_progress',
       transferId,
       accountableInstitutionId,
     ]
@@ -412,10 +412,8 @@ router.get(
     const result = await query(`
       SELECT
         COUNT(*) as total,
-        COUNT(*) FILTER (WHERE status = 'completed') as completed,
-        COUNT(*) FILTER (WHERE status = 'in_progress') as in_progress,
-        COUNT(*) FILTER (WHERE status = 'draft') as draft,
-        COUNT(*) FILTER (WHERE status = 'cancelled') as cancelled
+        COUNT(*) FILTER (WHERE status = 'complete') as complete,
+        COUNT(*) FILTER (WHERE status = 'in_progress') as in_progress
       FROM transfers
     `)
     res.json({ success: true, data: result.rows[0] })
@@ -498,7 +496,7 @@ router.get(
       data: {
         id: transferRow.id,
         transferId: transferRow.transfer_id,
-        status: milestoneCompleted ? 'completed' : transferRow.status,
+        status: transferRow.status,
         currentStep: transferRow.current_step,
         totalSteps: transferRow.total_steps,
         progress: milestoneProgress != null ? milestoneProgress : (transferRow.progress != null ? Number(transferRow.progress) : undefined),
@@ -561,8 +559,9 @@ router.post(
           `INSERT INTO properties (
             property_id, street_address, suburb, city, postal_code, province,
             country, property_type, erf_number, title_deed_number, extent_sqm, description,
-            legal_description, lot_number, year_built, square_footage, created_for_transfer_id
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+            legal_description, lot_number, year_built, square_footage, created_for_transfer_id,
+            accountable_institution_id
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
           RETURNING id`,
           [
             propertyIdValue,
@@ -582,12 +581,13 @@ router.post(
             toNumber(property.yearBuilt),
             toNumber(property.squareFootage),
             transferId,
+            legacyAI,
           ]
         )
         propertyId = propertyResult.rows[0].id
       }
 
-      const statusValue = isValidStatus(status) ? status : 'draft'
+      const statusValue = 'in_progress'
       const currentStepValue = typeof currentStep === 'number' ? currentStep : 1
       const totalStepsValue = typeof totalSteps === 'number' ? totalSteps : 5
       const progressValue = typeof progress === 'number' ? progress : 0
@@ -668,6 +668,10 @@ router.post(
       }
 
       const matterId = await getOrCreateMatterForTransfer(client, transferUuid, transferId, legacyAI)
+      await client.query(
+        'UPDATE transfers SET matter_id = $1 WHERE id = $2',
+        [matterId, transferUuid]
+      )
       await createDefaultMilestones(client, matterId)
       await seedTransferDocuments(client, transferUuid)
 
@@ -741,7 +745,7 @@ router.put(
         paramIdx += 1
       }
 
-      if (isValidStatus(status)) {
+      if (isValidTransferStatus(status)) {
         transferUpdates.push(`status = $${paramIdx}`)
         transferParams.push(status)
         paramIdx += 1
@@ -784,8 +788,9 @@ router.put(
             `INSERT INTO properties (
               property_id, street_address, suburb, city, postal_code, province,
               country, property_type, erf_number, title_deed_number, extent_sqm, description,
-              legal_description, lot_number, year_built, square_footage
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+              legal_description, lot_number, year_built, square_footage,
+              accountable_institution_id
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
             RETURNING id`,
             [
               propertyIdValue,
@@ -804,6 +809,7 @@ router.put(
               isNonEmptyString(property.lotNumber) ? property.lotNumber : null,
               toNumber(property.yearBuilt),
               toNumber(property.squareFootage),
+              transferAi,
             ]
           )
           propertyId = insertResult.rows[0].id
@@ -1010,7 +1016,11 @@ router.put(
         }
       }
 
-      await getOrCreateMatterForTransfer(client, transferUuid, transferReference, transferAi)
+      const matterId = await getOrCreateMatterForTransfer(client, transferUuid, transferReference, transferAi)
+      await client.query(
+        'UPDATE transfers SET matter_id = $1 WHERE id = $2',
+        [matterId, transferUuid]
+      )
 
       const finalTransfer = await client.query(
         `SELECT t.*, p.id as property_row_id, p.property_id, p.erf_number, p.street_address, p.suburb, p.city,

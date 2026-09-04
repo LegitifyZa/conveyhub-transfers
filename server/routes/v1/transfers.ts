@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express'
-import { query } from '../../db'
+import { query, withTransaction } from '../../db'
 import { requireJwt } from '../../auth/requireJwt'
 import { asyncHandler } from '../../utils/asyncHandler'
 import { isCrossTenant } from '../../auth/policy'
@@ -500,6 +500,384 @@ router.get(
     res.json({
       message: 'OK',
       data: mapTransferRow(transfer),
+    })
+  })
+)
+
+function mapEstateContext(row: any) {
+  return {
+    id: row.id,
+    transferId: row.transfer_id,
+    deceasedGoldenRecordId: row.deceased_golden_record_id,
+    mastersEstateReference: row.masters_estate_reference,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }
+}
+
+function mapPartyRelationship(row: any) {
+  return {
+    id: row.id,
+    transferPartyId: row.transfer_party_id,
+    relationshipCode: row.relationship_code,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }
+}
+
+function mapRepresentativeAssignment(row: any) {
+  let target = null
+  if (row.represented_estate_context_id != null) {
+    target = { type: 'estate_context', id: row.represented_estate_context_id }
+  } else if (row.represented_transfer_party_id != null) {
+    target = { type: 'transfer_party', id: row.represented_transfer_party_id }
+  }
+
+  return {
+    id: row.id,
+    transferId: row.transfer_id,
+    personGoldenRecordId: row.person_golden_record_id,
+    capacity: row.capacity,
+    representedTarget: target,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }
+}
+
+async function authorizeTransferParty(user: CurrentUser, transferId: string, transferPartyId: string): Promise<boolean> {
+  const crossTenant = isCrossTenant(user)
+  const sql = `
+    SELECT 1
+    FROM transfer_parties
+    WHERE id = $1
+      AND transfer_id = $2
+      ${crossTenant ? '' : 'AND accountable_institution_id = $3'}
+  `
+  const params = crossTenant ? [transferPartyId, transferId] : [transferPartyId, transferId, user.accountable_institution_id]
+  const result = await query(sql, params)
+  return result.rows.length > 0
+}
+
+router.get(
+  '/:id/estate-contexts',
+  requireJwt,
+  asyncHandler(async (req: Request, res: Response) => {
+    const user = req.currentUser!
+    const { id } = req.params
+
+    if (user.isClient) {
+      res.status(404).json({ success: false, error: 'Not found' })
+      return
+    }
+
+    if (!user.hasAbility('transfers:read')) {
+      res.status(403).json({ success: false, error: 'Forbidden' })
+      return
+    }
+
+    const transfer = await authorizeTransfer(user, id)
+    if (!transfer) {
+      res.status(404).json({ success: false, error: 'Not found' })
+      return
+    }
+
+    const crossTenant = isCrossTenant(user)
+    const tenantPredicate = crossTenant ? '' : 'AND accountable_institution_id = $2'
+    const tenantParams = crossTenant ? [id] : [id, user.accountable_institution_id]
+
+    const listQuery = `
+      SELECT id, transfer_id, deceased_golden_record_id, masters_estate_reference,
+             created_at, updated_at
+      FROM matter_estate_contexts
+      WHERE transfer_id = $1
+      ${tenantPredicate}
+      ORDER BY created_at
+    `
+    const result = await query(listQuery, tenantParams)
+
+    res.json({
+      message: 'OK',
+      data: { estateContexts: result.rows.map(mapEstateContext) },
+    })
+  })
+)
+
+router.get(
+  '/:id/estate-contexts/:estate_context_id',
+  requireJwt,
+  asyncHandler(async (req: Request, res: Response) => {
+    const user = req.currentUser!
+    const { id, estate_context_id } = req.params
+
+    if (user.isClient) {
+      res.status(404).json({ success: false, error: 'Not found' })
+      return
+    }
+
+    if (!user.hasAbility('transfers:read')) {
+      res.status(403).json({ success: false, error: 'Forbidden' })
+      return
+    }
+
+    if (!isUuid(estate_context_id)) {
+      res.status(404).json({ success: false, error: 'Not found' })
+      return
+    }
+
+    const transfer = await authorizeTransfer(user, id)
+    if (!transfer) {
+      res.status(404).json({ success: false, error: 'Not found' })
+      return
+    }
+
+    const crossTenant = isCrossTenant(user)
+    const tenantPredicate = crossTenant ? '' : 'AND accountable_institution_id = $3'
+    const tenantParams = crossTenant ? [estate_context_id, id] : [estate_context_id, id, user.accountable_institution_id]
+
+    const detailQuery = `
+      SELECT id, transfer_id, deceased_golden_record_id, masters_estate_reference,
+             created_at, updated_at
+      FROM matter_estate_contexts
+      WHERE id = $1
+        AND transfer_id = $2
+      ${tenantPredicate}
+    `
+    const result = await query(detailQuery, tenantParams)
+
+    if (result.rows.length === 0) {
+      res.status(404).json({ success: false, error: 'Not found' })
+      return
+    }
+
+    res.json({
+      message: 'OK',
+      data: mapEstateContext(result.rows[0]),
+    })
+  })
+)
+
+router.get(
+  '/:id/parties/:transfer_party_id/relationships',
+  requireJwt,
+  asyncHandler(async (req: Request, res: Response) => {
+    const user = req.currentUser!
+    const { id, transfer_party_id } = req.params
+
+    if (user.isClient) {
+      res.status(404).json({ success: false, error: 'Not found' })
+      return
+    }
+
+    if (!user.hasAbility('transfers:read')) {
+      res.status(403).json({ success: false, error: 'Forbidden' })
+      return
+    }
+
+    const transfer = await authorizeTransfer(user, id)
+    if (!transfer) {
+      res.status(404).json({ success: false, error: 'Not found' })
+      return
+    }
+
+    const partyBelongs = await authorizeTransferParty(user, id, transfer_party_id)
+    if (!partyBelongs) {
+      res.status(404).json({ success: false, error: 'Not found' })
+      return
+    }
+
+    const listQuery = `
+      SELECT id, transfer_party_id, relationship_code, created_at, updated_at
+      FROM party_relationship_assignments
+      WHERE transfer_party_id = $1
+      ORDER BY created_at
+    `
+    const result = await query(listQuery, [transfer_party_id])
+
+    res.json({
+      message: 'OK',
+      data: { relationships: result.rows.map(mapPartyRelationship) },
+    })
+  })
+)
+
+router.post(
+  '/:id/parties/:transfer_party_id/relationships',
+  requireJwt,
+  asyncHandler(async (req: Request, res: Response) => {
+    const user = req.currentUser!
+    const { id, transfer_party_id } = req.params
+    const body = req.body || {}
+
+    if (!user.hasAbility('transfers:write')) {
+      res.status(403).json({ success: false, error: 'Forbidden' })
+      return
+    }
+
+    if (Object.keys(body).length !== 1 || !('relationship_code' in body)) {
+      res.status(422).json({ success: false, error: 'Only relationship_code is accepted' })
+      return
+    }
+
+    const relationship_code = body.relationship_code
+    if (typeof relationship_code !== 'string' || !relationship_code.trim()) {
+      res.status(422).json({ success: false, error: 'relationship_code is required' })
+      return
+    }
+
+    const transfer = await authorizeTransfer(user, id)
+    if (!transfer) {
+      res.status(404).json({ success: false, error: 'Not found' })
+      return
+    }
+
+    const partyBelongs = await authorizeTransferParty(user, id, transfer_party_id)
+    if (!partyBelongs) {
+      res.status(404).json({ success: false, error: 'Not found' })
+      return
+    }
+
+    const definitionResult = await query(
+      'SELECT code FROM party_relationship_definitions WHERE code = $1 AND is_active = TRUE',
+      [relationship_code]
+    )
+    if (definitionResult.rows.length === 0) {
+      res.status(400).json({ success: false, error: 'Unknown or inactive relationship code' })
+      return
+    }
+
+    const doInsert = async (client: any) => {
+      const insertResult = await client.query(
+        `
+          INSERT INTO party_relationship_assignments (
+            transfer_party_id,
+            relationship_code,
+            created_by_user_id,
+            updated_by_user_id
+          )
+          VALUES ($1, $2, $3, $4)
+          RETURNING id, transfer_party_id, relationship_code, created_at, updated_at
+        `,
+        [transfer_party_id, relationship_code, user.user_id, user.user_id]
+      )
+      return insertResult.rows[0]
+    }
+
+    try {
+      const created = await withTransaction(doInsert)
+      res.status(201).json({
+        message: 'Created',
+        data: mapPartyRelationship(created),
+      })
+    } catch (err: any) {
+      if (err.code === '23505') {
+        res.status(409).json({ success: false, error: 'Relationship already assigned' })
+        return
+      }
+      if (err.code === '23503') {
+        res.status(400).json({ success: false, error: 'Unknown or inactive relationship code' })
+        return
+      }
+      throw err
+    }
+  })
+)
+
+router.get(
+  '/:id/representative-assignments',
+  requireJwt,
+  asyncHandler(async (req: Request, res: Response) => {
+    const user = req.currentUser!
+    const { id } = req.params
+
+    if (user.isClient) {
+      res.status(404).json({ success: false, error: 'Not found' })
+      return
+    }
+
+    if (!user.hasAbility('transfers:read')) {
+      res.status(403).json({ success: false, error: 'Forbidden' })
+      return
+    }
+
+    const transfer = await authorizeTransfer(user, id)
+    if (!transfer) {
+      res.status(404).json({ success: false, error: 'Not found' })
+      return
+    }
+
+    const crossTenant = isCrossTenant(user)
+    const tenantPredicate = crossTenant ? '' : 'AND accountable_institution_id = $2'
+    const tenantParams = crossTenant ? [id] : [id, user.accountable_institution_id]
+
+    const listQuery = `
+      SELECT id, transfer_id, person_golden_record_id, capacity,
+             represented_transfer_party_id, represented_estate_context_id,
+             created_at, updated_at
+      FROM representative_assignments
+      WHERE transfer_id = $1
+      ${tenantPredicate}
+      ORDER BY created_at
+    `
+    const result = await query(listQuery, tenantParams)
+
+    res.json({
+      message: 'OK',
+      data: { representativeAssignments: result.rows.map(mapRepresentativeAssignment) },
+    })
+  })
+)
+
+router.get(
+  '/:id/representative-assignments/:assignment_id',
+  requireJwt,
+  asyncHandler(async (req: Request, res: Response) => {
+    const user = req.currentUser!
+    const { id, assignment_id } = req.params
+
+    if (user.isClient) {
+      res.status(404).json({ success: false, error: 'Not found' })
+      return
+    }
+
+    if (!user.hasAbility('transfers:read')) {
+      res.status(403).json({ success: false, error: 'Forbidden' })
+      return
+    }
+
+    if (!isUuid(assignment_id)) {
+      res.status(404).json({ success: false, error: 'Not found' })
+      return
+    }
+
+    const transfer = await authorizeTransfer(user, id)
+    if (!transfer) {
+      res.status(404).json({ success: false, error: 'Not found' })
+      return
+    }
+
+    const crossTenant = isCrossTenant(user)
+    const tenantPredicate = crossTenant ? '' : 'AND accountable_institution_id = $3'
+    const tenantParams = crossTenant ? [assignment_id, id] : [assignment_id, id, user.accountable_institution_id]
+
+    const detailQuery = `
+      SELECT id, transfer_id, person_golden_record_id, capacity,
+             represented_transfer_party_id, represented_estate_context_id,
+             created_at, updated_at
+      FROM representative_assignments
+      WHERE id = $1
+        AND transfer_id = $2
+      ${tenantPredicate}
+    `
+    const result = await query(detailQuery, tenantParams)
+
+    if (result.rows.length === 0) {
+      res.status(404).json({ success: false, error: 'Not found' })
+      return
+    }
+
+    res.json({
+      message: 'OK',
+      data: mapRepresentativeAssignment(result.rows[0]),
     })
   })
 )
