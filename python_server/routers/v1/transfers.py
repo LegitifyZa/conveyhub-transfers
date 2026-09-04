@@ -1,5 +1,6 @@
 import re
 import uuid
+from typing import AbstractSet, Any, Optional
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -8,7 +9,14 @@ from fastapi.responses import JSONResponse
 from auth.current_user import CurrentUser
 from auth.dependencies import require_jwt
 from auth.policy import is_cross_tenant
+from clients.dependencies import get_entities_client
 from db import query, with_transaction
+from services.golden_record_visibility import GoldenRecordVisibilityError
+from services.matter_specialist_service import (
+    MatterSpecialistServiceError,
+    create_estate_context,
+    create_representative_assignment,
+)
 
 router = APIRouter()
 
@@ -522,6 +530,67 @@ def _map_representative_assignment(row: dict) -> dict:
     }
 
 
+def _require_body_keys(body: Any, *, required: AbstractSet[str], optional: AbstractSet[str] = frozenset()) -> None:
+    """Reject anything not explicitly allowed.
+
+    An allow-list is the only safe shape here: it rejects protected fields such
+    as accountable_institution_id, assignment_state, estate_reference and the
+    actor id columns without having to enumerate them.
+    """
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="A JSON object body is required")
+
+    keys = set(body.keys())
+    missing = required - keys
+    if missing:
+        raise HTTPException(
+            status_code=422, detail=f"Missing required field(s): {', '.join(sorted(missing))}"
+        )
+
+    unexpected = keys - required - set(optional)
+    if unexpected:
+        raise HTTPException(
+            status_code=422, detail=f"Unexpected field(s): {', '.join(sorted(unexpected))}"
+        )
+
+
+def _require_uuid_field(body: dict, field: str) -> str:
+    value = body.get(field)
+    if not isinstance(value, str) or not _is_valid_uuid(value):
+        raise HTTPException(status_code=422, detail=f"{field} must be a UUID")
+    return value
+
+
+def _optional_uuid_field(body: dict, field: str) -> Optional[str]:
+    value = body.get(field)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not _is_valid_uuid(value):
+        raise HTTPException(status_code=422, detail=f"{field} must be a UUID")
+    return value
+
+
+def _visibility_error_response(exc: GoldenRecordVisibilityError) -> JSONResponse:
+    """Map a visibility outcome to the API, preserving the 400/503 distinction.
+
+    Rejections (unknown Golden Record, not a client of this institution, wrong
+    entity type, unusable record) are 400 with one tenant-safe message, so the
+    caller cannot tell them apart. Upstream faults are 503 and are never
+    reported as a tenant decision.
+    """
+    return JSONResponse(
+        status_code=exc.http_status,
+        content={"success": False, "error": exc.public_message},
+    )
+
+
+def _specialist_error_response(exc: MatterSpecialistServiceError) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"success": False, "error": exc.public_message},
+    )
+
+
 async def _authorize_transfer_party(
     user: CurrentUser,
     transfer_id: str,
@@ -809,3 +878,92 @@ async def get_transfer_representative_assignment(
         raise HTTPException(status_code=404, detail="Not found")
 
     return {"message": "OK", "data": _map_representative_assignment(result.rows[0])}
+
+
+@router.post("/{id}/estate-contexts", status_code=201)
+async def post_transfer_estate_context(
+    id: str,
+    body: dict,
+    user: CurrentUser = Depends(require_jwt),
+    entities_client=Depends(get_entities_client),
+):
+    """Create an estate context for a transfer, deriving tenant from the transfer."""
+
+    if not user.has_ability("transfers:write"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    transfer = await _authorize_transfer(user, id)
+    if not transfer:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    _require_body_keys(
+        body,
+        required={"deceased_golden_record_id"},
+        optional={"masters_estate_reference"},
+    )
+
+    try:
+        row = await create_estate_context(
+            transfer_id=uuid.UUID(id),
+            deceased_golden_record_id=_require_uuid_field(
+                body, "deceased_golden_record_id"
+            ),
+            masters_estate_reference=body.get("masters_estate_reference"),
+            entities_client=entities_client,
+            actor_user_id=user.user_id,
+        )
+    except GoldenRecordVisibilityError as exc:
+        return _visibility_error_response(exc)
+    except MatterSpecialistServiceError as exc:
+        return _specialist_error_response(exc)
+
+    return {"message": "Created", "data": _map_estate_context(row)}
+
+
+@router.post("/{id}/representative-assignments", status_code=201)
+async def post_transfer_representative_assignment(
+    id: str,
+    body: dict,
+    user: CurrentUser = Depends(require_jwt),
+    entities_client=Depends(get_entities_client),
+):
+    """Assign a person, in a capacity, to represent an estate context or a trust party."""
+
+    if not user.has_ability("transfers:write"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    transfer = await _authorize_transfer(user, id)
+    if not transfer:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    _require_body_keys(
+        body,
+        required={"person_golden_record_id", "capacity"},
+        optional={"represented_estate_context_id", "represented_transfer_party_id"},
+    )
+
+    try:
+        row = await create_representative_assignment(
+            transfer_id=uuid.UUID(id),
+            person_golden_record_id=_require_uuid_field(body, "person_golden_record_id"),
+            capacity=body["capacity"],
+            represented_estate_context_id=_optional_uuid_field(
+                body, "represented_estate_context_id"
+            ),
+            represented_transfer_party_id=_optional_uuid_field(
+                body, "represented_transfer_party_id"
+            ),
+            entities_client=entities_client,
+            actor_user_id=user.user_id,
+        )
+    except GoldenRecordVisibilityError as exc:
+        return _visibility_error_response(exc)
+    except MatterSpecialistServiceError as exc:
+        return _specialist_error_response(exc)
+    except asyncpg.exceptions.UniqueViolationError:
+        return JSONResponse(
+            status_code=409,
+            content={"success": False, "error": "Representative assignment already exists"},
+        )
+
+    return {"message": "Created", "data": _map_representative_assignment(row)}

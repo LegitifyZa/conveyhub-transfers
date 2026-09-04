@@ -4,6 +4,7 @@ import sys
 import time
 import unittest
 import uuid
+from unittest.mock import AsyncMock
 
 import jwt as pyjwt
 from fastapi.testclient import TestClient
@@ -28,6 +29,7 @@ _RELATIONSHIP_CODE_B = "test_spc_co_heir"
 
 _TEST_TRANSFER_ID = None
 _TEST_PARTY_ID = None
+_TEST_TRUST_PARTY_ID = None
 _TEST_ESTATE_CONTEXT_ID = None
 _TEST_REPRESENTATIVE_ASSIGNMENT_ID = None
 
@@ -87,6 +89,18 @@ async def _seed():
                 connection=conn,
             )
 
+            trust_party_id = uuid.uuid4()
+            trust_golden = uuid.uuid4()
+            await query(
+                """
+                    INSERT INTO transfer_parties (id, transfer_id, golden_record_id, entity_type,
+                                                  role, accountable_institution_id, cached_name)
+                    VALUES ($1::uuid, $2::uuid, $3::uuid, 'trust', 'transferee', 5, 'Test Trust')
+                """,
+                [trust_party_id, transfer_id, trust_golden],
+                connection=conn,
+            )
+
             estate_id = uuid.uuid4()
             dec_golden = uuid.uuid4()
             await query(
@@ -139,7 +153,7 @@ async def _seed():
             )
 
             rep_id = representative_result.rows[0]["id"]
-            return str(transfer_id), str(party_id), str(estate_id), str(rep_id)
+            return str(transfer_id), str(party_id), str(trust_party_id), str(estate_id), str(rep_id)
     finally:
         await close_pool()
 
@@ -154,8 +168,8 @@ def setUpModule():
 
     asyncio.run(_pre_clean())
 
-    global _TEST_TRANSFER_ID, _TEST_PARTY_ID, _TEST_ESTATE_CONTEXT_ID, _TEST_REPRESENTATIVE_ASSIGNMENT_ID
-    _TEST_TRANSFER_ID, _TEST_PARTY_ID, _TEST_ESTATE_CONTEXT_ID, _TEST_REPRESENTATIVE_ASSIGNMENT_ID = asyncio.run(_seed())
+    global _TEST_TRANSFER_ID, _TEST_PARTY_ID, _TEST_TRUST_PARTY_ID, _TEST_ESTATE_CONTEXT_ID, _TEST_REPRESENTATIVE_ASSIGNMENT_ID
+    _TEST_TRANSFER_ID, _TEST_PARTY_ID, _TEST_TRUST_PARTY_ID, _TEST_ESTATE_CONTEXT_ID, _TEST_REPRESENTATIVE_ASSIGNMENT_ID = asyncio.run(_seed())
 
 
 async def _cleanup():
@@ -227,9 +241,46 @@ def tearDownModule():
 class V1SpecialistContextTests(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(app).__enter__()
+        self._original_entities_client = getattr(app.state, "entities_client", None)
+        app.state.entities_client = self._make_entities_client()
 
     def tearDown(self):
+        app.state.entities_client = self._original_entities_client
         self.client.__exit__(None, None, None)
+
+    def _make_entities_client(self, *, visible: bool = True):
+        """Return an AsyncMock that simulates the Entities service for visibility checks."""
+        client = AsyncMock()
+        if visible:
+            def make_linkage(gr_id, ai):
+                return {
+                    "id": 1,
+                    "golden_record_id": gr_id,
+                    "accountable_institution_id": ai,
+                }
+
+            def make_entity(gr_id):
+                return {
+                    "id": gr_id,
+                    "entity_type": "person",
+                    "first_name": "Dean",
+                    "last_name": "Smith",
+                    "id_number": "9001010001081",
+                    "email": "dean@example.com",
+                    "is_active": True,
+                }
+
+            async def get_client_by_golden_record(gr_id, ai):
+                return make_linkage(gr_id, ai)
+
+            async def get_entity(gr_id, entity_type):
+                return make_entity(gr_id)
+
+            client.get_client_by_golden_record.side_effect = get_client_by_golden_record
+            client.get_entity.side_effect = get_entity
+        else:
+            client.get_client_by_golden_record.return_value = None
+        return client
 
     def test_estate_contexts_list_for_authorised_tenant(self):
         r = self.client.get(
@@ -346,3 +397,114 @@ class V1SpecialistContextTests(unittest.TestCase):
             headers=_auth_header(3, 999),
         )
         self.assertEqual(r.status_code, 404)
+
+    def test_estate_contexts_create_201(self):
+        r = self.client.post(
+            f"/api/v1/transfers/{_TEST_TRANSFER_ID}/estate-contexts",
+            json={
+                "deceased_golden_record_id": str(uuid.uuid4()),
+                "masters_estate_reference": "ME-NEW-001",
+            },
+            headers=_auth_header(3, 5, ["api", "transfers:write"]),
+        )
+        self.assertEqual(r.status_code, 201)
+        data = r.json()["data"]
+        self.assertEqual(data["transferId"], _TEST_TRANSFER_ID)
+        self.assertEqual(data["mastersEstateReference"], "ME-NEW-001")
+        self.assertIn("id", data)
+        self.assertIn("deceasedGoldenRecordId", data)
+
+    def test_estate_contexts_create_not_visible_400(self):
+        app.state.entities_client = self._make_entities_client(visible=False)
+        r = self.client.post(
+            f"/api/v1/transfers/{_TEST_TRANSFER_ID}/estate-contexts",
+            json={"deceased_golden_record_id": str(uuid.uuid4())},
+            headers=_auth_header(3, 5, ["api", "transfers:write"]),
+        )
+        self.assertEqual(r.status_code, 400)
+        self.assertFalse(r.json()["success"])
+        self.assertEqual(r.json()["error"], "Unknown or inaccessible Golden Record")
+
+    def test_representative_assignments_create_201(self):
+        r = self.client.post(
+            f"/api/v1/transfers/{_TEST_TRANSFER_ID}/representative-assignments",
+            json={
+                "person_golden_record_id": str(uuid.uuid4()),
+                "capacity": "executor",
+                "represented_estate_context_id": _TEST_ESTATE_CONTEXT_ID,
+            },
+            headers=_auth_header(3, 5, ["api", "transfers:write"]),
+        )
+        self.assertEqual(r.status_code, 201)
+        data = r.json()["data"]
+        self.assertEqual(data["transferId"], _TEST_TRANSFER_ID)
+        self.assertEqual(data["capacity"], "executor")
+        self.assertEqual(data["representedTarget"]["type"], "estate_context")
+        self.assertEqual(data["representedTarget"]["id"], _TEST_ESTATE_CONTEXT_ID)
+
+    def test_representative_assignments_create_trust_party_201(self):
+        r = self.client.post(
+            f"/api/v1/transfers/{_TEST_TRANSFER_ID}/representative-assignments",
+            json={
+                "person_golden_record_id": str(uuid.uuid4()),
+                "capacity": "trustee",
+                "represented_transfer_party_id": _TEST_TRUST_PARTY_ID,
+            },
+            headers=_auth_header(3, 5, ["api", "transfers:write"]),
+        )
+        self.assertEqual(r.status_code, 201)
+        data = r.json()["data"]
+        self.assertEqual(data["capacity"], "trustee")
+        self.assertEqual(data["representedTarget"]["type"], "transfer_party")
+        self.assertEqual(data["representedTarget"]["id"], _TEST_TRUST_PARTY_ID)
+
+    def test_representative_assignments_create_non_trust_party_400(self):
+        r = self.client.post(
+            f"/api/v1/transfers/{_TEST_TRANSFER_ID}/representative-assignments",
+            json={
+                "person_golden_record_id": str(uuid.uuid4()),
+                "capacity": "trustee",
+                "represented_transfer_party_id": _TEST_PARTY_ID,
+            },
+            headers=_auth_header(3, 5, ["api", "transfers:write"]),
+        )
+        self.assertEqual(r.status_code, 400)
+        self.assertFalse(r.json()["success"])
+        self.assertEqual(r.json()["error"], "A represented transfer party must be a trust")
+
+    def test_representative_assignments_create_target_not_found_404(self):
+        r = self.client.post(
+            f"/api/v1/transfers/{_TEST_TRANSFER_ID}/representative-assignments",
+            json={
+                "person_golden_record_id": str(uuid.uuid4()),
+                "capacity": "executor",
+                "represented_estate_context_id": str(uuid.uuid4()),
+            },
+            headers=_auth_header(3, 5, ["api", "transfers:write"]),
+        )
+        self.assertEqual(r.status_code, 404)
+        self.assertFalse(r.json()["success"])
+        self.assertEqual(r.json()["error"], "Represented estate context not found")
+
+    def test_representative_assignments_create_duplicate_409(self):
+        person_id = str(uuid.uuid4())
+        payload = {
+            "person_golden_record_id": person_id,
+            "capacity": "executor",
+            "represented_estate_context_id": _TEST_ESTATE_CONTEXT_ID,
+        }
+        r1 = self.client.post(
+            f"/api/v1/transfers/{_TEST_TRANSFER_ID}/representative-assignments",
+            json=payload,
+            headers=_auth_header(3, 5, ["api", "transfers:write"]),
+        )
+        self.assertEqual(r1.status_code, 201)
+
+        r2 = self.client.post(
+            f"/api/v1/transfers/{_TEST_TRANSFER_ID}/representative-assignments",
+            json=payload,
+            headers=_auth_header(3, 5, ["api", "transfers:write"]),
+        )
+        self.assertEqual(r2.status_code, 409)
+        self.assertFalse(r2.json()["success"])
+        self.assertEqual(r2.json()["error"], "Representative assignment already exists")
