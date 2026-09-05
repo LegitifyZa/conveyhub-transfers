@@ -1,6 +1,8 @@
 import React, { useState } from 'react'
 import { Search, User, AlertCircle, CheckCircle } from 'lucide-react'
 import { Modal, Button, Input } from './ui'
+import { GoldenRecordsApi } from '@/lib/api/goldenRecordsApi'
+import type { GoldenRecordCandidate } from '@/lib/api/goldenRecordsApi'
 
 interface GoldenRecord {
   id: string
@@ -20,98 +22,83 @@ interface GoldenRecordsSearchProps {
   onRecordFound: (record: GoldenRecord) => void
 }
 
+function candidateToGoldenRecord(candidate: GoldenRecordCandidate): GoldenRecord {
+  return {
+    id: candidate.goldenRecordId,
+    name: candidate.name ?? '',
+    idNumber: candidate.idNumber ?? '',
+    email: candidate.email ?? undefined
+  }
+}
+
 export const GoldenRecordsSearch: React.FC<GoldenRecordsSearchProps> = ({
   isOpen,
   onClose,
   onRecordFound
 }) => {
   const [searchTerm, setSearchTerm] = useState('')
-  const [searchType, setSearchType] = useState<'id' | 'name' | 'registration'>('id')
+  const [searchType, setSearchType] = useState<'id' | 'passport'>('id')
+  const [passportCountry, setPassportCountry] = useState('ZA')
   const [isSearching, setIsSearching] = useState(false)
   const [searchResult, setSearchResult] = useState<GoldenRecord | null>(null)
+  const [candidates, setCandidates] = useState<GoldenRecordCandidate[]>([])
   const [error, setError] = useState<string | null>(null)
-
-  // Mock golden records data
-  const mockGoldenRecords: GoldenRecord[] = [
-    {
-      id: '1',
-      name: 'John Smith',
-      idNumber: '8001015009087',
-      registrationNumber: '2020/123456',
-      email: 'john.smith@email.com',
-      phone: '+27 12 345 6789',
-      address: '123 Main Street, Cape Town, 8001',
-      propertyAddress: '123 Main Street, Cape Town, 8001',
-      propertyValue: 2500000
-    },
-    {
-      id: '2',
-      name: 'Sarah Johnson',
-      idNumber: '8502155030081',
-      registrationNumber: '2019/789012',
-      email: 'sarah.j@email.com',
-      phone: '+27 11 234 5678',
-      address: '456 Oak Avenue, Johannesburg, 2001',
-      propertyAddress: '456 Oak Avenue, Johannesburg, 2001',
-      propertyValue: 1800000
-    },
-    {
-      id: '3',
-      name: 'Michael Brown',
-      idNumber: '9003304809154',
-      registrationNumber: '2021/345678',
-      email: 'michael.b@email.com',
-      phone: '+27 21 345 6789',
-      address: '789 Pine Road, Durban, 4001',
-      propertyAddress: '789 Pine Road, Durban, 4001',
-      propertyValue: 3200000
-    }
-  ]
 
   const handleSearch = async () => {
     if (!searchTerm.trim()) {
       setError('Please enter a search term')
       return
     }
+    if (searchType === 'passport' && !passportCountry.trim()) {
+      setError('Please enter a passport country')
+      return
+    }
 
     setIsSearching(true)
     setError(null)
     setSearchResult(null)
+    setCandidates([])
 
     try {
-      // Simulate API call to golden records
-      await new Promise(resolve => setTimeout(resolve, 1500))
+      const result = await GoldenRecordsApi.search(
+        searchType === 'id'
+          ? { entity_type: 'person', id_number: searchTerm.trim() }
+          : {
+              entity_type: 'person',
+              passport_number: searchTerm.trim(),
+              passport_country: passportCountry.trim().toUpperCase()
+            }
+      )
 
-      let foundRecord: GoldenRecord | null = null
-
-      switch (searchType) {
-        case 'id':
-          foundRecord = mockGoldenRecords.find(record => 
-            record.idNumber.toLowerCase().includes(searchTerm.toLowerCase())
-          ) || null
+      switch (result.status) {
+        case 'matched':
+          if (result.record) {
+            setSearchResult(candidateToGoldenRecord(result.record))
+          } else {
+            setError('No record found in golden records')
+          }
           break
-        case 'name':
-          foundRecord = mockGoldenRecords.find(record => 
-            record.name.toLowerCase().includes(searchTerm.toLowerCase())
-          ) || null
+        case 'ambiguous':
+          setCandidates(result.candidates ?? [])
           break
-        case 'registration':
-          foundRecord = mockGoldenRecords.find(record => 
-            record.registrationNumber?.toLowerCase().includes(searchTerm.toLowerCase())
-          ) || null
+        case 'unsupported':
+          setError(result.detail ?? 'This search type is not yet available')
           break
-      }
-
-      if (foundRecord) {
-        setSearchResult(foundRecord)
-      } else {
-        setError('No record found in golden records')
+        case 'not_found':
+        default:
+          setError('No record found in golden records')
+          break
       }
     } catch (err) {
       setError('Failed to search golden records')
     } finally {
       setIsSearching(false)
     }
+  }
+
+  const handleSelectCandidate = (candidate: GoldenRecordCandidate) => {
+    setSearchResult(candidateToGoldenRecord(candidate))
+    setCandidates([])
   }
 
   const handleUseRecord = () => {
@@ -165,36 +152,40 @@ export const GoldenRecordsSearch: React.FC<GoldenRecordsSearchProps> = ({
                 ID Number
               </button>
               <button
-                onClick={() => setSearchType('name')}
+                onClick={() => setSearchType('passport')}
                 className={`px-4 py-2 rounded-lg font-medium transition-colors ${
-                  searchType === 'name'
+                  searchType === 'passport'
                     ? 'bg-blue-600 text-white'
                     : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
                 }`}
               >
-                Name
-              </button>
-              <button
-                onClick={() => setSearchType('registration')}
-                className={`px-4 py-2 rounded-lg font-medium transition-colors ${
-                  searchType === 'registration'
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                }`}
-              >
-                Registration Number
+                Passport
               </button>
             </div>
           </div>
+
+          {/* Passport Country */}
+          {searchType === 'passport' && (
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Passport Country
+              </label>
+              <Input
+                type="text"
+                placeholder="e.g. ZA"
+                value={passportCountry}
+                onChange={(e) => setPassportCountry(e.target.value)}
+                className="w-full"
+              />
+            </div>
+          )}
 
           {/* Search Input */}
           <div className="mb-6">
             <Input
               type="text"
               placeholder={
-                searchType === 'id' ? 'Enter ID number...' :
-                searchType === 'name' ? 'Enter full name...' :
-                'Enter registration number...'
+                searchType === 'id' ? 'Enter ID number...' : 'Enter passport number...'
               }
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
@@ -221,6 +212,35 @@ export const GoldenRecordsSearch: React.FC<GoldenRecordsSearchProps> = ({
               <div className="flex items-center space-x-2">
                 <AlertCircle className="w-5 h-5 text-red-600" />
                 <span className="text-red-800">{error}</span>
+              </div>
+            </div>
+          )}
+
+          {candidates.length > 0 && (
+            <div className="mb-6 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+              <div className="flex items-start space-x-3 mb-4">
+                <AlertCircle className="w-5 h-5 text-yellow-600 mt-0.5" />
+                <div>
+                  <h3 className="font-medium text-yellow-800">Multiple records found</h3>
+                  <p className="text-sm text-yellow-700">Select the correct record to continue.</p>
+                </div>
+              </div>
+              <div className="space-y-2">
+                {candidates.map((candidate) => (
+                  <button
+                    key={candidate.goldenRecordId}
+                    onClick={() => handleSelectCandidate(candidate)}
+                    className="w-full text-left p-3 bg-white border border-gray-200 rounded-lg hover:border-blue-400 transition-colors"
+                  >
+                    <div className="font-medium text-gray-900">
+                      {candidate.name ?? 'Unnamed record'}
+                    </div>
+                    <div className="text-sm text-gray-600">
+                      {candidate.idNumber ?? 'No ID number'}
+                      {candidate.email ? ` · ${candidate.email}` : ''}
+                    </div>
+                  </button>
+                ))}
               </div>
             </div>
           )}

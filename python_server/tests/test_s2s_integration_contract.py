@@ -8,6 +8,7 @@ visibility endpoints only; every other path returns a marker 404 so an
 unexpected call fails the test loudly.
 """
 
+import json
 import os
 import sys
 import unittest
@@ -28,6 +29,7 @@ from services.golden_record_visibility import (
     GoldenRecordVisibilityError,
     resolve_visible_golden_record,
 )
+from services.golden_record_search import GoldenRecordSearchService, SearchStatus
 from services.transfer_party_service import link_party_to_transfer
 
 SERVICE_KEY = "platform-service-key-do-not-leak"
@@ -100,6 +102,8 @@ class FakeLegitifyGateway:
         entities=None,
         linkage_status=None,
         entity_status=None,
+        search_results=None,
+        search_status=None,
         require_service_key: bool = True,
     ) -> None:
         # {(golden_record_id, accountable_institution_id): client row}
@@ -151,6 +155,8 @@ class FakeLegitifyGateway:
         )
         self.linkage_status = linkage_status
         self.entity_status = entity_status
+        self.search_results = search_results
+        self.search_status = search_status
         self.require_service_key = require_service_key
         self.requests: list[httpx.Request] = []
 
@@ -169,7 +175,20 @@ class FakeLegitifyGateway:
 
     @property
     def entity_requests(self) -> list:
-        return [r for r in self.requests if r.url.path.startswith(ENTITIES_PREFIX)]
+        return [
+            r
+            for r in self.requests
+            if r.url.path.startswith(ENTITIES_PREFIX)
+            and r.url.path != "/api/v1/entities/search"
+        ]
+
+    @property
+    def search_requests(self) -> list:
+        return [r for r in self.requests if r.url.path == "/api/v1/entities/search"]
+
+    @property
+    def search_payloads(self) -> list:
+        return [json.loads(r.content) for r in self.search_requests]
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
@@ -178,11 +197,21 @@ class FakeLegitifyGateway:
             return httpx.Response(401, json={"message": "Unauthorised", "data": None})
 
         path = request.url.path
+        if path == "/api/v1/entities/search":
+            return self._handle_search(request)
         if path.startswith(LINKAGE_PREFIX):
             return self._handle_linkage(request, path[len(LINKAGE_PREFIX) :])
         if path.startswith(ENTITIES_PREFIX):
             return self._handle_entity(request, path[len(ENTITIES_PREFIX) :])
         return httpx.Response(404, json={"message": "UNSANCTIONED PATH", "data": None})
+
+    def _handle_search(self, request: httpx.Request) -> httpx.Response:
+        if self.search_status is not None:
+            return httpx.Response(self.search_status, json={"message": "error", "data": None})
+        if request.method != "POST":
+            return httpx.Response(405, json={"message": "Method not allowed", "data": None})
+        results = self.search_results if self.search_results is not None else []
+        return httpx.Response(200, json={"message": "OK", "data": {"results": results}})
 
     def _handle_linkage(self, request: httpx.Request, golden_record_id: str) -> httpx.Response:
         if self.linkage_status is not None:
@@ -685,6 +714,115 @@ class EndToEndPartyLinkTests(unittest.IsolatedAsyncioTestCase):
         mock_tx.assert_not_awaited()
         mock_insert.assert_not_awaited()
         self.assertEqual(gateway.entity_requests, [])
+
+
+class SearchWorkflowContractTests(unittest.IsolatedAsyncioTestCase):
+    """The DEEDLY search workflow through the real client and gateway.
+
+    Asserts the mandated order — POST /api/v1/entities/search first, then the
+    scoped linkage lookup per candidate, then the typed entity fetch — and that
+    no upstream candidate leaves the service without passing visibility.
+    """
+
+    async def _search(self, gateway: FakeLegitifyGateway, **overrides):
+        kwargs = {
+            "entity_type": "person",
+            "accountable_institution_id": AI_OWN,
+            "id_number": "9001010001081",
+        }
+        kwargs.update(overrides)
+        client = _client(gateway)
+        try:
+            return await GoldenRecordSearchService(client).search(**kwargs)
+        finally:
+            await client.close()
+
+    async def test_search_then_linkage_then_entity_in_that_order(self):
+        gateway = FakeLegitifyGateway(search_results=[{"id": str(GR_PERSON)}])
+
+        result = await self._search(gateway)
+
+        self.assertEqual(result.status, SearchStatus.MATCHED)
+        self.assertEqual(result.record.golden_record_id, str(GR_PERSON))
+        self.assertEqual(result.record.name, "Dean Smith")
+
+        self.assertEqual(
+            gateway.paths,
+            [
+                "/api/v1/entities/search",
+                f"{LINKAGE_PREFIX}{GR_PERSON}",
+                f"{ENTITIES_PREFIX}{GR_PERSON}",
+            ],
+        )
+        # The contracted person payload was sent, and the linkage call was scoped.
+        self.assertEqual(
+            gateway.search_payloads,
+            [{"entity_type": "person", "id_number": "9001010001081"}],
+        )
+        self.assertEqual(
+            gateway.linkage_requests[0].url.params.get("accountable_institution_id"),
+            str(AI_OWN),
+        )
+        self.assertEqual(
+            gateway.entity_requests[0].url.params.get("entity_type"), "person"
+        )
+        # Every request carried the service key and no tenant headers.
+        for request in gateway.requests:
+            self.assertEqual(request.headers.get("X-Service-Key"), SERVICE_KEY)
+            header_names = {name.lower() for name in request.headers.keys()}
+            self.assertNotIn("x-accountable-institution-id", header_names)
+
+    async def test_other_institutions_candidate_is_filtered_before_entity_fetch(self):
+        gateway = FakeLegitifyGateway(
+            search_results=[{"id": str(GR_PERSON)}, {"id": str(GR_OTHER_AI)}]
+        )
+
+        result = await self._search(gateway)
+
+        # The foreign-AI candidate exists upstream but is not visible here.
+        self.assertEqual(result.status, SearchStatus.MATCHED)
+        self.assertEqual(result.record.golden_record_id, str(GR_PERSON))
+
+        # Its linkage was checked (and rejected); its entity was never fetched.
+        linkage_ids = [
+            r.url.path[len(LINKAGE_PREFIX) :] for r in gateway.linkage_requests
+        ]
+        self.assertEqual(set(linkage_ids), {str(GR_PERSON), str(GR_OTHER_AI)})
+        entity_ids = [r.url.path[len(ENTITIES_PREFIX) :] for r in gateway.entity_requests]
+        self.assertEqual(entity_ids, [str(GR_PERSON)])
+
+    async def test_multiple_visible_candidates_return_ambiguous(self):
+        gateway = FakeLegitifyGateway(
+            search_results=[{"id": str(GR_PERSON)}, {"id": str(GR_SHARED)}]
+        )
+
+        result = await self._search(gateway)
+
+        self.assertEqual(result.status, SearchStatus.AMBIGUOUS)
+        self.assertEqual(
+            {c.golden_record_id for c in result.candidates},
+            {str(GR_PERSON), str(GR_SHARED)},
+        )
+
+    async def test_search_outage_is_a_fault_not_a_not_found(self):
+        gateway = FakeLegitifyGateway(search_status=503)
+
+        with _no_sleep():
+            with self.assertRaises(EntityServiceError):
+                await self._search(gateway)
+
+        self.assertEqual(len(gateway.search_requests), READ_MAX_ATTEMPTS)
+        self.assertEqual(gateway.linkage_requests, [])
+        self.assertEqual(gateway.entity_requests, [])
+
+    async def test_unsupported_entity_types_never_reach_the_gateway(self):
+        for entity_type in ("company", "trust"):
+            with self.subTest(entity_type=entity_type):
+                gateway = FakeLegitifyGateway()
+                result = await self._search(gateway, entity_type=entity_type)
+
+                self.assertEqual(result.status, SearchStatus.UNSUPPORTED)
+                self.assertEqual(gateway.requests, [])
 
 
 if __name__ == "__main__":

@@ -234,7 +234,7 @@ const StepParties: React.FC = () => {
       }
       dispatch({ type: 'ADD_PARTY', payload: newParty })
     } else if (goldenRecordSearch) {
-      const { searchType, searchTerm } = goldenRecordSearch as { searchType: 'id' | 'name' | 'registration'; searchTerm: string }
+      const { searchType, searchTerm } = goldenRecordSearch as { searchType: 'id' | 'name' | 'registration' | 'passport'; searchTerm: string }
       const newParty: Party = {
         id: Date.now().toString(),
         type: 'buyer',
