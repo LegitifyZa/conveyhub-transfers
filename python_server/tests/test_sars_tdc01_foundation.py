@@ -4,7 +4,9 @@ Tests cover calculation, payload building, readiness, lifecycle, XML boundary
 and the FastAPI routes. They require ``TEST_DATABASE_URL``.
 """
 
+import os
 import unittest
+import unittest.mock
 import uuid
 
 import tests.db_test_utils as db_test_utils
@@ -252,12 +254,16 @@ class SarsXmlBoundaryTests(unittest.TestCase):
         self.assertIn("<sars-transfer-duty-return", xml)
         self.assertIn("12000", xml)
 
-    def test_validator_reports_missing_xsd(self):
-        xml = "<root/>"
-        result = validate(xml)
+    def test_validator_reports_missing_configured_xsd(self):
+        with unittest.mock.patch.dict(
+            os.environ,
+            {"SARS_TDC01_XSD_PATH": "C:\\path\\does\\not\\exist\\SARSTransferDutyReturnV1.17.xsd"},
+            clear=False,
+        ):
+            result = validate("<root/>")
         self.assertFalse(result.valid)
         self.assertFalse(result.schema_loaded)
-        self.assertIn("SARS_TDC01_XSD_PATH", result.errors[0])
+        self.assertIn("Configured XSD file not found", result.errors[0])
 
 
 

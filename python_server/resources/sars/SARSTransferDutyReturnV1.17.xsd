@@ -1,0 +1,669 @@
+<?xml version="1.0" encoding="iso-8859-1"?>
+<schema
+	targetNamespace="http://www.sars.gov.za/enterpriseMessagingModel/TransferDutyReturn/xml/schemas/version/1.13"
+	elementFormDefault="qualified" xmlns="http://www.w3.org/2001/XMLSchema" xmlns:bt="http://www.sars.gov.za/enterpriseMessagingModel/GMD/BaseTypes/xml/schemas/version/54.2" xmlns:ent="http://www.sars.gov.za/enterpriseMessagingModel/GMD/Enterprise/xml/schemas/version/54.2" xmlns:tdRet="http://www.sars.gov.za/enterpriseMessagingModel/TransferDutyReturn/xml/schemas/version/1.13">
+	<import schemaLocation="SARSGMD_BaseTypesV54.2.1.xsd"
+		namespace="http://www.sars.gov.za/enterpriseMessagingModel/GMD/BaseTypes/xml/schemas/version/54.2"></import>
+	<import schemaLocation="SARSGMD_EnterpriseV54.2.1.xsd"
+		namespace="http://www.sars.gov.za/enterpriseMessagingModel/GMD/Enterprise/xml/schemas/version/54.2"></import>
+
+	<annotation>
+
+		<documentation>
+			2011-03-06, Nisch, Made NatureOfPerson,SellingPriceAmt and Conveyancer Name and Firm mandatory
+			Changed VatRateInd from indicator to enumeration with values "Z" and "S"		
+		</documentation>
+
+
+		<documentation>
+			2011-11-28, Nisch, changed YesNoBlankIndType to locally defined YesNoIndType
+			Changed Wizard Information structure and TransferDuty element to be mandatory and to remove the NoOfPropertyDetails element
+		</documentation>
+		
+		<documentation>
+			2011-11-24, Edwin, referenced version 54.2 of basetypes
+			and 54.2 of enterprise
+		</documentation>
+
+		<documentation>
+			2011-11-01, Nisch, Changed restriction on ExemptType to
+			35 characters, TransactionType to be 100 characters and
+			NatureOfPerson to use the EntityType from the basetypes
+		</documentation>
+
+		<documentation>
+			2011-09-26, Nisch, Split up elements for sellers/buyers
+			from shareholders in wizard. Extended length of property description.
+			Reduced length of exemption type. Added residential property company.
+			Changed order of Dominium and Fideicommissum fields in wizard
+		</documentation>
+
+		<documentation>
+			2011-09-20, Nisch
+			Referenced version 54.1 of basetypes
+			and enterprise
+			Added Firm to ConveyancerDetails
+			Replaced Seller and
+			Conveyancer valuations with LocalValuationAmt, BondAmt,
+			PropertyValueAmt, MonthlyRentalAmt, LandValueAmt,
+			OccupationalRentAmt,ImprovementValueAmt, SellingPriceAmt,
+			TotalFairAmt, OtherConsiderationAmt, TotalConsiderationAmt
+			Corrected
+			spelling of EXEMPTION_CERTIFICATE enumeration in AssessmentType
+
+		</documentation>
+		
+		
+		<documentation>
+			2018-03-14 Matimu Rikhotso
+			DeedsNo set to maximum of 30 and Mandatory
+			In the Wizard TransferDutyType changed to optional
+			
+		</documentation>
+		<documentation>
+			2018-04-09 Matimu Rikhotso, Dirk Grobler.
+			DeedsNo set to minimum length of 0 and made optional.
+			Referenced SARSGMD_BaseTypesV54.2.1.xsd.
+			Referenced SARSGMD_EnterpriseV54.2.1.xsd.
+			
+		</documentation>
+			<documentation>
+			2025-09-02 Commet Madupela, Added new fields on PropertyRepresentativeStructure
+			Removed New Shareholders and existing Shareholders structures
+		</documentation>
+	</annotation>
+
+	<complexType name="ConveyancerDetailsStructure">
+		<all>
+			<element name="ID" maxOccurs="1" minOccurs="0">
+				<simpleType>
+					<restriction base="string">
+						<maxLength value="10"></maxLength>
+					</restriction>
+				</simpleType>
+			</element>
+			<element name="Firm" type="bt:OrganisationNameType"
+				maxOccurs="1" minOccurs="1"></element>
+			<element name="Name" type="bt:OrganisationNameType"
+				maxOccurs="1" minOccurs="1"></element>
+			<element name="TelNo" type="bt:TelFaxNoType" maxOccurs="1"
+				minOccurs="0"></element>
+			<element name="Email" type="bt:EmailType" maxOccurs="1"
+				minOccurs="0"></element>
+		</all>
+	</complexType>
+	<complexType name="TransferDutyReturnStructure">
+		<all>
+			<element name="SourceSoftware" type="tdRet:SourceSoftwareStructure"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="TDReferenceNo" type="bt:TaxRefNoType"
+				maxOccurs="1" minOccurs="1"></element>
+			<element name="RelatedExchangeDocumentNo" type="bt:TaxRefNoType"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="FinancialAccount" type="bt:AccountNoType"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="TotalFairValueAmt" type="bt:FinancialAmtDecimalType"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="AnyOtherConsiderationAmt" type="bt:FinancialAmtDecimalType"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="TransactionType" type="tdRet:DescriptionTextType"
+				maxOccurs="1" minOccurs="1"></element>
+			<element name="SellersDetails" maxOccurs="1" minOccurs="0">
+				<complexType>
+					<sequence>
+						<element name="SellerDetails" type="tdRet:PropertyRepresentativeStructure"
+							maxOccurs="30" minOccurs="1"></element>
+					</sequence>
+				</complexType>
+			</element>
+			<element name="PurchasersDetails" maxOccurs="1" minOccurs="0">
+				<complexType>
+					<sequence>
+						<element name="PurchaserDetails" type="tdRet:PropertyRepresentativeStructure"
+							maxOccurs="30" minOccurs="1"></element>
+					</sequence>
+				</complexType>
+			</element>
+			<element name="ConveyancerDetails" type="tdRet:ConveyancerDetailsStructure"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="EstateAgenciesDetails" maxOccurs="1"
+				minOccurs="0">
+				<complexType>
+					<sequence>
+						<element name="EstateAgencyDetails" type="tdRet:EstateAgencyDetailsStructure"
+							maxOccurs="10" minOccurs="1"></element>
+					</sequence>
+				</complexType>
+			</element>
+			<element name="PropertyDetails" type="tdRet:PropertyDetailsStructure"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="DutyInterestPayable" type="tdRet:DutyInterestPayableStructure"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="VATPayable" type="tdRet:VATPayableStructure"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="TransactionStatus" type="tdRet:TransactionStatusStructure"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="PropertyDescs" maxOccurs="1" minOccurs="0">
+				<complexType>
+					<sequence>
+						<element name="PropertyDesc" maxOccurs="500" minOccurs="1">
+							<simpleType>
+								<restriction base="string">
+									<maxLength value="530"></maxLength>
+								</restriction>
+							</simpleType>
+						</element>
+					</sequence>
+				</complexType>
+			</element>
+			<element name="VDPApplication" type="tdRet:VDPApplicationStructure"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="SellersDeclarations" maxOccurs="1" minOccurs="0">
+				<complexType>
+					<sequence>
+						<element name="SellerDeclaration" type="tdRet:SimpleDeclarationStructure"
+							maxOccurs="30" minOccurs="1"></element>
+					</sequence>
+				</complexType>
+			</element>
+			<element name="PurchasersDeclarations" maxOccurs="1"
+				minOccurs="0">
+				<complexType>
+					<sequence>
+						<element name="PurchaserDeclaration" type="tdRet:SimpleDeclarationStructure"
+							maxOccurs="30" minOccurs="1"></element>
+					</sequence>
+				</complexType>
+			</element>
+			<element name="ConveyancerDeclaration" type="tdRet:SimpleDeclarationStructure"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="AssessmentType" maxOccurs="1" minOccurs="0">
+				<simpleType>
+					<restriction base="string">
+						<enumeration value="CONFIRMATION"></enumeration>
+						<enumeration value="ASSESSMENT_NOTICE"></enumeration>
+						<enumeration value="EXEMPTION_CERTIFICATE"></enumeration>
+						<enumeration value="RECEIPT"></enumeration>
+						<enumeration value="PAYMENT_RD"></enumeration>
+					</restriction>
+				</simpleType>
+			</element>
+			<element name="ReceiptDetails" type="tdRet:ReceiptStructure"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="AdditionalConveyancerDeclaration" type="tdRet:SimpleDeclarationStructure"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="RevisionNo" type="bt:VersionNoType" maxOccurs="1"
+				minOccurs="0"></element>
+			<element name="FormInfo" type="ent:FormInfoStructure"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="SecurityInfo" type="ent:SecurityInfoStructure"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="Metadata" type="bt:MetadataStructure"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="FormWizard" type="tdRet:FormWizardStructure"
+				maxOccurs="1" minOccurs="1"></element>
+		</all>
+	</complexType>
+	<complexType name="PropertyRepresentativeStructure">
+		<all>
+			<element name="NatureOfPerson" type="bt:EntityTypeType"
+				maxOccurs="1" minOccurs="1">
+			</element>
+			<element name="DeedsNo" type="tdRet:DeedsNoType"
+				maxOccurs="1" minOccurs="0">
+			</element>
+			<element name="Fullname" type="bt:FullNamesType"
+				maxOccurs="1" minOccurs="0">
+			</element>
+			<element name="Surname" type="bt:SurnameType" maxOccurs="1"
+				minOccurs="0">
+			</element>
+			<element name="Initials" type="bt:InitialsType"
+				maxOccurs="1" minOccurs="0">
+			</element>
+			<element name="IDNo" type="bt:IDNoType" maxOccurs="1"
+				minOccurs="0">
+			</element>
+			<element name="BirthDate" type="date" maxOccurs="1"
+				minOccurs="0">
+			</element>
+			<element name="PassportCountryCode" type="bt:CountryType"
+				maxOccurs="1" minOccurs="0">
+			</element>
+			<element name="CellNo" type="bt:CellNoType" maxOccurs="1"
+				minOccurs="0">
+			</element>
+			<element name="PassportNo" type="bt:PassportNoType"
+				maxOccurs="1" minOccurs="0">
+			</element>
+			<element name="IncomeTaxRefNo" type="bt:TaxRefNoType"
+				maxOccurs="1" minOccurs="0">
+			</element>
+			<element name="NotRegForIncomeTaxInd"
+				type="tdRet:YesNoIndType" maxOccurs="1" minOccurs="0">
+			</element>
+			<element name="NotRegisteredReason" type="tdRet:NotRegisteredReasonType" maxOccurs="1" minOccurs="0"></element>
+			<element name="AnnualIncomeAmt"
+				type="bt:FinancialAmtDecimalType" maxOccurs="1" minOccurs="0">
+			</element>
+			<element name="CountryOfResidence" maxOccurs="1"
+				minOccurs="0">
+				<simpleType>
+					<restriction base="string">
+						<maxLength value="36"></maxLength>
+					</restriction>
+				</simpleType>
+			</element>
+			<element name="VATRefNo" type="bt:TaxRefNoType"
+				maxOccurs="1" minOccurs="0">
+			</element>
+			<element name="RegistrationNo"
+				type="bt:OrganisationRegNoType" maxOccurs="1" minOccurs="0">
+			</element>
+			<element name="NaturalPersonInd" type="tdRet:YesNoIndType"
+				maxOccurs="1" minOccurs="0">
+			</element>
+			<element name="FixedPeriodYears" maxOccurs="1"
+				minOccurs="0">
+				<simpleType>
+					<restriction base="int">
+						<maxInclusive value="999"></maxInclusive>
+						<minInclusive value="0"></minInclusive>
+					</restriction>
+				</simpleType>
+			</element>
+			<element name="ConnectedPersonInd" type="tdRet:YesNoIndType"
+				maxOccurs="1" minOccurs="0">
+			</element>
+			<element name="SharePercentage" type="bt:PercentageType"
+				maxOccurs="1" minOccurs="0">
+			</element>
+			<element name="Gender" type="tdRet:GenderType" maxOccurs="1"
+				minOccurs="0">
+			</element>
+			<element name="MaritalStatus" type="tdRet:MaritalStatusType"
+				maxOccurs="1" minOccurs="0">
+			</element>
+			<element name="MaritalNotes" maxOccurs="1" minOccurs="0">
+				<simpleType>
+					<restriction base="string">
+						<maxLength value="33"></maxLength>
+					</restriction>
+				</simpleType>
+			</element>
+			<element name="SpouseInitials" type="bt:InitialsType"
+				maxOccurs="1" minOccurs="0">
+			</element>
+			<element name="SpouseIDNo" type="bt:IDNoType" maxOccurs="1"
+				minOccurs="0">
+			</element>
+			<element name="SpousePassportNo" type="bt:PassportNoType"
+				maxOccurs="1" minOccurs="0">
+			</element>
+			<element name="SpousePassportCountryCode"
+				type="bt:CountryType" maxOccurs="1" minOccurs="0">
+			</element>
+			<element name="AcquisitionDate" type="date" maxOccurs="1"
+				minOccurs="0">
+			</element>
+			<element name="PurchasePriceAmt"
+				type="bt:FinancialAmtDecimalType" maxOccurs="1" minOccurs="0">
+			</element>
+			<element name="EffectiveDate" type="date" maxOccurs="1"
+				minOccurs="0">
+			</element>
+		</all>
+	</complexType>
+	<complexType name="SARSRefNoStructure">
+		<all></all>
+	</complexType>
+	<element name="TransferDutyReturn" type="tdRet:TransferDutyReturnStructure"></element>
+	<complexType name="PropertyDetailsStructure">
+		<all>
+			<element name="VATPurposeInd" type="tdRet:YesNoIndType"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="InputTaxClaimedInd" type="tdRet:YesNoIndType"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="TransactionDate" type="date" maxOccurs="1"
+				minOccurs="0"></element>
+			<element name="PropertyImprovementInd" type="bt:IndicatorType"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="BoughtByInd" type="bt:IndicatorType"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="PropertyUsageInd" type="bt:IndicatorType"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="OtherPropertyUsageDesc" maxOccurs="1"
+				minOccurs="0">
+				<simpleType>
+					<restriction base="string">
+						<maxLength value="14"></maxLength>
+					</restriction>
+				</simpleType>
+			</element>
+			<element name="PropertyNatureInd" type="bt:IndicatorType"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="OtherPropertyNatureDesc" maxOccurs="1"
+				minOccurs="0">
+				<simpleType>
+					<restriction base="string">
+						<maxLength value="35"></maxLength>
+					</restriction>
+				</simpleType>
+			</element>
+			<element name="IncomeTaxActApplicableInd" type="tdRet:YesNoIndType"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="LocalValuationAmt" type="bt:FinancialAmtDecimalType"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="BondAmt" type="bt:FinancialAmtDecimalType"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="PropertyValueAmt" type="bt:FinancialAmtDecimalType"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="MonthlyRentalAmt" type="bt:FinancialAmtDecimalType"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="LandValueAmt" type="bt:FinancialAmtDecimalType"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="OccupationalRentAmt" type="bt:FinancialAmtDecimalType"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="ImprovementValueAmt" type="bt:FinancialAmtDecimalType"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="SellingPriceAmt" type="bt:FinancialAmtDecimalType"
+				maxOccurs="1" minOccurs="1"></element>
+			<element name="TotalFairAmt" type="bt:FinancialAmtDecimalType"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="OtherConsiderationAmt" type="bt:FinancialAmtDecimalType"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="TotalConsiderationAmt" type="bt:FinancialAmtDecimalType"
+				maxOccurs="1" minOccurs="0"></element>
+		</all>
+	</complexType>
+	<complexType name="ReceiptStructure">
+		<all>
+			<element name="ReceiptNo" maxOccurs="1" minOccurs="0">
+				<simpleType>
+					<restriction base="string">
+						<pattern value="\d{9}"></pattern>
+					</restriction>
+				</simpleType>
+			</element>
+			<element name="ReceiptAmt" type="bt:FinancialAmtDecimalType"
+				maxOccurs="1" minOccurs="1"></element>
+		</all>
+	</complexType>
+	<complexType name="DutyInterestPayableStructure">
+		<all>
+			<element name="PayableAmt" type="bt:FinancialAmtDecimalType"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="NaturalPersons" maxOccurs="1" minOccurs="0">
+				<complexType>
+					<sequence>
+						<element name="NaturalPerson" type="tdRet:DutyInterestPayableItemStructure"
+							maxOccurs="8" minOccurs="1"></element>
+					</sequence>
+				</complexType>
+			</element>
+			<element name="NonNaturalPersons" maxOccurs="1" minOccurs="0">
+				<complexType>
+					<sequence>
+						<element name="NonNaturalPerson" type="tdRet:DutyInterestPayableItemStructure"
+							maxOccurs="8" minOccurs="1"></element>
+					</sequence>
+				</complexType>
+			</element>
+			<element name="SubTotalPayableAmt" type="bt:FinancialAmtDecimalType"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="PenaltyInterestAmt" type="bt:FinancialAmtDecimalType"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="TotalPayableAmt" type="bt:FinancialAmtDecimalType"
+				maxOccurs="1" minOccurs="0"></element>
+		</all>
+	</complexType>
+	<complexType name="DutyInterestPayableItemStructure">
+		<all>
+			<element name="Percentage" type="bt:PercentageType"
+				maxOccurs="1" minOccurs="1"></element>
+			<element name="PayableAmt" type="bt:FinancialAmtDecimalType"
+				maxOccurs="1" minOccurs="1"></element>
+			<element name="CalculatedPayableAmt" type="bt:FinancialAmtDecimalType"
+				maxOccurs="1" minOccurs="1"></element>
+		</all>
+	</complexType>
+	<complexType name="VATPayableStructure">
+		<all>
+			<element name="VATRateInd" maxOccurs="1" minOccurs="0">
+				<simpleType>
+					<restriction base="string">
+						<enumeration value="Z"></enumeration>
+						<enumeration value="S"></enumeration>
+					</restriction>
+				</simpleType>
+			</element>
+			<element name="IncludingVATInd" type="tdRet:YesNoIndType"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="VATPayableAmt" type="bt:FinancialAmtDecimalType"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="VATDeclarationPeriod" type="bt:PeriodType"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="OutputTaxPayableAmt" type="bt:FinancialAmtDecimalType"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="GoingConcernPayableAmt" type="bt:FinancialAmtDecimalType"
+				maxOccurs="1" minOccurs="0"></element>
+		</all>
+	</complexType>
+	<complexType name="TransactionStatusStructure">
+		<all>
+			<element name="Section9Exemption" maxOccurs="1" minOccurs="0">
+				<simpleType>
+					<restriction base="string">
+						<maxLength value="53"></maxLength>
+					</restriction>
+				</simpleType>
+			</element>
+			<element name="AnotherActExemption" maxOccurs="1" minOccurs="0">
+				<simpleType>
+					<restriction base="string">
+						<maxLength value="37"></maxLength>
+					</restriction>
+				</simpleType>
+			</element>
+		</all>
+	</complexType>
+	<complexType name="FormWizardStructure">
+		<all>
+			<element name="TransferDutyType" type="tdRet:TransferDutyType"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="NormalInd" type="tdRet:YesNoIndType" maxOccurs="1" minOccurs="0"></element>
+			<element name="DonationInd" type="tdRet:YesNoIndType" maxOccurs="1" minOccurs="0"></element>
+			<element name="ExchangeInd" type="tdRet:YesNoIndType"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="PatitionInd" type="tdRet:YesNoIndType"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="UsurfructInd" type="tdRet:YesNoIndType"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="UsurfructType" type="tdRet:AcquisitionRenunciationType"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="BaredominiumInd" type="tdRet:YesNoIndType"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="BaredominiumType" type="tdRet:AcquisitionRenunciationType"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="FideicommissiumInd" type="tdRet:YesNoIndType"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="FideicommissiumType" type="tdRet:AcquisitionRenunciationType"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="UsusInd" type="tdRet:YesNoIndType"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="UsusType" type="tdRet:AcquisitionRenunciationType"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="HabitatioInd" type="tdRet:YesNoIndType"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="HabitatioType" type="tdRet:AcquisitionRenunciationType"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="ResidentialPropertyCompanyTransferInd" type="tdRet:YesNoIndType"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="ExemptInd" type="tdRet:YesNoIndType"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="ExemptType" maxOccurs="1" minOccurs="0">
+				<simpleType>
+					<restriction base="string">
+						<maxLength value="35"></maxLength>
+					</restriction>
+				</simpleType>
+			</element>
+			<element name="NoOfSellers" maxOccurs="1" minOccurs="0">
+				<simpleType>
+					<restriction base="int">
+						<maxInclusive value="30"></maxInclusive>
+						<minInclusive value="0"></minInclusive>
+					</restriction>
+				</simpleType>
+			</element>
+			<element name="NoOfExistingShareholders" maxOccurs="1"
+				minOccurs="0">
+				<simpleType>
+					<restriction base="int">
+						<minInclusive value="0"></minInclusive>
+						<maxInclusive value="30"></maxInclusive>
+					</restriction>
+				</simpleType>
+			</element>
+			<element name="NoOfBuyers" maxOccurs="1" minOccurs="0">
+				<simpleType>
+					<restriction base="int">
+						<minInclusive value="0"></minInclusive>
+						<maxInclusive value="30"></maxInclusive>
+					</restriction>
+				</simpleType>
+			</element>
+			<element name="NoOfNewShareholders" maxOccurs="1" minOccurs="0">
+				<simpleType>
+					<restriction base="int">
+						<minInclusive value="0"></minInclusive>
+						<maxInclusive value="30"></maxInclusive>
+					</restriction>
+				</simpleType>
+			</element>
+			<element name="NoOfEstateAgents" maxOccurs="1" minOccurs="0">
+				<simpleType>
+					<restriction base="int">
+						<minInclusive value="0"></minInclusive>
+						<maxInclusive value="10"></maxInclusive>
+					</restriction>
+				</simpleType>
+			</element>
+		</all>
+	</complexType>
+	<simpleType name="TransferDutyType">
+		<restriction base="string">
+			<enumeration value="UNIDIVIDED_PROPERTY_TRANSFER"></enumeration>
+			<enumeration value="SHARES_MEMBERS_TRANSFER"></enumeration>
+			<enumeration value="SERVITUDES"></enumeration>
+		</restriction>
+	</simpleType>
+	<simpleType name="AcquisitionRenunciationType">
+		<restriction base="string">
+			<enumeration value="ACQUISITION"></enumeration>
+			<enumeration value="RENUNCIATION"></enumeration>
+		</restriction>
+	</simpleType>
+	<simpleType name="DescriptionTextType">
+		<restriction base="string">
+			<maxLength value="100"></maxLength>
+		</restriction>
+	</simpleType>
+	<complexType name="EstateAgencyDetailsStructure">
+		<all>
+			<element name="CommissionPayable" type="bt:FinancialAmtDecimalType"
+				maxOccurs="1" minOccurs="0"></element>
+			<element name="TelNo" type="bt:TelFaxNoType" maxOccurs="1"
+				minOccurs="0"></element>
+			<element name="Surname" type="bt:SurnameType" maxOccurs="1"
+				minOccurs="0"></element>
+			<element name="CellNo" type="bt:CellNoType" maxOccurs="1"
+				minOccurs="0"></element>
+			<element name="Initials" type="bt:InitialsType" maxOccurs="1"
+				minOccurs="0"></element>
+			<element name="IncomeTaxNo" type="bt:TaxRefNoType" maxOccurs="1"
+				minOccurs="0"></element>
+		</all>
+	</complexType>
+	<complexType name="SimpleDeclarationStructure">
+		<all>
+			<element name="Signature" type="string" maxOccurs="1"
+				minOccurs="0"></element>
+			<element name="DeclarationDate" type="date" maxOccurs="1"
+				minOccurs="0"></element>
+		</all>
+	</complexType>
+	<complexType name="VDPApplicationStructure">
+		<all>
+			<element name="VDPIndicator" type="tdRet:YesNoIndType"
+				maxOccurs="1" minOccurs="1"></element>
+			<element name="VDPApplicationNo" type="tdRet:VDPApplicationNoType"
+				maxOccurs="1" minOccurs="0"></element>
+		</all>
+	</complexType>
+	<simpleType name="VDPApplicationNoType">
+		<restriction base="string">
+			<pattern value="\w{0,10}"></pattern>
+		</restriction>
+	</simpleType>
+	<simpleType name="DeedsNoType">
+		<restriction base="string">
+			<maxLength value="30"></maxLength>
+			<minLength value="0"></minLength>
+		</restriction>
+	</simpleType>
+	<simpleType name="GenderType">
+		<restriction base="string">
+			<enumeration value="M"></enumeration>
+			<enumeration value="F"></enumeration>
+		</restriction>
+	</simpleType>
+	<complexType name="SourceSoftwareStructure">
+		<sequence>
+			<element name="Name" maxOccurs="1" minOccurs="1">
+				<simpleType>
+					<restriction base="string">
+						<maxLength value="50"></maxLength>
+					</restriction>
+				</simpleType>
+			</element>
+			<element name="Version" maxOccurs="1" minOccurs="1">
+				<simpleType>
+					<restriction base="string">
+						<maxLength value="10"></maxLength>
+					</restriction>
+				</simpleType>
+			</element>
+		</sequence>
+	</complexType>
+	<simpleType name="MaritalStatusType">
+		<annotation>
+			<documentation>Represents an individual party's marital status
+			</documentation>
+		</annotation>
+		<restriction base="string">
+			<enumeration value="N" id="Not_Married" />
+			<enumeration value="I" id="Married_In_Community_Of_Property" />
+			<enumeration value="O"
+				id="Married_Outside_Community_Of_Property" />
+			<enumeration value="D" id="Divorced" />	
+		</restriction>
+	</simpleType>
+		<simpleType name="NotRegisteredReasonType">
+		<annotation>
+		</annotation>
+		<restriction base="string">
+			<enumeration value="MINOR" />
+			<enumeration value="UNEMPLOYED"/>
+			<enumeration value="EARNING_UNDER_THE_INCOME_TAX_THRESHOLD"/>
+			<enumeration value="DIVORCE_ORDER" />	
+			<enumeration value=" FOREIGN_INDIVIDUAL" />
+		</restriction>
+	</simpleType>
+	<simpleType name="YesNoIndType">
+		<restriction base="string">
+			<enumeration value="Y"></enumeration>
+			<enumeration value="N"></enumeration>
+		</restriction>
+	</simpleType>
+</schema>

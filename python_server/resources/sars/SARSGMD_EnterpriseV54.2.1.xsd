@@ -1,0 +1,1466 @@
+<?xml version="1.0" encoding="iso-8859-1"?>
+<schema targetNamespace="http://www.sars.gov.za/enterpriseMessagingModel/GMD/Enterprise/xml/schemas/version/54.2" elementFormDefault="qualified" xmlns="http://www.w3.org/2001/XMLSchema"
+	xmlns:ent="http://www.sars.gov.za/enterpriseMessagingModel/GMD/Enterprise/xml/schemas/version/54.2"
+	xmlns:bt="http://www.sars.gov.za/enterpriseMessagingModel/GMD/BaseTypes/xml/schemas/version/54.2">
+	<import schemaLocation="SARSGMD_BaseTypesV54.2.1.xsd" namespace="http://www.sars.gov.za/enterpriseMessagingModel/GMD/BaseTypes/xml/schemas/version/54.2"></import>
+	<annotation>
+		<documentation>
+			2018-04-09 Dirk Grobler. Referenced V54.2.1 of the base types since V54.2 of base types schema does not pass schema validation.
+			2011-08-01 Dirk Grobler. First draft. Removed GUID and LockedInd from XML structures. Removed structures that are not enterprise-type structures. 2011-09-12 Dirk Grobler. Changed sequence
+			elements to all elements and updated list structures to conform to ICC standards. Added lists for AddressLines, AddressList, Outstanding, ProfessionalMembership. Replaced unbounded
+			occurrences with bounded occurrences. Removed the choice between Organisation and Individual and made both optional. 2011-09-19 Eric Tau. Changed language type in FormInfoStructure to
+			integer and defined it locally 2011-10-14 Dirk Grobler Corrected PostalAddressLinesType to be up to 4 occurrences of AddressLineType 2011-10-20 Nisch Changed restriction on AreaType in
+			FormInformation from 2 to 4 digits, changed AddressLines within PostalAddress to contain AddressLine and made PostalCode mandatory. Referenced latest version of base types
+		</documentation>
+	</annotation>
+	<complexType name="FormInfoStructure">
+		<annotation>
+			<documentation>Structure representing the form processing data needed for the correct rendering and functioning of SARS forms</documentation>
+		</annotation>
+		<all>
+			<element name="FormID" type="string" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents an ID used to identify the form</documentation>
+				</annotation>
+			</element>
+			<element name="TimeStamp" type="dateTime" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the date and time on which the form was submitted</documentation>
+				</annotation>
+			</element>
+			<element name="VersionNo" type="string" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the version number of the form</documentation>
+				</annotation>
+			</element>
+			<element name="HasSupportDocs" type="string" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Indicates whether there are supporting documents associated with the form</documentation>
+				</annotation>
+			</element>
+			<element name="Signed" type="string" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Indicates whether the form was signed</documentation>
+				</annotation>
+			</element>
+			<element name="Incomplete" type="string" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Indicates whether the form is incomplete</documentation>
+				</annotation>
+			</element>
+			<element name="TaxYear" type="bt:YearType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the year associated with the form submission</documentation>
+				</annotation>
+			</element>
+			<element name="FormYear" type="bt:YearType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the year in which the version was created</documentation>
+				</annotation>
+			</element>
+			<element name="TaxRefNo" type="bt:TaxRefNoType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents a reference number for the tax product associated with the form</documentation>
+				</annotation>
+			</element>
+			<element name="Language" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the language in which the form was completed</documentation>
+				</annotation>
+				<simpleType>
+					<restriction base="int">
+						<minInclusive value="0"></minInclusive>
+						<maxInclusive value="99"></maxInclusive>
+					</restriction>
+				</simpleType>
+			</element>
+			<element name="Area" type="ent:AreaType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the area associated with the form</documentation>
+				</annotation>
+			</element>
+			<element name="SourceID" type="string" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the ID of the source application through which the form was captured</documentation>
+				</annotation>
+			</element>
+			<element name="SubmitUrl" type="string" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents a web site to which the party must be redirected when the form is submitted</documentation>
+				</annotation>
+			</element>
+			<element name="SaveUrl" type="string" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents a web site to which the party must be redirected when the form is saved</documentation>
+				</annotation>
+			</element>
+			<element name="SaveUrlWs" type="string" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents a web site to which the party must be redirected when the form is submitted</documentation>
+				</annotation>
+			</element>
+			<element name="CalculateUrl" type="string" minOccurs="0" maxOccurs="1"></element>
+			<element name="FormType" type="ent:FormTypeType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the type of form</documentation>
+				</annotation>
+			</element>
+			<element name="RevisionNo" type="string" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the revision number of the form</documentation>
+				</annotation>
+			</element>
+			<element name="ITID" type="long" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the IT ID associated with the form</documentation>
+				</annotation>
+			</element>
+			<element name="WizardID" type="long" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the ID of the wizard used to determine the contents of the form</documentation>
+				</annotation>
+			</element>
+			<element name="UserRights" type="string" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the user rights details used to determine access to the form</documentation>
+				</annotation>
+			</element>
+			<element name="IsOnline" type="string" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Indicates whether the party completing the form is online</documentation>
+				</annotation>
+			</element>
+			<element name="UniqueRef" type="bt:UniqueIdentifierType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents a unique reference number assigned to the form for identification</documentation>
+				</annotation>
+			</element>
+			<element name="ReadOnly" type="string" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Indicates whether the form is for display and read purposes only</documentation>
+				</annotation>
+			</element>
+			<element name="Metadata" minOccurs="0" type="bt:MetadataStructure">
+				<annotation>
+					<documentation>Represents the application specific processing meta data associated with the form</documentation>
+				</annotation>
+			</element>
+			<element name="CurCalenderYear" type="bt:YearType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the current calendar year</documentation>
+				</annotation>
+			</element>
+			<element name="DateReceived" type="dateTime" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the date and time on which the form was received</documentation>
+				</annotation>
+			</element>
+			<element name="Hash" type="ent:HashType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents a hash for verifying the form's contents were not altered</documentation>
+				</annotation>
+			</element>
+			<element name="SignatureBiometric" type="ent:SignatureBiometricStructure" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the details of the signature biometric associated with the form</documentation>
+				</annotation>
+			</element>
+			<element name="ScanningVersion" minOccurs="0" maxOccurs="1">
+				<simpleType>
+					<restriction base="string">
+						<maxLength value="4"></maxLength>
+					</restriction>
+				</simpleType>
+			</element>
+			<element name="PartyID" minOccurs="0" maxOccurs="1">
+				<simpleType>
+					<restriction base="string">
+						<maxLength value="20"></maxLength>
+					</restriction>
+				</simpleType>
+			</element>
+			<element name="CaseNo" type="bt:CaseNoType" minOccurs="0" maxOccurs="1"></element>
+			<element name="TransactionDate" type="date" minOccurs="0" maxOccurs="1"></element>
+			<element name="PrintIndicator" minOccurs="0" maxOccurs="1">
+				<simpleType>
+					<restriction base="string">
+						<enumeration value="SARS"></enumeration>
+						<enumeration value="TAXPAYER"></enumeration>
+					</restriction>
+				</simpleType>
+			</element>
+		</all>
+	</complexType>
+	<complexType name="SecurityInfoStructure">
+		<annotation>
+			<documentation>Structure representing the authentication/security information associated with a form</documentation>
+		</annotation>
+		<all>
+			<element name="SessionID" type="string" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents an identifier for the session</documentation>
+				</annotation>
+			</element>
+			<element name="TaxUserID" type="string" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the identifier for the tax user</documentation>
+				</annotation>
+			</element>
+			<element name="TaxPayerID" type="string" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the identifier for the tax payer</documentation>
+				</annotation>
+			</element>
+			<element name="ReturnGroupID" type="string" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the identifier for the return group</documentation>
+				</annotation>
+			</element>
+		</all>
+	</complexType>
+	<complexType name="SignatureBiometricStructure">
+		<annotation>
+			<documentation>Structure representing the signature biometric used to confirm a party's acceptance of details of a completed form</documentation>
+		</annotation>
+		<all>
+			<element name="Signature" type="ent:SignatureType" minOccurs="1" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the party's signature</documentation>
+				</annotation>
+			</element>
+			<element name="Image" type="string" minOccurs="1" maxOccurs="1">
+				<annotation>
+					<documentation>Represents an encoded image of the party's signature</documentation>
+				</annotation>
+			</element>
+		</all>
+	</complexType>
+	<complexType name="SimpleTypeOfTaxStructure">
+		<annotation>
+			<documentation>Structure representing a simplified view of the major tax products for which a party is registered</documentation>
+		</annotation>
+		<all>
+			<element name="IncomeTaxInd" type="bt:YesNoBlankIndType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Indicates whether the party is registered for income tax</documentation>
+				</annotation>
+			</element>
+			<element name="EmployeesTaxInd" type="bt:YesNoBlankIndType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Indicates whether the party is registered for employees tax (PAYE)</documentation>
+				</annotation>
+			</element>
+			<element name="VATInd" type="bt:YesNoBlankIndType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Indicates whether the party is registered for VAT</documentation>
+				</annotation>
+			</element>
+			<element name="CustomsInd" type="bt:YesNoBlankIndType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Indicates whether the party is registered for customs</documentation>
+				</annotation>
+			</element>
+			<element name="ExciseInd" type="bt:YesNoBlankIndType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Indicates whether the party is registered for excise</documentation>
+				</annotation>
+			</element>
+			<element name="UIFInd" type="bt:YesNoBlankIndType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Indicates whether the party is registered for excise</documentation>
+				</annotation>
+			</element>
+			<element name="SDLInd" type="bt:YesNoBlankIndType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Indicates whether the party is registered for SDL</documentation>
+				</annotation>
+			</element>
+			<element name="DieselInd" type="bt:YesNoBlankIndType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Indicates whether the party is registered for Diesel tax</documentation>
+				</annotation>
+			</element>
+			<element name="ProvTaxInd" type="bt:YesNoBlankIndType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Indicates whether the party is registered for Provisional Tax</documentation>
+				</annotation>
+			</element>
+			<element name="STCTaxInd" type="bt:YesNoBlankIndType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Indicates whether the party is registered for STC</documentation>
+				</annotation>
+			</element>
+			<element name="APTTaxInd" type="bt:YesNoBlankIndType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Indicates whether the party is registered for APT Tax</documentation>
+				</annotation>
+			</element>
+			<element name="TransferDutyTaxInd" type="bt:YesNoBlankIndType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Indicates whether the party is registered for Transfer Duty Tax</documentation>
+				</annotation>
+			</element>
+			<element name="OtherTaxesInd" type="bt:YesNoBlankIndType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Indicates whether the party is registered for taxes other than income tax, employees tax, VAT, customs or excise</documentation>
+				</annotation>
+			</element>
+			<element name="Metadata" type="bt:MetadataStructure" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>
+						Represents the application specific processing meta data associated with the simplified view of the major tax products for which a party is registered
+					</documentation>
+				</annotation>
+			</element>
+		</all>
+	</complexType>
+	<complexType name="AddressDetailStructure">
+		<annotation>
+			<documentation>Structure representing detailed party address details including actual address, postal and county codes, region details</documentation>
+		</annotation>
+		<all>
+			<element name="AddressKey" type="ent:MasterIDType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents a U3TM held key to identify the Address</documentation>
+				</annotation>
+			</element>
+			<element name="AddressLines" maxOccurs="1" minOccurs="0">
+				<complexType>
+					<sequence>
+						<element name="AddressLineDetail" type="ent:AddressLineType" minOccurs="1" maxOccurs="4"></element>
+					</sequence>
+				</complexType>
+			</element>
+			<element name="CountryCode" type="bt:CountryType" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the country code for the country where the address exists</documentation>
+				</annotation>
+			</element>
+			<element name="PostalCode" type="bt:PostalCodeType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the postal code of the area where the address exists</documentation>
+				</annotation>
+			</element>
+			<element name="AddressMetadata" type="ent:AddressMetadataStructure" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the processing metadata associated with the address like verification status, etc</documentation>
+				</annotation>
+			</element>
+			<element name="Region" type="ent:RegionStructure" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents detailed regional information associated with the address</documentation>
+				</annotation>
+			</element>
+			<element name="FreeFormatAddress" type="ent:CommentType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents a alternate representation of the address as free format text</documentation>
+				</annotation>
+			</element>
+			<element name="ProductID" type="ent:MasterIDType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the U3TM ID of the tax product that the address is associated with</documentation>
+				</annotation>
+			</element>
+			<element name="Metadata" type="bt:MetadataStructure" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the application specific metadata associated with an address</documentation>
+				</annotation>
+			</element>
+		</all>
+	</complexType>
+	<complexType name="AddressMetadataStructure">
+		<annotation>
+			<documentation>Structure representing the address's classification, verification status, etc.</documentation>
+		</annotation>
+		<all>
+			<element name="AddressType" type="ent:AddressTypeType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents a free format classification of the address</documentation>
+				</annotation>
+			</element>
+			<element name="AddressVerificationInd" type="bt:YesNoBlankIndType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Indicates whether the address as being verified as being correct and in existence</documentation>
+				</annotation>
+			</element>
+			<element name="InternationalAddressInd" type="bt:YesNoBlankIndType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Indicates whether the address is a non South African address</documentation>
+				</annotation>
+			</element>
+			<element name="AddressUnknownInd" type="bt:YesNoBlankIndType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Indicates whether the address details are unknown</documentation>
+				</annotation>
+			</element>
+			<element name="DateLastValid" type="date" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents that date was last verified as being valid</documentation>
+				</annotation>
+			</element>
+			<element name="TaxRefNo" type="bt:TaxRefNoType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents a tax reference number of the taxpayer associated with this address</documentation>
+				</annotation>
+			</element>
+			<element name="Metadata" type="bt:MetadataStructure" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the application specific metadata associated with the address</documentation>
+				</annotation>
+			</element>
+		</all>
+	</complexType>
+	<complexType name="BankAccountStructure">
+		<annotation>
+			<documentation>Structure represent a party's bank account details</documentation>
+		</annotation>
+		<all>
+			<element name="AccountNo" type="bt:BankAccountNoType" minOccurs="1" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the party's bank account number</documentation>
+				</annotation>
+			</element>
+			<element name="BranchNo" type="ent:BranchNoType" minOccurs="1" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the branch number at which the account is held</documentation>
+				</annotation>
+			</element>
+			<element name="AccountHolder" minOccurs="0" type="ent:AccountHolderType">
+				<annotation>
+					<documentation>Represents a descriptive name for the account holder (usually surname and initials)</documentation>
+				</annotation>
+			</element>
+			<element name="RelationshipType" type="bt:AccHolderRelationshipType" minOccurs="0" maxOccurs="1"></element>
+			<element name="AccountType" minOccurs="1" type="ent:AccountTypeType" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the type of account held by the party</documentation>
+				</annotation>
+			</element>
+			<element name="BankName" type="bt:BankNameType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the name of the bank at which the account is held</documentation>
+				</annotation>
+			</element>
+			<element name="BranchName" type="bt:BranchNameType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents a descriptive name of the branch where the account is held</documentation>
+				</annotation>
+			</element>
+			<element name="BankCode" type="ent:BankCodeType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents a unique code for the bank at which the account is held</documentation>
+				</annotation>
+			</element>
+			<element name="ValidInd" type="bt:YesNoBlankIndType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Indicates whether the bank account has been verified as being a valid account (ACB)</documentation>
+				</annotation>
+			</element>
+			<element name="VerifiedInd" type="bt:YesNoBlankIndType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Indicates whether the bank account was verified through AVS (The account belongs to the account holder)</documentation>
+				</annotation>
+			</element>
+			<element name="BankDetailOriginator" type="bt:UsernameType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the SARS user that loaded the bank account details</documentation>
+				</annotation>
+			</element>
+			<element name="AuthorisationSupervisor" type="bt:UsernameType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the SARS supervisor that authorised the loading of the bank account details</documentation>
+				</annotation>
+			</element>
+			<element name="BankDetailRequestedDate" type="date" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the date on which the bank details were requested</documentation>
+				</annotation>
+			</element>
+			<element name="BankDetailChangedDate" type="date" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the date on which the bank details where last changed</documentation>
+				</annotation>
+			</element>
+			<element name="ProductID" type="ent:MasterIDType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the ID of the tax product that the bank account is associated with</documentation>
+				</annotation>
+			</element>
+			<element name="Metadata" type="bt:MetadataStructure" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the application specific processing metadata associated with the bank account</documentation>
+				</annotation>
+			</element>
+		</all>
+	</complexType>
+	<complexType name="BranchStructure">
+		<annotation>
+			<documentation>Structure representing a SARS branch and its demographic details</documentation>
+		</annotation>
+		<all>
+			<element name="BranchName" minOccurs="0" maxOccurs="1" type="bt:BranchNameType">
+				<annotation>
+					<documentation>Represents a descriptive name for the branch</documentation>
+				</annotation>
+			</element>
+			<element name="Unloccode" type="ent:UnloccodeType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the code associated with the branch</documentation>
+				</annotation>
+			</element>
+			<element name="ContactDetail" type="ent:ContactDetailStructure" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the contact details for the branch</documentation>
+				</annotation>
+			</element>
+			<element name="PhysicalAddress" type="ent:PhysicalAddressStructure" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the physical address of the branch</documentation>
+				</annotation>
+			</element>
+			<element name="PostalAddress" type="ent:PostalAddressStructure" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the postal address details of the branch</documentation>
+				</annotation>
+			</element>
+			<element name="AddressDetails" maxOccurs="1" minOccurs="0">
+				<complexType>
+					<sequence>
+						<element name="AddressDetail" type="ent:AddressDetailStructure" minOccurs="1" maxOccurs="10"></element>
+					</sequence>
+				</complexType>
+			</element>
+			<element name="DistrictOffice" type="ent:DistrictNumberType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents a district office number or name allocated to the branch</documentation>
+				</annotation>
+			</element>
+			<element name="WebAddress" type="ent:WebAddressType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the web site address for the branch</documentation>
+				</annotation>
+			</element>
+			<element name="Metadata" type="bt:MetadataStructure" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the application specific processing metadata associated with the branch</documentation>
+				</annotation>
+			</element>
+		</all>
+	</complexType>
+	<complexType name="ContactDetailStructure">
+		<annotation>
+			<documentation>Structure representing the contact details associated with a party</documentation>
+		</annotation>
+		<all>
+			<element name="TelNo" type="ent:TelNoType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the party's home/personal telephone number including dialling code</documentation>
+				</annotation>
+			</element>
+			<element name="BusTelNo" type="ent:TelNoType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the party's business telephone number including dialling code</documentation>
+				</annotation>
+			</element>
+			<element name="FaxNo" type="bt:TelFaxNoType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the party's home/personal fax number including dialling code</documentation>
+				</annotation>
+			</element>
+			<element name="BusFaxNo" type="bt:TelFaxNoType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the party's business fax number including dialling code</documentation>
+				</annotation>
+			</element>
+			<element name="CellNo" type="bt:CellNoType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the party's cellphone number</documentation>
+				</annotation>
+			</element>
+			<element name="Email" type="bt:EmailType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the party's email address</documentation>
+				</annotation>
+			</element>
+			<element name="Metadata" type="bt:MetadataStructure" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the application specific processing metadata associated with the party's contact details</documentation>
+				</annotation>
+			</element>
+		</all>
+	</complexType>
+	<complexType name="PhysicalAddressStructure">
+		<annotation>
+			<documentation>Structure representing a physical address associated with party transacting with SARS</documentation>
+		</annotation>
+		<all>
+			<element name="UnitNo" minOccurs="0" maxOccurs="1" type="bt:UnitStreetNoType">
+				<annotation>
+					<documentation>Represents the unit number associated with the physical address</documentation>
+				</annotation>
+			</element>
+			<element name="ComplexName" type="bt:ComplexStreetNameType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the complex name associated with the physical address</documentation>
+				</annotation>
+			</element>
+			<element name="StreetNo" type="bt:UnitStreetNoType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the street number associated with the physical address</documentation>
+				</annotation>
+			</element>
+			<element name="StreetName" type="bt:ComplexStreetNameType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the street name associated with the physical address</documentation>
+				</annotation>
+			</element>
+			<element name="Suburb" type="bt:SuburbType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the suburb associated with the physical address</documentation>
+				</annotation>
+			</element>
+			<element name="City" type="bt:CityType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the city associated with the physical address</documentation>
+				</annotation>
+			</element>
+			<element name="CountryCode" type="bt:CountryType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the code of the country associated with the physical address</documentation>
+				</annotation>
+			</element>
+			<element name="PostalCode" type="bt:PostalCodeType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the postal code for the area associated with the physical address</documentation>
+				</annotation>
+			</element>
+			<element name="AddressMetadata" type="ent:AddressMetadataStructure" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the address processing metadata associated with the physical address</documentation>
+				</annotation>
+			</element>
+			<element name="Metadata" type="bt:MetadataStructure" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the application specific processing metadata associated with the physical address</documentation>
+				</annotation>
+			</element>
+		</all>
+	</complexType>
+	<complexType name="PostalAddressStructure">
+		<annotation>
+			<documentation>Structure representing a postal address associated with party transacting with SARS</documentation>
+		</annotation>
+		<sequence>
+			<element name="SameAsPhysicalAddressInd" type="bt:YesNoBlankIndType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Indicates that the party's physical address is the same as the physical address</documentation>
+				</annotation>
+			</element>
+			<element name="AddressLines" maxOccurs="1" minOccurs="1">
+				<complexType>
+					<sequence>
+						<element name="AddressLine" type="ent:AddressLineType" maxOccurs="4" minOccurs="1">
+							<annotation>
+								<documentation>Represents each line of the address. Up to four lines can be held</documentation>
+							</annotation>
+						</element>
+					</sequence>
+				</complexType>
+			</element>
+			<element name="CountryCode" type="bt:CountryType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the code of the country associated with the postal address</documentation>
+				</annotation>
+			</element>
+			<element name="PostalCode" type="bt:PostalCodeType" minOccurs="1" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the postal code of the area associated with the postal address</documentation>
+				</annotation>
+			</element>
+			<element name="AddressMetadata" type="ent:AddressMetadataStructure" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the address processing metadata associated with the postal address</documentation>
+				</annotation>
+			</element>
+			<element name="Metadata" type="bt:MetadataStructure" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the application specific processing metadata associated with the postal address</documentation>
+				</annotation>
+			</element>
+		</sequence>
+	</complexType>
+	<complexType name="IndividualStructure">
+		<annotation>
+			<documentation>Structure representing the demographics of an individual transacting with SARS</documentation>
+		</annotation>
+		<all>
+			<element name="FullNames" type="bt:FullNamesType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the individual's full names</documentation>
+				</annotation>
+			</element>
+			<element name="Surname" type="bt:SurnameType" minOccurs="1" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the individual's surname</documentation>
+				</annotation>
+			</element>
+			<element name="KnownAsName" type="bt:FullNamesType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the name by which the individual is commonly known</documentation>
+				</annotation>
+			</element>
+			<element name="Initials" type="bt:InitialsType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the individual's initials</documentation>
+				</annotation>
+			</element>
+			<element name="DateOfBirth" type="date" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the individual's date of birth</documentation>
+				</annotation>
+			</element>
+			<element name="IDNo" type="bt:IDNoType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the individual's South African ID number</documentation>
+				</annotation>
+			</element>
+			<element name="PassportNo" type="bt:PassportNoType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the individual's passport number to identify Non-South African residents</documentation>
+				</annotation>
+			</element>
+			<element name="PassportCountry" type="bt:CountryType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the country that issued the passport to the individual</documentation>
+				</annotation>
+			</element>
+			<element name="OtherIDNo" type="ent:OtherIDNoType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents numbers other than a South African ID or passport number used to identify the individual</documentation>
+				</annotation>
+			</element>
+			<element name="NatureOfPerson" type="bt:NatureOfPersonType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the nature of person details</documentation>
+				</annotation>
+			</element>
+			<element name="MaritalStatus" minOccurs="0" maxOccurs="1" type="bt:MaritalStatusType">
+				<annotation>
+					<documentation>Represents the individual's marital status</documentation>
+				</annotation>
+			</element>
+			<element name="Title" type="ent:TitleType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the individual's title</documentation>
+				</annotation>
+			</element>
+			<element name="IDType" type="ent:IDTypeType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents a free format description of the type of identification used to identify the individual if not a South African ID or passport number</documentation>
+				</annotation>
+			</element>
+			<element name="Outstanding" maxOccurs="1" minOccurs="0">
+				<complexType>
+					<sequence>
+						<element name="OutstandingDetail" type="ent:OutstandingType" minOccurs="1" maxOccurs="10"></element>
+					</sequence>
+				</complexType>
+			</element>
+			<element name="Disability" type="ent:DisabilityStructure" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the individual's disability details</documentation>
+				</annotation>
+			</element>
+			<element name="Spouse" type="ent:SpouseStructure" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the individual's spouse</documentation>
+				</annotation>
+			</element>
+			<element name="Occupation" type="ent:OccupationType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the individual's occupation</documentation>
+				</annotation>
+			</element>
+			<element name="SalaryNo" type="bt:SalaryNoType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the individual's salary number used to identify the employee with the employer</documentation>
+				</annotation>
+			</element>
+			<element name="PayBasisInd" type="bt:YesNoBlankIndType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Indicates whether a pay basis has been established</documentation>
+				</annotation>
+			</element>
+			<element name="SouthAfricanCitizen" type="ent:SouthAfricanCitizenStructure" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Structure for a South African Citizen</documentation>
+				</annotation>
+			</element>
+			<element name="SoleProprietor" type="ent:SoleProprietorStructure" minOccurs="0" maxOccurs="1"></element>
+			<element name="Metadata" type="bt:MetadataStructure" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the application specific processing meta data associated with the individual</documentation>
+				</annotation>
+			</element>
+		</all>
+	</complexType>
+	<complexType name="SpouseStructure">
+		<annotation>
+			<documentation>Structure representing the party's spouse</documentation>
+		</annotation>
+		<all>
+			<element name="FullNames" type="bt:FullNamesType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the spouse's full names</documentation>
+				</annotation>
+			</element>
+			<element name="Surname" type="bt:SurnameType" minOccurs="1" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the spouse's surname</documentation>
+				</annotation>
+			</element>
+			<element name="KnownAsName" type="bt:FullNamesType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the name by which the spouse is commonly known</documentation>
+				</annotation>
+			</element>
+			<element name="Initials" type="bt:InitialsType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the spouse's initials</documentation>
+				</annotation>
+			</element>
+			<element name="DateOfBirth" type="date" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the spouse's date of birth</documentation>
+				</annotation>
+			</element>
+			<element name="IDNo" type="bt:IDNoType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the spouse's South African ID number</documentation>
+				</annotation>
+			</element>
+			<element name="PassportNo" type="bt:PassportNoType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the spouse's passport country for non South African residents</documentation>
+				</annotation>
+			</element>
+			<element name="PassportCountry" type="bt:CountryType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the country that issued the spouse's passport</documentation>
+				</annotation>
+			</element>
+			<element name="OtherIDNo" type="ent:OtherIDNoType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the number of a form of identification other than a South African ID or Passport No used to identify the spouse</documentation>
+				</annotation>
+			</element>
+			<element name="NatureOfPerson" type="bt:NatureOfPersonType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the nature of person classification of the spouse</documentation>
+				</annotation>
+			</element>
+			<element name="MaritalStatus" minOccurs="0" maxOccurs="1" type="bt:MaritalStatusType">
+				<annotation>
+					<documentation>Represents the spouse's marital status</documentation>
+				</annotation>
+			</element>
+			<element name="Title" type="ent:TitleType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the spouse's title</documentation>
+				</annotation>
+			</element>
+			<element name="IDType" type="ent:IDTypeType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the type of a form of identification other than a South African ID or Passport No used to identify the spouse</documentation>
+				</annotation>
+			</element>
+			<element name="Outstanding" type="string" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the types of outstanding monies owed by the spouse to SARS</documentation>
+				</annotation>
+			</element>
+			<element name="Disability" type="ent:DisabilityStructure" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the spouse's disability details</documentation>
+				</annotation>
+			</element>
+			<element name="Occupation" type="ent:OccupationType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the spouse's occupation</documentation>
+				</annotation>
+			</element>
+			<element name="SalaryNo" type="bt:SalaryNoType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the spouse's salary number used to identify the spouse with the employer</documentation>
+				</annotation>
+			</element>
+			<element name="PayBasisInd" type="bt:YesNoBlankIndType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Indicates the pay basis</documentation>
+				</annotation>
+			</element>
+			<element name="Metadata" type="bt:MetadataStructure" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the application specific processing meta data associated with an individual's spouse</documentation>
+				</annotation>
+			</element>
+		</all>
+	</complexType>
+	<complexType name="OrganisationStructure">
+		<annotation>
+			<documentation>Structure representing an organisation transacting with SARS</documentation>
+		</annotation>
+		<all>
+			<element name="RegisteredName" type="bt:OrganisationNameType" minOccurs="1" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the organisation's registered name</documentation>
+				</annotation>
+			</element>
+			<element name="TradingName" type="bt:OrganisationNameType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the organisation's trading name</documentation>
+				</annotation>
+			</element>
+			<element name="OrganisationRegNo" type="bt:OrganisationRegNoType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the organisation's registration number</documentation>
+				</annotation>
+			</element>
+			<element name="RegDate" type="date" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the date when the organisation was registered</documentation>
+				</annotation>
+			</element>
+			<element name="FinancialYearEnd" type="bt:FinancialYearEndType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the organisation's financial year end</documentation>
+				</annotation>
+			</element>
+			<element name="BusCommencementDate" type="date" minOccurs="0" maxOccurs="1"></element>
+			<element name="WebAddress" type="ent:WebAddressType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the organisation's web address</documentation>
+				</annotation>
+			</element>
+			<element name="HoldingCoName" type="bt:OrganisationNameType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the organisation's holding company name</documentation>
+				</annotation>
+			</element>
+			<element name="HoldingCoTaxRefNo" type="bt:TaxRefNoType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the organisation's holding company's tax reference number</documentation>
+				</annotation>
+			</element>
+			<element name="Outstanding" type="string" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the type of outstanding amounts owed by the organisation to SARS</documentation>
+				</annotation>
+			</element>
+			<element name="StateShare" type="bt:PercentageType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the state's (government) share of ownership in the organisation</documentation>
+				</annotation>
+			</element>
+			<element name="AreaCode" type="bt:PostalCodeType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the organisation's area code</documentation>
+				</annotation>
+			</element>
+			<element name="Metadata" type="bt:MetadataStructure" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the application specific processing meta data associated with the organisation</documentation>
+				</annotation>
+			</element>
+		</all>
+	</complexType>
+	<complexType name="SouthAfricanCitizenStructure">
+		<all>
+			<element name="ParlimentarianInd" type="bt:YesNoBlankIndType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Indicates whether the Citizen is a member of Parliament</documentation>
+				</annotation>
+			</element>
+			<element name="EmigratingInd" type="bt:YesNoBlankIndType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Indicates whether the person is emigrating</documentation>
+				</annotation>
+			</element>
+			<element name="WorkingOverseasInd" type="bt:YesNoBlankIndType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Indicates whether the person is working overseas</documentation>
+				</annotation>
+			</element>
+			<element name="OverseasCorrespondenceInd" type="bt:YesNoBlankIndType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Indicates whether the person needs overseas correspondence</documentation>
+				</annotation>
+			</element>
+		</all>
+	</complexType>
+	<complexType name="RepresentativeStructure">
+		<annotation>
+			<documentation>Structure representing a party's representative</documentation>
+		</annotation>
+		<all>
+			<element name="TaxRef" type="bt:TaxRefStructure" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Representative's tax reference structure</documentation>
+				</annotation>
+			</element>
+			<element name="ContactDetail" type="ent:ContactDetailStructure" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the contact details of the representative</documentation>
+				</annotation>
+			</element>
+			<element name="Organisation" type="ent:OrganisationStructure" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the demographic details of a representative that is an organisation</documentation>
+				</annotation>
+			</element>
+			<element name="Individual" type="ent:IndividualStructure" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the demographic details of a representative that is an individual</documentation>
+				</annotation>
+			</element>
+			<element name="Capacity" type="bt:CapacityType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the capacity in which the representative is representing the party</documentation>
+				</annotation>
+			</element>
+			<element name="PhysicalAddress" type="ent:PhysicalAddressStructure" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the representative's physical address details</documentation>
+				</annotation>
+			</element>
+			<element name="PostalAddress" type="ent:PostalAddressStructure" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the representative's postal address details</documentation>
+				</annotation>
+			</element>
+			<element name="AddressDetails" type="string" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents a detailed representation of the addresses associated with the representative</documentation>
+				</annotation>
+			</element>
+			<element name="Metadata" type="bt:MetadataStructure" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the application specific processing meta data associated with a party's representative</documentation>
+				</annotation>
+			</element>
+		</all>
+	</complexType>
+	<complexType name="TaxpractitionerStructure">
+		<annotation>
+			<documentation>Structure representing the details of a party's registration as a tax practitioner</documentation>
+		</annotation>
+		<all>
+			<element name="TaxpractitionerTaxRefNo" type="bt:TaxRefNoType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the tax practitioner's income tax reference number</documentation>
+				</annotation>
+			</element>
+			<element name="TaxpractitionerRegNo" type="bt:TaxPractionerRegNoType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the tax practitioner's registration number</documentation>
+				</annotation>
+			</element>
+			<element name="AmtClients" type="ent:AmtType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the number of clients represented by the tax practitioner</documentation>
+				</annotation>
+			</element>
+			<element name="PracticeName" type="bt:OrganisationNameType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the name of the practice where the tax practitioner is employed</documentation>
+				</annotation>
+			</element>
+			<element name="PracticeTaxRefNo" type="bt:TaxRefNoType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the income tax reference number of the practice that the practitioner works for</documentation>
+				</annotation>
+			</element>
+			<element name="PracticeRegNo" type="bt:OrganisationRegNoType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the company registration number of the practice that the practitioner works for</documentation>
+				</annotation>
+			</element>
+			<element name="PracticeVatRefNo" type="bt:TaxRefNoType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the VAT reference number of the practice that the practitioner works for</documentation>
+				</annotation>
+			</element>
+			<element name="PracticePayeRefNo" type="bt:TaxRefNoType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the PAYE reference number of the practice that the practitioner works for</documentation>
+				</annotation>
+			</element>
+			<element name="PracticeEmail" type="bt:EmailType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represent the email address of the practice where the practitioner works</documentation>
+				</annotation>
+			</element>
+			<element name="PracticeWebAddress" type="ent:WebAddressType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represent the web site address of the practice where the practitioner works</documentation>
+				</annotation>
+			</element>
+			<element name="ContactDetails" type="ent:ContactDetailStructure" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the contact details associated with the tax practitioner</documentation>
+				</annotation>
+			</element>
+			<element name="ProfessionalMembership" maxOccurs="1" minOccurs="0">
+				<complexType>
+					<sequence>
+						<element name="ProfessionalMembershipDetail" type="ent:ProfessionalMembershipStructure" minOccurs="1" maxOccurs="100"></element>
+					</sequence>
+				</complexType>
+			</element>
+			<element name="Individual" type="ent:IndividualStructure" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the demographic details associated with the tax practitioner</documentation>
+				</annotation>
+			</element>
+			<element name="StartDate" type="date" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the date from which the tax practitioner provides his tax services</documentation>
+				</annotation>
+			</element>
+			<element name="Status" type="ent:StatusStructure" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the details of the tax practitioner's registration status</documentation>
+				</annotation>
+			</element>
+			<element name="Metadata" type="bt:MetadataStructure" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the application specific processing meta data associated with the party's registration as a tax practitioner</documentation>
+				</annotation>
+			</element>
+		</all>
+	</complexType>
+	<complexType name="SourceCodeStructure">
+		<annotation>
+			<documentation>Represents an item in an income tax return submission</documentation>
+		</annotation>
+		<all>
+			<element name="SrcCode" type="bt:SrcCodeType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents a code to identify the associated income tax return item</documentation>
+				</annotation>
+			</element>
+			<element name="AmtTotal" type="bt:FinancialAmtType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the amount in respect of the income tax return item</documentation>
+				</annotation>
+			</element>
+			<element name="Metadata" type="bt:MetadataStructure" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the application specific processing meta data associated with the income tax return item</documentation>
+				</annotation>
+			</element>
+		</all>
+	</complexType>
+	<complexType name="RegionStructure">
+		<annotation>
+			<documentation>Structure representing the details of a region</documentation>
+		</annotation>
+		<all>
+			<element name="CountrySubDivisionID" type="ent:CountrySubDivisionIDType" maxOccurs="1">
+				<annotation>
+					<documentation>Represents a number to identify the sub division within the country</documentation>
+				</annotation>
+			</element>
+			<element name="CountrySubDivisionName" type="ent:CountrySubDivisionNameType" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the name of the sub division/region within the country</documentation>
+				</annotation>
+			</element>
+			<element name="RegionID" type="ent:RegionIDType" maxOccurs="1">
+				<annotation>
+					<documentation>Represents a number to identify the region with the country</documentation>
+				</annotation>
+			</element>
+			<element name="Metadata" type="bt:MetadataStructure" minOccurs="0" maxOccurs="1" />
+		</all>
+	</complexType>
+	<complexType name="DisabilityStructure">
+		<annotation>
+			<documentation>Structure representing a party's physical disability for tax submission purposes</documentation>
+		</annotation>
+		<all>
+			<element name="DisabilityInd" type="bt:YesNoBlankIndType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Indicates whether the party is disabled</documentation>
+				</annotation>
+			</element>
+			<element name="DisabilityDate" type="date" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the date on which the disability occurred</documentation>
+				</annotation>
+			</element>
+			<element name="Notes" type="ent:ReasonType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents a free format description of the disability</documentation>
+				</annotation>
+			</element>
+			<element name="Metadata" type="bt:MetadataStructure" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the application specific processing meta data associated with the party's disability</documentation>
+				</annotation>
+			</element>
+		</all>
+	</complexType>
+	<complexType name="SoleProprietorStructure">
+		<annotation>
+			<documentation>Structure representing a Sole Proprietor</documentation>
+		</annotation>
+		<all>
+			<element name="TradingName" type="bt:OrganisationNameType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Trading name of the sole proprietor</documentation>
+				</annotation>
+			</element>
+			<element name="BusCommencementDate" type="date" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Date the business started trading</documentation>
+				</annotation>
+			</element>
+		</all>
+	</complexType>
+	<complexType name="ProfessionalMembershipStructure">
+		<annotation>
+			<documentation>Structure representing the details of a professional membership held by a party</documentation>
+		</annotation>
+		<all>
+			<element name="ProfessionalMembershipBody" type="ent:ProfessionalMembershipBodyType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the name of the professional membership body that the party belongs to</documentation>
+				</annotation>
+			</element>
+			<element name="Metadata" type="bt:MetadataStructure" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the details of the application specific processing meta data associated with the professional membership</documentation>
+				</annotation>
+			</element>
+		</all>
+	</complexType>
+	<complexType name="ContactPersonStructure">
+		<annotation>
+			<documentation>Structure representing a contact person include the person's demographics and contact details</documentation>
+		</annotation>
+		<all>
+			<element name="Individual" type="ent:IndividualStructure" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the demographics of the contact person</documentation>
+				</annotation>
+			</element>
+			<element name="ContactDetail" type="ent:ContactDetailStructure" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the contact details of the contact person</documentation>
+				</annotation>
+			</element>
+			<element name="Capacity" type="bt:ContactPersonCapacityType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the role fulfilled by the contact person</documentation>
+				</annotation>
+			</element>
+			<element name="CustomsOffice" type="ent:CustomsOfficeType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the customs office linked to the contact person</documentation>
+				</annotation>
+			</element>
+			<element name="Metadata" type="bt:MetadataStructure" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the application specific processing meta data associated with the contact person</documentation>
+				</annotation>
+			</element>
+		</all>
+	</complexType>
+	<simpleType name="UnloccodeType">
+		<restriction base="string">
+			<pattern value="\w{0,39}"></pattern>
+		</restriction>
+	</simpleType>
+	<simpleType name="AreaType">
+		<restriction base="string">
+			<pattern value="\d{0,4}"></pattern>
+		</restriction>
+	</simpleType>
+	<simpleType name="FormTypeType">
+		<restriction base="string">
+			<maxLength value="59"></maxLength>
+		</restriction>
+	</simpleType>
+	<simpleType name="HashType">
+		<restriction base="string"></restriction>
+	</simpleType>
+	<simpleType name="SignatureType">
+		<restriction base="string"></restriction>
+	</simpleType>
+	<simpleType name="MasterIDType">
+		<restriction base="long"></restriction>
+	</simpleType>
+	<simpleType name="AddressLineType">
+		<restriction base="string">
+			<pattern value=".{0,100}"></pattern>
+		</restriction>
+	</simpleType>
+	<simpleType name="CommentType">
+		<restriction base="string" />
+	</simpleType>
+	<simpleType name="CustomsOfficeType">
+		<restriction base="string">
+			<pattern value=".{0,50}"></pattern>
+		</restriction>
+	</simpleType>
+	<simpleType name="ProfessionalMembershipBodyType">
+		<restriction base="string">
+			<pattern value="\w{0,11}"></pattern>
+		</restriction>
+	</simpleType>
+	<simpleType name="ReasonType">
+		<restriction base="string"></restriction>
+	</simpleType>
+	<simpleType name="AddressTypeType">
+		<restriction base="string">
+			<maxLength value="200"></maxLength>
+		</restriction>
+	</simpleType>
+	<simpleType name="AccountHolderType">
+		<restriction base="string">
+			<pattern value=".{0,200}"></pattern>
+		</restriction>
+	</simpleType>
+	<simpleType name="BankCodeType">
+		<restriction base="int">
+			<minInclusive value="0"></minInclusive>
+			<maxInclusive value="999"></maxInclusive>
+		</restriction>
+	</simpleType>
+	<simpleType name="BranchNoType">
+		<restriction base="string">
+			<pattern value="\d{0,6}"></pattern>
+		</restriction>
+	</simpleType>
+	<simpleType name="AccountTypeType">
+		<restriction base="string">
+			<enumeration value="CURRENT"></enumeration>
+			<enumeration value="SAVINGS"></enumeration>
+			<enumeration value="TRANSMISSION"></enumeration>
+			<enumeration value="BOND"></enumeration>
+			<enumeration value="SUBSCRIPTION_SHARE"></enumeration>
+			<enumeration value="CREDIT"></enumeration>
+			<enumeration value="TRUST"></enumeration>
+		</restriction>
+	</simpleType>
+	<simpleType name="RegionIDType">
+		<restriction base="string" />
+	</simpleType>
+	<complexType name="StatusStructure">
+		<annotation>
+			<documentation>Structure representing status information used across all date where a status is relevant and must be maintained</documentation>
+		</annotation>
+		<all>
+			<element name="StatusID" type="ent:StatusIDType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents a number used to identify a particular status in the source application/system</documentation>
+				</annotation>
+			</element>
+			<element name="EffectiveDate" type="date" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the date from which the status is effective</documentation>
+				</annotation>
+			</element>
+			<element name="EndDate" type="date" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the date until which the status is effective</documentation>
+				</annotation>
+			</element>
+			<element name="StatusCode" type="ent:StatusCodeType" minOccurs="1" maxOccurs="1">
+				<annotation>
+					<documentation>Represents a code associated with the status</documentation>
+				</annotation>
+			</element>
+			<element name="StatusCodeDesc" type="ent:StatusCodeDescType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents a free format description of the status code</documentation>
+				</annotation>
+			</element>
+			<element name="StatusReason" type="ent:ReasonType" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents a free format description of the reason/motivation for the status</documentation>
+				</annotation>
+			</element>
+			<element name="TaxRef" type="bt:TaxRefStructure" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the details of a tax product that this status is associated with</documentation>
+				</annotation>
+			</element>
+			<element name="Metadata" type="bt:MetadataStructure" minOccurs="0" maxOccurs="1">
+				<annotation>
+					<documentation>Represents the application specific processing metadata associated with the status information</documentation>
+				</annotation>
+			</element>
+		</all>
+		<attribute name="GUID" type="bt:UniqueIdentifierType" use="optional"></attribute>
+		<attribute name="LockedInd" type="bt:YesNoBlankIndType" use="optional"></attribute>
+	</complexType>
+	<simpleType name="TelNoType">
+		<restriction base="string">
+			<pattern value="\d{0,15}"></pattern>
+		</restriction>
+	</simpleType>
+	<simpleType name="WebAddressType">
+		<restriction base="string">
+			<pattern value=".{0,255}"></pattern>
+		</restriction>
+	</simpleType>
+	<simpleType name="TitleType">
+		<restriction base="string"></restriction>
+	</simpleType>
+	<simpleType name="IDTypeType">
+		<restriction base="string"></restriction>
+	</simpleType>
+	<simpleType name="DistrictNumberType">
+		<restriction base="string">
+			<pattern value="\d{0,4}"></pattern>
+		</restriction>
+	</simpleType>
+	<simpleType name="OtherIDNoType">
+		<restriction base="string"></restriction>
+	</simpleType>
+	<simpleType name="OutstandingType">
+		<restriction base="string">
+			<enumeration value="VAT_MONEY"></enumeration>
+			<enumeration value="VAT_RETURN"></enumeration>
+			<enumeration value="PAYE_MONEY"></enumeration>
+			<enumeration value="PAYE_RETURN"></enumeration>
+		</restriction>
+	</simpleType>
+	<simpleType name="OccupationType">
+		<restriction base="string"></restriction>
+	</simpleType>
+	<simpleType name="AmtType">
+		<restriction base="string">
+			<pattern value="\d{0,8}"></pattern>
+		</restriction>
+	</simpleType>
+	<simpleType name="CountrySubDivisionNameType">
+		<restriction base="string" />
+	</simpleType>
+	<simpleType name="CountrySubDivisionIDType">
+		<restriction base="string" />
+	</simpleType>
+	<simpleType name="StatusCodeType">
+		<restriction base="string"></restriction>
+	</simpleType>
+	<simpleType name="StatusIDType">
+		<restriction base="string"></restriction>
+	</simpleType>
+	<simpleType name="StatusCodeDescType">
+		<restriction base="string">
+			<maxLength value="100"></maxLength>
+		</restriction>
+	</simpleType>
+</schema>
