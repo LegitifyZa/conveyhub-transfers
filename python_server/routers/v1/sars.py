@@ -93,7 +93,7 @@ async def _authorize_property_for_transfer(
         SELECT 1
         FROM matter_properties mp
         JOIN matters m ON m.id = mp.matter_id
-        WHERE m.source_record_id = $1 AND mp.property_id = $2::uuid
+        WHERE m.source_record_id = $1::uuid AND mp.property_id = $2::uuid
         LIMIT 1
         """,
         [transfer_id, property_id],
