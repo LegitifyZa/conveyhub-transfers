@@ -22,26 +22,25 @@ router.post(
       return
     }
 
-    let upstream: globalThis.Response
     try {
-      upstream = await fetch(`${baseUrl.replace(/\/+$/, '')}/api/v1/golden-records/search`, {
+      const upstream = await fetch(`${baseUrl.replace(/\/+$/, '')}/api/v1/golden-records/search`, {
         method: 'POST',
         headers: {
           Authorization: req.headers.authorization as string,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(req.body ?? {}),
+        signal: AbortSignal.timeout(35_000),
       })
+      const body = await upstream.text()
+      const contentType = upstream.headers.get('content-type')
+      if (contentType) {
+        res.setHeader('Content-Type', contentType)
+      }
+      res.status(upstream.status).send(body)
     } catch {
       res.status(503).json(DEEDLY_UNAVAILABLE)
-      return
     }
-
-    const contentType = upstream.headers.get('content-type')
-    if (contentType) {
-      res.setHeader('Content-Type', contentType)
-    }
-    res.status(upstream.status).send(await upstream.text())
   })
 )
 

@@ -4,8 +4,8 @@ These drive the real ``EntitiesClient`` and ``resolve_visible_golden_record``
 against a simulated Legitify gateway (``httpx.MockTransport``) so the actual
 HTTP surface is asserted: paths, query parameters, headers, ordering, and the
 absence of any unscoped fallback. The simulator implements the two sanctioned
-visibility endpoints only; every other path returns a marker 404 so an
-unexpected call fails the test loudly.
+visibility endpoints and generic search; every other path returns a marker 404.
+These mock-transport tests do not execute the real upstream implementation.
 """
 
 import json
@@ -30,6 +30,7 @@ from services.golden_record_visibility import (
     resolve_visible_golden_record,
 )
 from services.golden_record_search import GoldenRecordSearchService, SearchStatus
+from services.entity_reconciliation import EntityReconciliationError
 from services.transfer_party_service import link_party_to_transfer
 
 SERVICE_KEY = "platform-service-key-do-not-leak"
@@ -50,7 +51,6 @@ ENTITIES_PREFIX = "/api/v1/entities/"
 
 _PERSON_RECORD = {
     "id": str(GR_PERSON),
-    "entity_type": "person",
     "first_name": "Dean",
     "last_name": "Smith",
     "id_number": "9001010001081",
@@ -104,6 +104,7 @@ class FakeLegitifyGateway:
         entity_status=None,
         search_results=None,
         search_status=None,
+        search_by_fixture: bool = False,
         require_service_key: bool = True,
     ) -> None:
         # {(golden_record_id, accountable_institution_id): client row}
@@ -127,26 +128,27 @@ class FakeLegitifyGateway:
                 str(GR_COMPANY): {
                     "id": str(GR_COMPANY),
                     "entity_type": "company",
-                    "registered_name": "Acme (Pty) Ltd",
-                    "registration_number": "2020/123456/07",
+                    "legal_name": "Acme (Pty) Ltd",
+                    "registration_no": "2020/123456/07",
+                    "is_trust": False,
                     "is_active": True,
                 },
                 str(GR_TRUST): {
                     "id": str(GR_TRUST),
-                    "entity_type": "trust",
-                    "name": "Smith Family Trust",
-                    "registration_number": "IT1234/2020",
+                    "entity_type": "company",
+                    "legal_name": "Smith Family Trust",
+                    "registration_no": "IT1234/2020",
+                    "masters_office": "Cape Town",
+                    "is_trust": True,
                     "is_active": True,
                 },
                 str(GR_OTHER_AI): {
                     "id": str(GR_OTHER_AI),
-                    "entity_type": "person",
                     "full_name": "Someone Else",
                     "is_active": True,
                 },
                 str(GR_SHARED): {
                     "id": str(GR_SHARED),
-                    "entity_type": "person",
                     "full_name": "Shared Person",
                     "is_active": True,
                     "tenant_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
@@ -157,6 +159,7 @@ class FakeLegitifyGateway:
         self.entity_status = entity_status
         self.search_results = search_results
         self.search_status = search_status
+        self.search_by_fixture = search_by_fixture
         self.require_service_key = require_service_key
         self.requests: list[httpx.Request] = []
 
@@ -210,8 +213,28 @@ class FakeLegitifyGateway:
             return httpx.Response(self.search_status, json={"message": "error", "data": None})
         if request.method != "POST":
             return httpx.Response(405, json={"message": "Method not allowed", "data": None})
+        payload = json.loads(request.content)
+        if not isinstance(payload, dict) or set(payload) != {"entity_type", "query", "limit", "offset"}:
+            return httpx.Response(422, json={"message": "Invalid generic search body", "data": None})
+        entity_type, query, limit, offset = (payload[k] for k in ("entity_type", "query", "limit", "offset"))
+        if (
+            entity_type not in ("person", "company", "trust")
+            or not isinstance(query, str) or not query.strip() or len(query.strip()) > 200
+            or not query.strip().strip("%_")
+            or type(limit) is not int or not 1 <= limit <= 50
+            or type(offset) is not int or offset < 0 or offset % limit
+            or request.url.query
+        ):
+            return httpx.Response(422, json={"message": "Invalid search or pagination", "data": None})
         results = self.search_results if self.search_results is not None else []
-        return httpx.Response(200, json={"message": "OK", "data": {"results": results}})
+        if self.search_by_fixture:
+            fields = ("id_number", "passport_number", "full_name", "first_name", "last_name", "surname") if entity_type == "person" else ("legal_name", "registration_no")
+            results = []
+            for record in self.entities.values():
+                logical_type = "trust" if record.get("is_trust") is True else record.get("entity_type", "person")
+                if logical_type == entity_type and any(query.casefold() in str(record.get(field, "")).casefold() for field in fields):
+                    results.append(dict(record))
+        return httpx.Response(200, json={"message": "OK", "data": results[offset:offset + limit]})
 
     def _handle_linkage(self, request: httpx.Request, golden_record_id: str) -> httpx.Response:
         if self.linkage_status is not None:
@@ -236,7 +259,7 @@ class FakeLegitifyGateway:
         record = self.entities.get(golden_record_id)
         # entity_type defaults to person upstream and 404s on a mismatch.
         expected = request.url.params.get("entity_type", "person")
-        if record is None or record.get("entity_type") != expected:
+        if record is None or record.get("entity_type", "person") != expected:
             return httpx.Response(404, json={"message": "Not found", "data": None})
         return httpx.Response(200, json={"message": "OK", "data": record})
 
@@ -349,7 +372,7 @@ class TenantVisibilityTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(visible.entity_type, entity_type)
                 self.assertEqual(visible.display_cache.name, expected_name)
                 self.assertEqual(
-                    gateway.entity_requests[0].url.params.get("entity_type"), entity_type
+                    gateway.entity_requests[0].url.params.get("entity_type"), "company"
                 )
 
     async def test_shared_golden_record_is_visible_to_every_linked_institution(self):
@@ -728,7 +751,7 @@ class SearchWorkflowContractTests(unittest.IsolatedAsyncioTestCase):
         kwargs = {
             "entity_type": "person",
             "accountable_institution_id": AI_OWN,
-            "id_number": "9001010001081",
+            "query": "9001010001081",
         }
         kwargs.update(overrides)
         client = _client(gateway)
@@ -757,7 +780,7 @@ class SearchWorkflowContractTests(unittest.IsolatedAsyncioTestCase):
         # The contracted person payload was sent, and the linkage call was scoped.
         self.assertEqual(
             gateway.search_payloads,
-            [{"entity_type": "person", "id_number": "9001010001081"}],
+            [{"entity_type": "person", "query": "9001010001081", "limit": 50, "offset": 0}],
         )
         self.assertEqual(
             gateway.linkage_requests[0].url.params.get("accountable_institution_id"),
@@ -808,21 +831,101 @@ class SearchWorkflowContractTests(unittest.IsolatedAsyncioTestCase):
         gateway = FakeLegitifyGateway(search_status=503)
 
         with _no_sleep():
-            with self.assertRaises(EntityServiceError):
+            with self.assertRaises((EntityReconciliationError, GoldenRecordVisibilityError)):
                 await self._search(gateway)
 
         self.assertEqual(len(gateway.search_requests), READ_MAX_ATTEMPTS)
         self.assertEqual(gateway.linkage_requests, [])
         self.assertEqual(gateway.entity_requests, [])
 
-    async def test_unsupported_entity_types_never_reach_the_gateway(self):
-        for entity_type in ("company", "trust"):
+    async def test_company_and_trust_use_generic_global_search(self):
+        for entity_type, gr_id, query in (("company", GR_COMPANY, "Acme"), ("trust", GR_TRUST, "IT1234/2020")):
             with self.subTest(entity_type=entity_type):
-                gateway = FakeLegitifyGateway()
-                result = await self._search(gateway, entity_type=entity_type)
+                gateway = FakeLegitifyGateway(search_by_fixture=True)
+                result = await self._search(gateway, entity_type=entity_type, query=query)
+                self.assertEqual(result.status, SearchStatus.MATCHED)
+                self.assertEqual(result.record.golden_record_id, str(gr_id))
+                self.assertEqual(result.record.entity_type, entity_type)
+                self.assertEqual(gateway.search_payloads, [{"entity_type": entity_type, "query": query, "limit": 50, "offset": 0}])
+                self.assertEqual(gateway.entity_requests[0].url.params.get("entity_type"), "company")
+                self.assertEqual(gateway.linkage_requests[0].url.params.get("accountable_institution_id"), str(AI_OWN))
 
-                self.assertEqual(result.status, SearchStatus.UNSUPPORTED)
-                self.assertEqual(gateway.requests, [])
+    async def test_fixture_query_modes_cover_all_logical_types(self):
+        for entity_type, query, gr_id in (
+            ("person", "9001010001081", GR_PERSON), ("person", "Dean", GR_PERSON),
+            ("person", "A1234567", GR_PERSON), ("company", "2020/123456/07", GR_COMPANY),
+            ("company", "Acme", GR_COMPANY), ("trust", "IT1234/2020", GR_TRUST),
+            ("trust", "Smith Family", GR_TRUST),
+        ):
+            with self.subTest(entity_type=entity_type, query=query):
+                gateway = FakeLegitifyGateway(search_by_fixture=True)
+                gateway.entities[str(GR_PERSON)]["passport_number"] = "A1234567"
+                result = await self._search(gateway, entity_type=entity_type, query=query)
+                self.assertEqual(result.status, SearchStatus.MATCHED)
+                self.assertEqual(result.record.golden_record_id, str(gr_id))
+                self.assertEqual(gateway.search_payloads, [{"entity_type": entity_type, "query": query, "limit": 50, "offset": 0}])
+
+    async def test_multi_office_same_number_trusts_remain_ambiguous(self):
+        gateway = FakeLegitifyGateway(search_by_fixture=True)
+        gateway.entities[str(GR_SHARED)] = dict(gateway.entities[str(GR_TRUST)], id=str(GR_SHARED), masters_office="Pretoria")
+        result = await self._search(gateway, entity_type="trust", query="IT1234/2020")
+        self.assertEqual(result.status, SearchStatus.AMBIGUOUS)
+        self.assertEqual({c.masters_office for c in result.candidates}, {"Cape Town", "Pretoria"})
+        self.assertEqual({c.registration_no for c in result.candidates}, {"IT1234/2020"})
+        self.assertEqual(len(gateway.linkage_requests), 2)
+        self.assertTrue(all(r.url.params["entity_type"] == "company" for r in gateway.entity_requests))
+
+    async def test_cross_creator_tenant_visible_canonical_passport_is_displayed(self):
+        gateway = FakeLegitifyGateway(search_results=[{
+            "id": str(GR_PERSON), "passport_number": "SEARCH-PASSPORT", "full_name": "SEARCH-PII",
+        }])
+        gateway.entities[str(GR_PERSON)].update(id_number=None, passport_number="CANONICAL-PASSPORT", tenant_id="OTHER-CREATOR-TENANT")
+        result = await self._search(gateway, query="A1234567")
+        self.assertEqual(result.status, SearchStatus.MATCHED)
+        self.assertEqual(result.record.id_number, "CANONICAL-PASSPORT")
+        for private in ("SEARCH-PASSPORT", "SEARCH-PII", "OTHER-CREATOR-TENANT", SERVICE_KEY):
+            self.assertNotIn(private, repr(result))
+
+    async def test_gateway_pages_flat_list_and_scans_past_invisible_page(self):
+        gateway = FakeLegitifyGateway(search_results=[{"id": str(GR_OTHER_AI)}, {"id": str(GR_PERSON)}, {"id": str(GR_SHARED)}])
+        with patch("services.golden_record_search.SEARCH_PAGE_SIZE", 1):
+            result = await self._search(gateway)
+        self.assertEqual(result.status, SearchStatus.AMBIGUOUS)
+        self.assertEqual([p["offset"] for p in gateway.search_payloads], [0, 1, 2, 3])
+        self.assertEqual([p["limit"] for p in gateway.search_payloads], [1, 1, 1, 1])
+        self.assertEqual({c.golden_record_id for c in result.candidates}, {str(GR_PERSON), str(GR_SHARED)})
+        self.assertNotIn(f"{ENTITIES_PREFIX}{GR_OTHER_AI}", gateway.paths)
+        for request in gateway.entity_requests:
+            gr_id = request.url.path[len(ENTITIES_PREFIX):]
+            self.assertLess(gateway.paths.index(f"{LINKAGE_PREFIX}{gr_id}"), gateway.paths.index(request.url.path))
+
+    async def test_company_search_with_canonical_trust_is_fault_not_filtering(self):
+        gateway = FakeLegitifyGateway(search_results=[{"id": str(GR_TRUST)}])
+        with self.assertRaises((EntityReconciliationError, GoldenRecordVisibilityError)):
+            await self._search(gateway, entity_type="company", query="Smith")
+        self.assertEqual(len(gateway.entity_requests), 1)
+
+
+class FakeGatewaySearchShapeTests(unittest.TestCase):
+    def test_flat_list_data_envelope_and_offset_slicing(self):
+        gateway = FakeLegitifyGateway(search_results=[{"id": str(GR_PERSON)}, {"id": str(GR_SHARED)}])
+        for offset, expected in ((0, [{"id": str(GR_PERSON)}]), (1, [{"id": str(GR_SHARED)}]), (2, [])):
+            request = httpx.Request("POST", f"{GATEWAY_URL}/api/v1/entities/search", headers={"X-Service-Key": SERVICE_KEY}, json={
+                "entity_type": "person", "query": "Dean", "limit": 1, "offset": offset,
+            })
+            response = gateway.handle(request)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json(), {"message": "OK", "data": expected})
+
+    def test_simulator_rejects_legacy_overrides_and_invalid_pagination(self):
+        valid = {"entity_type": "person", "query": "Dean", "limit": 50, "offset": 0}
+        invalid = [dict(valid, **{key: "override"}) for key in ("tenant_id", "accountable_institution_id", "is_company", "id_number", "passport_number", "passport_country")]
+        invalid.extend(dict(valid, **override) for override in ({"limit": 0}, {"limit": 51}, {"limit": True}, {"offset": -1}, {"offset": "0"}, {"offset": 1}, {"query": ""}, {"query": "%_%"}))
+        for payload in invalid:
+            with self.subTest(payload=payload):
+                gateway = FakeLegitifyGateway()
+                request = httpx.Request("POST", f"{GATEWAY_URL}/api/v1/entities/search", headers={"X-Service-Key": SERVICE_KEY}, json=payload)
+                self.assertEqual(gateway.handle(request).status_code, 422)
 
 
 if __name__ == "__main__":

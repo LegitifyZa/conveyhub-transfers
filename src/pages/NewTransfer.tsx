@@ -3,32 +3,8 @@ import { useNavigate } from 'react-router-dom'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui'
 import { Button, Input } from '@/components/ui'
 import { Search, Building, Folder, ArrowRight, AlertCircle, CheckCircle } from 'lucide-react'
-import { GoldenRecordsApi } from '@/lib/api/goldenRecordsApi'
-import type { GoldenRecordCandidate } from '@/lib/api/goldenRecordsApi'
-
-interface GoldenRecord {
-  id: string
-  name: string
-  idNumber: string
-  registrationNumber?: string
-  passport?: string
-  email?: string
-  phone?: string
-  address?: string
-  propertyAddress?: string
-  propertyValue?: number
-}
-
-function candidateToGoldenRecord(candidate: GoldenRecordCandidate): GoldenRecord {
-  return {
-    id: candidate.goldenRecordId,
-    name: candidate.name ?? '',
-    idNumber: candidate.idNumber ?? '',
-    email: candidate.email ?? undefined
-  }
-}
-
-type SearchType = 'id' | 'passport'
+import type { GoldenRecordEntityType } from '@/lib/api/goldenRecordsApi'
+import { GoldenRecordCandidateDetails, useGoldenRecordSearch } from '@/components/GoldenRecordsSearch'
 type MatterCategory = 'transfer' | 'development'
 
 const transferOptions = [
@@ -73,13 +49,11 @@ const NewTransfer: React.FC = () => {
   const [matterType, setMatterType] = useState('')
   const [transferFrom, setTransferFrom] = useState('')
 
-  const [searchTerm, setSearchTerm] = useState('')
-  const [searchType, setSearchType] = useState<SearchType>('id')
-  const [passportCountry, setPassportCountry] = useState('ZA')
-  const [isSearching, setIsSearching] = useState(false)
-  const [searchResult, setSearchResult] = useState<GoldenRecord | null>(null)
-  const [candidates, setCandidates] = useState<GoldenRecordCandidate[]>([])
-  const [error, setError] = useState<string | null>(null)
+  const {
+    searchTerm, setSearchTerm, searchType, setSearchType, isSearching,
+    searchResult, candidates, error, setError, notFound, resetSearch,
+    handleSearch, handleSelectCandidate
+  } = useGoldenRecordSearch(step === 'search')
 
   const canContinueToSearch = !!(fileReference.trim() && matterType.trim())
 
@@ -99,69 +73,9 @@ const NewTransfer: React.FC = () => {
     setStep('search')
   }
 
-  const handleSearch = async () => {
-    if (!searchTerm.trim()) {
-      setError('Please enter a search term')
-      setSearchResult(null)
-      setCandidates([])
-      return
-    }
-    if (searchType === 'passport' && !passportCountry.trim()) {
-      setError('Please enter a passport country')
-      setSearchResult(null)
-      setCandidates([])
-      return
-    }
-
-    setIsSearching(true)
-    setError(null)
-    setSearchResult(null)
-    setCandidates([])
-
-    try {
-      const result = await GoldenRecordsApi.search(
-        searchType === 'id'
-          ? { entity_type: 'person', id_number: searchTerm.trim() }
-          : {
-              entity_type: 'person',
-              passport_number: searchTerm.trim(),
-              passport_country: passportCountry.trim().toUpperCase()
-            }
-      )
-
-      switch (result.status) {
-        case 'matched':
-          if (result.record) {
-            setSearchResult(candidateToGoldenRecord(result.record))
-          } else {
-            setError('No record found in golden records')
-          }
-          break
-        case 'ambiguous':
-          setCandidates(result.candidates ?? [])
-          break
-        case 'unsupported':
-          setError(result.detail ?? 'This search type is not yet available')
-          break
-        case 'not_found':
-        default:
-          setError('No record found in golden records')
-          break
-      }
-    } catch (err) {
-      setError('Failed to search golden records')
-    } finally {
-      setIsSearching(false)
-    }
-  }
-
-  const handleSelectCandidate = (candidate: GoldenRecordCandidate) => {
-    setSearchResult(candidateToGoldenRecord(candidate))
-    setCandidates([])
-  }
-
   const handleContinueWithRecord = () => {
     if (searchResult) {
+      resetSearch()
       navigate('/transfers/workflow', {
         state: {
           goldenRecord: searchResult,
@@ -172,34 +86,26 @@ const NewTransfer: React.FC = () => {
   }
 
   const handleContinueWithoutRecord = () => {
+    if (!notFound) return
+    resetSearch()
     navigate('/transfers/workflow', {
       state: {
         goldenRecordSearch: {
-          searchType,
-          searchTerm: searchTerm.trim()
+          entityType: searchType,
+          query: searchTerm.trim()
         },
         matterDetails: buildMatterDetails()
       }
     })
   }
 
-  const getPlaceholder = () => {
-    switch (searchType) {
-      case 'id':
-        return 'Enter ID number...'
-      case 'passport':
-        return 'Enter passport number...'
-    }
-  }
+  const getPlaceholder = () => searchType === 'person'
+    ? 'Enter name, ID, passport or email...'
+    : 'Enter name or registration number...'
 
-  const getSearchTypeLabel = () => {
-    switch (searchType) {
-      case 'id':
-        return 'ID Number'
-      case 'passport':
-        return 'Passport Number'
-    }
-  }
+  const getSearchTypeLabel = () => searchType === 'person'
+    ? 'Name, ID number, passport number or email'
+    : 'Name or registration number'
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-navy-900">
@@ -321,26 +227,21 @@ const NewTransfer: React.FC = () => {
                 {/* Search Type Selection */}
                 <div>
                   <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-3">
-                    Search By
+                    Entity Type
                   </label>
                   <div className="flex flex-wrap gap-3">
-                    {(['id', 'passport'] as SearchType[]).map((type) => (
+                    {(['person', 'company', 'trust'] as GoldenRecordEntityType[]).map((type) => (
                       <button
                         key={type}
-                        onClick={() => {
-                          setSearchType(type)
-                          setSearchResult(null)
-                          setCandidates([])
-                          setError(null)
-                        }}
+                        onClick={() => setSearchType(type)}
+                        aria-pressed={searchType === type}
                         className={`px-4 py-2 rounded-lg font-medium transition-colors ${
                           searchType === type
                             ? 'bg-blue-600 text-white'
                             : 'bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-navy-700 dark:text-gray-300 dark:hover:bg-navy-600'
                         }`}
                       >
-                        {type === 'id' && 'ID Number'}
-                        {type === 'passport' && 'Passport'}
+                        {type === 'person' ? 'Person' : type === 'company' ? 'Company' : 'Trust'}
                       </button>
                     ))}
                   </div>
@@ -357,7 +258,8 @@ const NewTransfer: React.FC = () => {
                       placeholder={getPlaceholder()}
                       value={searchTerm}
                       onChange={(e) => setSearchTerm(e.target.value)}
-                      onKeyPress={(e) => e.key === 'Enter' && handleSearch()}
+                      onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void handleSearch() } }}
+                      aria-label="Golden Record search query"
                       className="flex-1"
                     />
                     <Button
@@ -371,21 +273,11 @@ const NewTransfer: React.FC = () => {
                   </div>
                 </div>
 
-                {/* Passport Country */}
-                {searchType === 'passport' && (
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                      Passport Country
-                    </label>
-                    <Input
-                      type="text"
-                      placeholder="e.g. ZA"
-                      value={passportCountry}
-                      onChange={(e) => setPassportCountry(e.target.value)}
-                      className="w-full"
-                    />
-                  </div>
-                )}
+                {/* Search Guidance */}
+                <p className="text-sm text-gray-600 dark:text-gray-400">
+                  Enter a search query of up to 200 characters.
+                  {isSearching && ' Searching Golden Records...'}
+                </p>
 
                 {/* Ambiguous candidates */}
                 {candidates.length > 0 && (
@@ -406,13 +298,7 @@ const NewTransfer: React.FC = () => {
                           onClick={() => handleSelectCandidate(candidate)}
                           className="w-full text-left p-3 bg-white border border-gray-200 rounded-lg hover:border-blue-400 transition-colors"
                         >
-                          <div className="font-medium text-gray-900">
-                            {candidate.name ?? 'Unnamed record'}
-                          </div>
-                          <div className="text-sm text-gray-600">
-                            {candidate.idNumber ?? 'No ID number'}
-                            {candidate.email ? ` · ${candidate.email}` : ''}
-                          </div>
+                          <GoldenRecordCandidateDetails candidate={candidate} />
                         </button>
                       ))}
                     </div>
@@ -425,18 +311,20 @@ const NewTransfer: React.FC = () => {
                     <div className="flex items-start space-x-3">
                       <AlertCircle className="w-5 h-5 text-red-600 mt-0.5" />
                       <div className="flex-1">
-                        <h3 className="font-medium text-red-800">No record found</h3>
+                        <h3 className="font-medium text-red-800">{notFound ? 'No record found' : 'Search could not be completed'}</h3>
                         <p className="text-sm text-red-600 mb-4">
-                          We could not find a matching record in Golden Records.
+                          {error}
                         </p>
-                        <Button
-                          onClick={handleContinueWithoutRecord}
-                          variant="outline"
-                          className="w-full flex items-center justify-center space-x-2"
-                        >
-                          <span>Continue to Create Matter</span>
-                          <ArrowRight className="w-4 h-4" />
-                        </Button>
+                        {notFound && (
+                          <Button
+                            onClick={handleContinueWithoutRecord}
+                            variant="outline"
+                            className="w-full flex items-center justify-center space-x-2"
+                          >
+                            <span>Continue to Create Matter</span>
+                            <ArrowRight className="w-4 h-4" />
+                          </Button>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -464,6 +352,16 @@ const NewTransfer: React.FC = () => {
                         <span className="font-medium text-gray-700">ID Number:</span>
                         <p className="text-gray-900">{searchResult.idNumber}</p>
                       </div>
+                      <div>
+                        <span className="font-medium text-gray-700">Entity Type:</span>
+                        <p className="text-gray-900 capitalize">{searchResult.entityType}</p>
+                      </div>
+                      {searchResult.entityType === 'trust' && (
+                        <div>
+                          <span className="font-medium text-gray-700">Master’s Office:</span>
+                          <p className="text-gray-900">{searchResult.mastersOffice ?? 'Not available'}</p>
+                        </div>
+                      )}
                       {searchResult.registrationNumber && (
                         <div>
                           <span className="font-medium text-gray-700">Registration Number:</span>

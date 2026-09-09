@@ -52,7 +52,6 @@ def _transport_error(operation: str, category: str = "timeout") -> EntityService
 def _person(**overrides) -> dict:
     entity = {
         "id": str(_GR_ID),
-        "entity_type": "person",
         "first_name": "Dean",
         "last_name": "Smith",
         "id_number": "9001010001081",
@@ -133,6 +132,12 @@ class ResolveVisibleGoldenRecordHappyPathTests(unittest.IsolatedAsyncioTestCase)
             visible.display_cache,
             DisplayCache(name="Acme (Pty) Ltd", id_number="2020/123456/07", email=None),
         )
+
+    async def test_person_serializer_without_type_is_accepted_with_identity_fields(self):
+        client = _client(entity={"id": str(_GR_ID), "full_name": "Dean Smith", "id_number": "9001010001081"})
+        visible = await _resolve(client)
+        self.assertEqual(visible.display_cache.name, "Dean Smith")
+        self.assertEqual(visible.entity_type, "person")
 
     async def test_entity_without_id_or_type_fields_is_accepted(self):
         client = _client(entity={"name": "Dean Smith"})
@@ -300,10 +305,16 @@ class ResolveVisibleGoldenRecordInputValidationTests(unittest.IsolatedAsyncioTes
     async def test_accepts_every_supported_entity_type(self):
         for entity_type in ("person", "company", "trust"):
             with self.subTest(expected_entity_type=entity_type):
-                client = _client(entity=_person(entity_type=entity_type))
+                physical_type = "company" if entity_type == "trust" else entity_type
+                entity = _person() if entity_type == "person" else {
+                    "id": str(_GR_ID), "entity_type": physical_type,
+                    "legal_name": "Legal Name", "registration_no": "REG-1",
+                    "is_trust": entity_type == "trust",
+                }
+                client = _client(entity=entity)
                 visible = await _resolve(client, expected_entity_type=entity_type)
                 self.assertEqual(visible.entity_type, entity_type)
-                client.get_entity.assert_awaited_once_with(str(_GR_ID), entity_type)
+                client.get_entity.assert_awaited_once_with(str(_GR_ID), physical_type)
 
     async def test_rejects_unsupported_entity_types_before_any_call(self):
         client = _client()
@@ -331,6 +342,47 @@ class ResolveVisibleGoldenRecordInputValidationTests(unittest.IsolatedAsyncioTes
                     await _resolve(client, golden_record_id=bad_gr)
         client.get_client_by_golden_record.assert_not_awaited()
         client.get_entity.assert_not_awaited()
+
+    async def test_trust_get_is_company_after_linkage_and_preserves_logical_type(self):
+        events = []
+        client = _client()
+        client.get_client_by_golden_record.side_effect = lambda *args: events.append("linkage") or _linkage()
+        client.get_entity.side_effect = lambda *args: events.append("entity") or {
+            "id": str(_GR_ID), "entity_type": "company", "is_trust": True,
+            "legal_name": "Family Trust", "registration_no": "IT1234/2020", "masters_office": "Cape Town",
+        }
+        visible = await _resolve(client, expected_entity_type="trust")
+        self.assertEqual(events, ["linkage", "entity"])
+        self.assertEqual(visible.entity_type, "trust")
+        self.assertEqual(visible.display_cache.name, "Family Trust")
+        self.assertEqual(visible.display_cache.id_number, "IT1234/2020")
+        client.get_entity.assert_awaited_once_with(str(_GR_ID), "company")
+
+    async def test_trust_requires_explicit_company_type_and_strict_true_marker(self):
+        for entity in (
+            {"entity_type": "company"},
+            {"entity_type": "company", "is_trust": False},
+            {"entity_type": "company", "is_trust": None},
+            {"entity_type": "company", "is_trust": "true"},
+            {"entity_type": "company", "is_trust": 1},
+            {"entity_type": "trust", "is_trust": True},
+            {"is_trust": True},
+        ):
+            with self.subTest(entity=entity):
+                client = _client(entity=dict(id=str(_GR_ID), legal_name="PRIVATE-PII", **entity))
+                with self.assertRaises(GoldenRecordVisibilityError) as ctx:
+                    await _resolve(client, expected_entity_type="trust")
+                self.assertNotIn("PRIVATE-PII", str(ctx.exception))
+                client.get_entity.assert_awaited_once_with(str(_GR_ID), "company")
+
+    async def test_invalid_canonical_ids_and_metadata_are_integration_faults(self):
+        for metadata in ({"id": None}, {"id": ""}, {"id": "PRIVATE-BAD-ID"}, {"id": 1}, {"entity_type": []}, {"entity_type": {}}):
+            with self.subTest(metadata=metadata):
+                client = _client(entity=_person(**metadata))
+                with self.assertRaises(GoldenRecordVisibilityError) as ctx:
+                    await _resolve(client)
+                self.assertEqual(ctx.exception.http_status, 503)
+                self.assertNotIn("PRIVATE-BAD-ID", str(ctx.exception))
 
 
 class GoldenRecordVisibilityErrorTests(unittest.TestCase):
@@ -380,6 +432,9 @@ class DisplayCacheExtractionTests(unittest.TestCase):
             ({"full_name": "Full", "name": "Name", "first_name": "First"}, "Full"),
             ({"name": "Name", "registered_name": "Registered"}, "Name"),
             ({"registered_name": "Registered", "first_name": "First"}, "Registered"),
+            ({"legal_name": "Legal", "first_name": "First"}, "Legal"),
+            ({"first_name": "First", "surname": "Surname"}, "First Surname"),
+            ({"surname": "Surname"}, "Surname"),
             ({"first_name": "First", "last_name": "Last"}, "First Last"),
             ({"first_name": "  First  "}, "First"),
             ({"last_name": "Last"}, "Last"),
@@ -396,6 +451,7 @@ class DisplayCacheExtractionTests(unittest.TestCase):
             ({"id_number": "9001010001081", "passport_number": "A1"}, "9001010001081"),
             ({"id_number": "   ", "passport_number": "A1234567"}, "A1234567"),
             ({"registration_number": "2020/123456/07"}, "2020/123456/07"),
+            ({"registration_no": "2020/123456/07"}, "2020/123456/07"),
             ({"id_number": 9001010001081}, None),
             ({}, None),
         ]

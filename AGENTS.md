@@ -25,10 +25,11 @@ FastAPI. See `server/routes/v1/goldenRecords.ts`.
 
 Branch `deedly/mvp0/entities-golden-record/golden-record-search` — do not merge.
 
-- Person search implemented end-to-end (tenant-safe: search → candidate ids →
-  linkage visibility → typed fetch → visible results only).
-- Company/trust return a controlled `unsupported` result; **blocked on the
-  upstream search payload contract from Clive** — do not guess payloads.
+- Person, company, and trust search implemented end-to-end (tenant-safe: search
+  → candidate ids → linkage visibility → typed fetch → visible results only).
+- DEEDLY sends the upstream generic `query` payload and `entity_type:
+  person|company|trust`; trust search uses `entity_type=trust` and canonical
+  trust retrieval uses `entity_type=company`.
 - Browser-side JWT issuance/storage/`Authorization` header wiring is deferred
   to the separate **Authentication, RBAC & Tenant Security** project. No fake
   tokens, service keys, or auth bypasses may be added in the interim.
@@ -38,9 +39,13 @@ Branch `deedly/mvp0/entities-golden-record/golden-record-search` — do not merg
 ```powershell
 # Python tests (from python_server/)
 python -m unittest tests.<module>
+# Full regression (set ENTITIES_SOURCE_ROOT to run landed contract tests)
+$env:ENTITIES_SOURCE_ROOT = "D:\WORK\Legitify\Projects\legitify-be-main\legitify-be-main"
+python -m unittest discover -s tests -p 'test_*.py'
 
 # Node route tests
 npx tsx --test server/tests/<file>.test.ts
+npx tsx --test src/components/GoldenRecordsSearch.test.tsx
 
 # Typecheck (note: pre-existing TS6059 rootDir error on
 # server/utils/conveyancingAccounts.ts is unrelated to current work)

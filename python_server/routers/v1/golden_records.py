@@ -22,18 +22,24 @@ router = APIRouter()
 
 # Allow-list: anything else (tenant ids, actor fields, undocumented search keys)
 # is rejected rather than silently ignored.
-_ALLOWED_BODY_KEYS = {"entity_type", "id_number", "passport_number", "passport_country"}
-_PERSON_FIELD_KEYS = ("id_number", "passport_number", "passport_country")
+_ALLOWED_BODY_KEYS = {"entity_type", "query"}
 
 
 def _map_candidate(candidate: GoldenRecordCandidate) -> dict:
-    return {
+    data = {
         "goldenRecordId": candidate.golden_record_id,
         "entityType": candidate.entity_type,
         "name": candidate.name,
         "idNumber": candidate.id_number,
         "email": candidate.email,
     }
+    if candidate.entity_type in {"company", "trust"}:
+        data.update(
+            registrationNo=candidate.registration_no,
+            mastersOffice=candidate.masters_office,
+            isTrust=candidate.is_trust,
+        )
+    return data
 
 
 def _map_result(result: GoldenRecordSearchResult) -> dict:
@@ -92,7 +98,7 @@ async def search_golden_records(
         )
 
     entity_type = body["entity_type"]
-    if entity_type not in SUPPORTED_ENTITY_TYPES:
+    if not isinstance(entity_type, str) or entity_type not in SUPPORTED_ENTITY_TYPES:
         raise HTTPException(
             status_code=422,
             detail="entity_type must be one of 'person', 'company' or 'trust'",
@@ -103,9 +109,7 @@ async def search_golden_records(
         result = await service.search(
             entity_type=entity_type,
             accountable_institution_id=user.accountable_institution_id,
-            id_number=_optional_string_field(body, "id_number"),
-            passport_number=_optional_string_field(body, "passport_number"),
-            passport_country=_optional_string_field(body, "passport_country"),
+            query=_optional_string_field(body, "query"),
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))

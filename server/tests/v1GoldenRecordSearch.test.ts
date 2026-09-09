@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { createServer, IncomingMessage, Server, ServerResponse } from 'node:http'
 import { randomUUID } from 'node:crypto'
-import { after, before, beforeEach, describe, it } from 'node:test'
+import { after, before, beforeEach, describe, it, mock } from 'node:test'
 
 import jwt from 'jsonwebtoken'
 
@@ -27,6 +27,16 @@ let upstream: Server
 let upstreamBaseUrl: string
 let captured: CapturedRequest[]
 let upstreamResponse: { status: number; body: unknown } | null
+let upstreamMode: 'normal' | 'broken-body' | 'stalled-headers' | 'stalled-body' = 'normal'
+
+const personCandidate = {
+  goldenRecordId: '4a472877-dc13-46fa-a827-6f1b18d073e3',
+  entityType: 'person',
+  name: 'Jane Example',
+  idNumber: '9001010001081',
+  email: 'jane@example.test',
+}
+const matchedResponse = { message: 'OK', data: { status: 'matched', entityType: 'person', record: personCandidate } }
 
 function makeToken(role: number, ai: number, abilities: string[] = ['api', 'transfers:read']) {
   return jwt.sign(
@@ -69,7 +79,7 @@ async function httpPost(path: string, headers: Record<string, string>, json?: un
 
 before(async () => {
   captured = []
-  upstreamResponse = { status: 200, body: { message: 'OK', data: { status: 'matched' } } }
+  upstreamResponse = { status: 200, body: matchedResponse }
 
   upstream = createServer((req: IncomingMessage, res: ServerResponse) => {
     const chunks: Buffer[] = []
@@ -81,6 +91,14 @@ before(async () => {
         headers: req.headers,
         body: Buffer.concat(chunks).toString('utf8'),
       })
+      if (upstreamMode === 'stalled-headers') return
+      if (upstreamMode === 'stalled-body' || upstreamMode === 'broken-body') {
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': '9999' })
+        res.flushHeaders()
+        res.write('{"privateUpstreamData":')
+        if (upstreamMode === 'broken-body') setTimeout(() => res.destroy(), 10)
+        return
+      }
       const response = upstreamResponse ?? { status: 500, body: null }
       res
         .writeHead(response.status, { 'Content-Type': 'application/json' })
@@ -109,12 +127,14 @@ after(async () => {
 })
 
 function searchBody() {
-  return { entity_type: 'person', id_number: '9001010001081' }
+  return { entity_type: 'person', query: '9001010001081' }
 }
 
 describe('Golden Record search BFF proxy', async () => {
   beforeEach(() => {
-    upstreamResponse = { status: 200, body: { message: 'OK', data: { status: 'matched' } } }
+    captured = []
+    upstreamMode = 'normal'
+    upstreamResponse = { status: 200, body: matchedResponse }
   })
 
   it('returns 401 when no JWT is supplied and never calls upstream', async () => {
@@ -156,7 +176,7 @@ describe('Golden Record search BFF proxy', async () => {
       status: 200,
       body: {
         message: 'OK',
-        data: { status: 'matched', entityType: 'person', record: { goldenRecordId: 'abc' } },
+        data: { status: 'matched', entityType: 'person', record: personCandidate },
       },
     }
     const { status, body } = await httpPost(
@@ -168,9 +188,9 @@ describe('Golden Record search BFF proxy', async () => {
     assert.deepEqual(body, upstreamResponse.body)
   })
 
-  it('relays FastAPI 400 and 422 responses', async () => {
-    for (const upstreamStatus of [400, 422]) {
-      upstreamResponse = { status: upstreamStatus, body: { success: false, error: 'bad' } }
+  it('relays FastAPI validation and authorization responses', async () => {
+    for (const upstreamStatus of [400, 401, 403, 422]) {
+      upstreamResponse = { status: upstreamStatus, body: { detail: 'Request rejected' } }
       const { status, body } = await httpPost(
         '/api/v1/golden-records/search',
         { Authorization: `Bearer ${makeToken(3, 5)}` },
@@ -194,6 +214,52 @@ describe('Golden Record search BFF proxy', async () => {
     assert.equal(status, 503)
     assert.deepEqual(body, upstreamResponse.body)
   })
+
+  it('relays company matches, trust ambiguity and normalized not-found without changing metadata', async () => {
+    const trust = {
+      goldenRecordId: '72872e36-b8b0-46f9-8719-e4fc4a319626', entityType: 'trust',
+      name: 'Example Trust', idNumber: null, email: null,
+      registrationNo: 'IT123/2020', mastersOffice: 'Cape Town', isTrust: true,
+    }
+    for (const data of [
+      { status: 'matched', entityType: 'company', record: { ...trust, entityType: 'company', name: 'Example Ltd', registrationNo: '2020/123456/07', mastersOffice: null, isTrust: false } },
+      { status: 'ambiguous', entityType: 'trust', candidates: [trust, { ...trust, goldenRecordId: 'db0418e5-cfad-45e7-9435-53bf8fec56a4', mastersOffice: 'Pretoria' }] },
+      { status: 'not_found', entityType: 'person' },
+    ]) {
+      upstreamResponse = { status: 200, body: { message: 'OK', data } }
+      const request = { entity_type: data.entityType, query: 'Example' }
+      const { status, body } = await httpPost('/api/v1/golden-records/search', { Authorization: `Bearer ${makeToken(3, 5)}` }, request)
+      assert.equal(status, 200)
+      assert.deepEqual(body, upstreamResponse.body)
+      assert.deepEqual(JSON.parse(captured[captured.length - 1].body), request)
+    }
+  })
+
+  it('maps a response-body failure to a safe 503 without returning partial upstream data', async () => {
+    upstreamMode = 'broken-body'
+    const { status, body } = await httpPost('/api/v1/golden-records/search', { Authorization: `Bearer ${makeToken(3, 5)}` }, searchBody())
+    assert.equal(status, 503)
+    assert.deepEqual(body, { success: false, error: 'Golden Record service unavailable' })
+  })
+
+  for (const mode of ['stalled-headers', 'stalled-body'] as const) {
+    it(`uses a 35-second deadline including ${mode}`, async () => {
+      const nativeTimeout = AbortSignal.timeout.bind(AbortSignal)
+      const timeout = mock.method(AbortSignal, 'timeout', (milliseconds: number) => {
+        assert.equal(milliseconds, 35_000)
+        return nativeTimeout(100)
+      })
+      upstreamMode = mode
+      try {
+        const { status, body } = await httpPost('/api/v1/golden-records/search', { Authorization: `Bearer ${makeToken(3, 5)}` }, searchBody())
+        assert.equal(status, 503)
+        assert.deepEqual(body, { success: false, error: 'Golden Record service unavailable' })
+        assert.equal(timeout.mock.callCount(), 1)
+      } finally {
+        timeout.mock.restore()
+      }
+    })
+  }
 
   it('maps an upstream network failure to a safe 503', async () => {
     const saved = process.env.DEEDLY_API_BASE_URL

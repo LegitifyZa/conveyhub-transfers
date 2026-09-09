@@ -25,10 +25,14 @@ class PersonSearch:
     passport_country: Optional[str] = None
 
     def __post_init__(self):
+        for value in (self.id_number, self.passport_number, self.passport_country):
+            if value is not None and (not isinstance(value, str) or not value.strip()):
+                raise ValueError("Identity fields must be non-empty strings")
         has_id = self.id_number is not None
         has_passport = self.passport_number is not None and self.passport_country is not None
+        has_any_passport = self.passport_number is not None or self.passport_country is not None
 
-        if has_id and has_passport:
+        if has_id and has_any_passport:
             raise ValueError(
                 "Only one of id_number or (passport_number + passport_country) may be provided"
             )
@@ -38,13 +42,12 @@ class PersonSearch:
             )
 
     def to_search_payload(self) -> dict[str, Any]:
-        payload: dict[str, Any] = {"entity_type": "person"}
-        if self.id_number is not None:
-            payload["id_number"] = self.id_number
-            return payload
-        payload["passport_number"] = self.passport_number
-        payload["passport_country"] = self.passport_country
-        return payload
+        return {
+            "entity_type": "person",
+            "query": (self.id_number if self.id_number is not None else self.passport_number).strip(),
+            "limit": 50,
+            "offset": 0,
+        }
 
 
 class EntityReconciliationError(Exception):

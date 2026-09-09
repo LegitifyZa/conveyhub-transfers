@@ -19,9 +19,9 @@ import httpx
 
 from config import Settings
 
-# Guide §4: entities supports person, company and trust. ``entity_type`` is
-# required for companies and trusts on retrieval because the service defaults to
-# person and 404s on a mismatch.
+# Search supports person, company and trust. Canonical trust retrieval uses
+# company; the logical trust discriminator is validated by the visibility
+# service against the returned is_trust field.
 SUPPORTED_ENTITY_TYPES = frozenset({"person", "company", "trust"})
 
 # Guide §3.3. Reads (get, search, clients linkage) get the 5-10s band; a person
@@ -144,24 +144,25 @@ class EntitiesClient:
     async def get_entity(self, entity_id: str, entity_type: str) -> Any:
         """``GET /api/v1/entities/{id}?entity_type=...`` — the full Golden Record.
 
-        ``entity_type`` is always sent, including for persons: the service
-        defaults to person and 404s on a mismatch (guide §4), which surfaces as
-        ``category="not_found"``.
+        ``entity_type`` is always sent, including for persons. Trusts use the
+        canonical company retrieval type; callers validate the returned type
+        because upstream may fall back from a person lookup to a company.
 
         As a trusted first-party caller the response contains the full record.
         Per guide §7.5 the caller must persist only ``golden_record_id`` plus the
         approved display cache. The record's ``tenant_id`` must never be used as
         a visibility test — Golden Records are shared across tenants by design.
         """
-        if entity_type not in SUPPORTED_ENTITY_TYPES:
+        if not isinstance(entity_type, str) or entity_type not in SUPPORTED_ENTITY_TYPES:
             raise ValueError("entity_type must be one of 'person', 'company' or 'trust'")
+        retrieval_type = "company" if entity_type == "trust" else entity_type
 
         response = await self._send(
             self._client.get,
             f"/api/v1/entities/{entity_id}",
             operation="get_entity",
             max_attempts=READ_MAX_ATTEMPTS,
-            params={"entity_type": entity_type},
+            params={"entity_type": retrieval_type},
             timeout=_read_timeout(),
         )
         return self._extract_data(response, operation="get_entity")

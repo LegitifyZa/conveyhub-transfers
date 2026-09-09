@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useReducer, ReactNode } from 'react'
 import { calculateTotalTransferCosts, formatZAR } from '@/utils/transferCalculations'
+import type { GoldenRecordEntityType } from '@/lib/api/goldenRecordsApi'
 
 // Types
 export interface PropertyDetails {
@@ -16,6 +17,11 @@ export interface PropertyDetails {
 
 export interface Party {
   id: string
+  goldenRecordId?: string
+  entityType?: GoldenRecordEntityType
+  registrationNo?: string | null
+  mastersOffice?: string | null
+  isTrust?: boolean
   type: 'buyer' | 'seller'
   name: string
   idNumber: string // SA ID number or company registration number

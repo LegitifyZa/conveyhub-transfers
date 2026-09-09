@@ -15,6 +15,13 @@ export interface ApiRequestOptions {
   cache?: RequestCache
 }
 
+export class ApiRequestError extends Error {
+  constructor(public readonly status: number, message: string) {
+    super(message)
+    this.name = 'ApiRequestError'
+  }
+}
+
 export async function apiRequest<T>(path: string, options: ApiRequestOptions = {}): Promise<T> {
   const headers: Record<string, string> = {}
 
@@ -45,7 +52,7 @@ export async function apiRequest<T>(path: string, options: ApiRequestOptions = {
 
   if (!response.ok) {
     const text = await response.text().catch(() => 'Request failed')
-    throw new Error(`${response.status} ${response.statusText}: ${text}`)
+    throw new ApiRequestError(response.status, `${response.status} ${response.statusText}: ${text}`)
   }
 
   return response.json() as Promise<T>
