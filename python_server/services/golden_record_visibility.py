@@ -8,8 +8,8 @@ so Deedly asserts it here, in this order and never any other:
 2. ``GET /api/v1/users/clients/s2s/by-golden-record/{gr}?accountable_institution_id={ai}``
    — 404 means "unknown or inaccessible Golden Record"; fail closed.
 3. Only after step 2 succeeds:
-   ``GET /api/v1/entities/{gr}?entity_type={expected}`` — 404 means type
-   mismatch or missing; fail closed. The returned record must be usable.
+   ``GET /api/v1/entities/{gr}?entity_type=person|company`` — trusts use company.
+   Validate returned type and trust classification; 404 or unusable records fail closed.
 
 There is no fallback to an unscoped lookup, no retry without the AI filter, and
 no database transaction may be open while these calls are in flight.
@@ -122,7 +122,7 @@ def _validate_inputs(
     accountable_institution_id: int,
     expected_entity_type: str,
 ) -> UUID:
-    if expected_entity_type not in SUPPORTED_ENTITY_TYPES:
+    if not isinstance(expected_entity_type, str) or expected_entity_type not in SUPPORTED_ENTITY_TYPES:
         raise ValueError("expected_entity_type must be one of 'person', 'company' or 'trust'")
     if (
         isinstance(accountable_institution_id, bool)
@@ -173,8 +173,9 @@ async def resolve_visible_golden_record(
             "invalid_response", operation="get_client_by_golden_record"
         )
 
+    retrieval_type = "company" if expected_entity_type == "trust" else expected_entity_type
     try:
-        entity = await client.get_entity(str(gr_id), expected_entity_type)
+        entity = await client.get_entity(str(gr_id), retrieval_type)
     except EntityServiceError as exc:
         if exc.is_not_found:
             raise GoldenRecordVisibilityError(
@@ -188,12 +189,30 @@ async def resolve_visible_golden_record(
         raise GoldenRecordVisibilityError("invalid_response", operation="get_entity")
 
     returned_id = entity.get("id")
-    if returned_id is not None and str(returned_id) != str(gr_id):
-        raise GoldenRecordVisibilityError("invalid_response", operation="get_entity")
+    if "id" in entity:
+        if not isinstance(returned_id, str) or not returned_id:
+            raise GoldenRecordVisibilityError("invalid_response", operation="get_entity")
+        try:
+            returned_uuid = UUID(returned_id)
+        except (ValueError, TypeError) as exc:
+            raise GoldenRecordVisibilityError("invalid_response", operation="get_entity") from exc
+        if str(returned_uuid) != str(gr_id):
+            raise GoldenRecordVisibilityError("invalid_response", operation="get_entity")
 
     returned_type = entity.get("entity_type")
-    if returned_type is not None and returned_type != expected_entity_type:
-        raise GoldenRecordVisibilityError("type_mismatch_or_missing", operation="get_entity")
+    if expected_entity_type == "trust":
+        if not isinstance(returned_type, str) or returned_type != "company":
+            raise GoldenRecordVisibilityError("invalid_response", operation="get_entity")
+        if entity.get("is_trust") is not True:
+            raise GoldenRecordVisibilityError("invalid_response", operation="get_entity")
+    else:
+        if "entity_type" in entity and returned_type is not None:
+            if not isinstance(returned_type, str) or not returned_type:
+                raise GoldenRecordVisibilityError("invalid_response", operation="get_entity")
+            if returned_type != retrieval_type:
+                raise GoldenRecordVisibilityError("type_mismatch_or_missing", operation="get_entity")
+        if expected_entity_type == "company" and entity.get("is_trust") is True:
+            raise GoldenRecordVisibilityError("invalid_response", operation="get_entity")
 
     if not _is_usable(entity):
         raise GoldenRecordVisibilityError("inactive", operation="get_entity")
@@ -229,16 +248,19 @@ def _clean(value: Any) -> Optional[str]:
 
 
 def _display_name(entity: dict) -> Optional[str]:
-    for key in ("display_name", "full_name", "name", "registered_name"):
+    for key in ("display_name", "full_name", "legal_name", "name", "registered_name"):
         value = _clean(entity.get(key))
         if value:
             return value
-    parts = [p for p in (_clean(entity.get("first_name")), _clean(entity.get("last_name"))) if p]
+    parts = [p for p in (
+        _clean(entity.get("first_name")),
+        _clean(entity.get("surname")) or _clean(entity.get("last_name")),
+    ) if p]
     return " ".join(parts) or None
 
 
 def _display_id_number(entity: dict) -> Optional[str]:
-    for key in ("id_number", "passport_number", "registration_number"):
+    for key in ("id_number", "passport_number", "registration_no", "registration_number"):
         value = _clean(entity.get(key))
         if value:
             return value

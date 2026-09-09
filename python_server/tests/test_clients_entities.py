@@ -119,7 +119,7 @@ class EntitiesClientTimeoutBandTests(unittest.IsolatedAsyncioTestCase):
         client = EntitiesClient(_make_settings())
         await client.get_entity("ent-1", "person")
         await client.get_client_by_golden_record("gr-1", 5)
-        await client.search_entities({"id_number": "9001010001081"})
+        await client.search_entities({"entity_type": "person", "query": "9001010001081", "limit": 50, "offset": 0})
 
         timeouts = [
             mock_client.get.await_args_list[0].kwargs["timeout"],
@@ -448,7 +448,8 @@ class EntitiesClientGetEntityTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(entity_type=entity_type):
                 await client.get_entity("ent-1", entity_type)
                 self.assertEqual(
-                    mock_client.get.await_args.kwargs["params"], {"entity_type": entity_type}
+                    mock_client.get.await_args.kwargs["params"],
+                    {"entity_type": "company" if entity_type == "trust" else entity_type}
                 )
 
         self.assertEqual(SUPPORTED_ENTITY_TYPES, frozenset({"person", "company", "trust"}))
@@ -458,17 +459,17 @@ class EntitiesClientSearchTests(unittest.IsolatedAsyncioTestCase):
     @mock.patch("httpx.AsyncClient")
     async def test_search_uses_post_and_returns_envelope_data(self, mock_client_class):
         response = _make_response(
-            200, {"message": "ok", "data": {"results": [{"id": "ent-2"}]}}
+            200, {"message": "ok", "data": [{"id": "ent-2"}]}
         )
         mock_client = mock.AsyncMock()
         mock_client.post.return_value = response
         mock_client_class.return_value = mock_client
 
         client = EntitiesClient(_make_settings())
-        payload = {"name": "Dean"}
+        payload = {"entity_type": "person", "query": "Dean", "limit": 50, "offset": 0}
         result = await client.search_entities(payload)
 
-        self.assertEqual(result, {"results": [{"id": "ent-2"}]})
+        self.assertEqual(result, [{"id": "ent-2"}])
         mock_client.post.assert_awaited_once_with(
             "/api/v1/entities/search",
             json=payload,
@@ -486,7 +487,7 @@ class EntitiesClientSearchTests(unittest.IsolatedAsyncioTestCase):
         mock_client_class.return_value = mock_client
 
         client = EntitiesClient(_make_settings())
-        await client.search_entities({"name": "Dean"})
+        await client.search_entities({"entity_type": "person", "query": "Dean", "limit": 50, "offset": 0})
 
         mock_client.post.assert_awaited_once()
         mock_client.get.assert_not_awaited()
@@ -500,7 +501,7 @@ class EntitiesClientSearchTests(unittest.IsolatedAsyncioTestCase):
 
         client = EntitiesClient(_make_settings())
         with self.assertRaises(EntityServiceError):
-            await client.search_entities({"name": "Dean"})
+            await client.search_entities({"entity_type": "person", "query": "Dean", "limit": 50, "offset": 0})
 
 
 class EntitiesClientSubmitPersonTests(unittest.IsolatedAsyncioTestCase):

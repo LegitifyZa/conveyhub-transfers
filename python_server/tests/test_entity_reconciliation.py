@@ -18,13 +18,13 @@ class PersonSearchValidationTests(unittest.TestCase):
     def test_valid_id_number(self):
         s = PersonSearch(id_number="9001010001081")
         self.assertEqual(s.id_number, "9001010001081")
-        self.assertEqual(s.to_search_payload(), {"entity_type": "person", "id_number": "9001010001081"})
+        self.assertEqual(s.to_search_payload(), {"entity_type": "person", "query": "9001010001081", "limit": 50, "offset": 0})
 
     def test_valid_passport(self):
         s = PersonSearch(passport_number="A1234567", passport_country="ZA")
         self.assertEqual(
             s.to_search_payload(),
-            {"entity_type": "person", "passport_number": "A1234567", "passport_country": "ZA"},
+            {"entity_type": "person", "query": "A1234567", "limit": 50, "offset": 0},
         )
 
     def test_rejects_both_identity_paths(self):
@@ -43,6 +43,30 @@ class PersonSearchValidationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             PersonSearch(passport_number="A1234567")
 
+    def test_rejects_partial_or_nonempty_nonstring_identity_combinations(self):
+        cases = [
+            {"passport_country": "ZA"},
+            {"id_number": "123", "passport_number": "A1"},
+            {"id_number": "123", "passport_country": "ZA"},
+        ]
+        for bad in ("", " \t", 123, True, [], {}):
+            cases.extend([
+                {"id_number": bad},
+                {"passport_number": bad, "passport_country": "ZA"},
+                {"passport_number": "A1", "passport_country": bad},
+            ])
+        for kwargs in cases:
+            with self.subTest(kwargs=kwargs):
+                with self.assertRaises(ValueError):
+                    PersonSearch(**kwargs)
+
+    def test_legacy_helper_never_invents_a_passport_country_filter(self):
+        for country in ("ZA", "GB"):
+            search = PersonSearch(passport_number="A1234567", passport_country=country)
+            self.assertEqual(search.to_search_payload(), {
+                "entity_type": "person", "query": "A1234567", "limit": 50, "offset": 0,
+            })
+
 
 class EntityReconciliationServiceTests(unittest.IsolatedAsyncioTestCase):
     def _service(self, client=None):
@@ -52,7 +76,7 @@ class EntityReconciliationServiceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_id_number_search_calls_entities_once(self):
         client = AsyncMock(spec=EntitiesClient)
-        client.search_entities = AsyncMock(return_value={"results": [{"id": "ent-1"}]})
+        client.search_entities = AsyncMock(return_value=[{"id": "ent-1"}])
         client.get_entity = AsyncMock(return_value={"id": "ent-1", "entity_type": "person"})
         client.submit_person = AsyncMock()
 
@@ -60,7 +84,7 @@ class EntityReconciliationServiceTests(unittest.IsolatedAsyncioTestCase):
         result = await service.reconcile_person(PersonSearch(id_number="9001010001081"))
 
         client.search_entities.assert_awaited_once_with(
-            {"entity_type": "person", "id_number": "9001010001081"}
+            {"entity_type": "person", "query": "9001010001081", "limit": 50, "offset": 0}
         )
         client.get_entity.assert_awaited_once_with("ent-1", "person")
         client.submit_person.assert_not_awaited()
@@ -70,7 +94,7 @@ class EntityReconciliationServiceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_passport_search_matches(self):
         client = AsyncMock(spec=EntitiesClient)
-        client.search_entities = AsyncMock(return_value={"results": [{"id": "ent-2"}]})
+        client.search_entities = AsyncMock(return_value=[{"id": "ent-2"}])
         client.get_entity = AsyncMock(return_value={"id": "ent-2", "entity_type": "person"})
         client.submit_person = AsyncMock()
 
@@ -82,8 +106,9 @@ class EntityReconciliationServiceTests(unittest.IsolatedAsyncioTestCase):
         client.search_entities.assert_awaited_once_with(
             {
                 "entity_type": "person",
-                "passport_number": "A1234567",
-                "passport_country": "ZA",
+                "query": "A1234567",
+                "limit": 50,
+                "offset": 0,
             }
         )
         self.assertEqual(result.status, ReconciliationStatus.MATCHED)
@@ -91,7 +116,7 @@ class EntityReconciliationServiceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_zero_matches_returns_not_found(self):
         client = AsyncMock(spec=EntitiesClient)
-        client.search_entities = AsyncMock(return_value={"results": []})
+        client.search_entities = AsyncMock(return_value=[])
         client.get_entity = AsyncMock()
         client.submit_person = AsyncMock()
 
@@ -106,7 +131,7 @@ class EntityReconciliationServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_multiple_matches_returns_ambiguous(self):
         client = AsyncMock(spec=EntitiesClient)
         client.search_entities = AsyncMock(
-            return_value={"results": [{"id": "ent-1"}, {"id": "ent-2"}]}
+            return_value=[{"id": "ent-1"}, {"id": "ent-2"}]
         )
         client.get_entity = AsyncMock()
         client.submit_person = AsyncMock()
@@ -132,7 +157,7 @@ class EntityReconciliationServiceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_search_result_without_id_raises_safe(self):
         client = AsyncMock(spec=EntitiesClient)
-        client.search_entities = AsyncMock(return_value={"results": [{"name": "Dean"}]})
+        client.search_entities = AsyncMock(return_value=[{"name": "Dean"}])
 
         service = self._service(client)
         with self.assertRaises(EntityReconciliationError) as ctx:
@@ -177,7 +202,7 @@ class EntityReconciliationServiceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_reconcile_person_never_calls_submit(self):
         client = AsyncMock(spec=EntitiesClient)
-        client.search_entities = AsyncMock(return_value={"results": [{"id": "ent-1"}]})
+        client.search_entities = AsyncMock(return_value=[{"id": "ent-1"}])
         client.get_entity = AsyncMock(return_value={"id": "ent-1", "entity_type": "person"})
         client.submit_person = AsyncMock()
 

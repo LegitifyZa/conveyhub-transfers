@@ -1,1 +1,1 @@
-export { apiRequest, type ApiRequestOptions } from './httpClient'
+export { apiRequest, ApiRequestError, type ApiRequestOptions } from './httpClient'

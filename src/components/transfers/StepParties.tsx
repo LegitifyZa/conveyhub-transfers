@@ -5,6 +5,7 @@ import { Card, CardContent } from '@/components/ui'
 import { Input } from '@/components/ui'
 import { Button } from '@/components/ui'
 import { useTransfer, Party } from './TransferForm'
+import type { GoldenRecord, GoldenRecordEntityType } from '@/lib/api/goldenRecordsApi'
 
 const validateIDNumber = (idNumber: string): boolean => {
   // Basic SA ID validation (13 digits)
@@ -58,7 +59,8 @@ const PartyCard: React.FC<PartyCardProps> = ({
               )}
             </div>
             <p className="text-xs text-gray-500 dark:text-gray-400">
-              {party.company || 'Individual'}
+              {party.entityType === 'trust' ? 'Trust' : party.company || 'Individual'}
+              {party.entityType === 'trust' && ` · Registration: ${party.registrationNo ?? 'Not available'} · Master’s Office: ${party.mastersOffice ?? 'Not available'}`}
             </p>
           </div>
         </div>
@@ -110,10 +112,10 @@ const PartyCard: React.FC<PartyCardProps> = ({
             value={party.idNumber}
             onChange={(e) => onUpdate(party.id, 'idNumber', e.target.value)}
             className={`text-sm transition-all duration-200 focus:ring-2 focus:ring-teal-500 focus:border-teal-500 ${
-              party.idNumber && !validateIDNumber(party.idNumber) ? 'border-red-500' : ''
+              (!party.entityType || party.entityType === 'person') && party.idNumber && !validateIDNumber(party.idNumber) ? 'border-red-500' : ''
             }`}
           />
-          {party.idNumber && !validateIDNumber(party.idNumber) && (
+          {(!party.entityType || party.entityType === 'person') && party.idNumber && !validateIDNumber(party.idNumber) && (
             <p className="text-xs text-red-500 mt-1">Invalid ID/Reg number format</p>
           )}
         </div>
@@ -210,40 +212,50 @@ const PartyCard: React.FC<PartyCardProps> = ({
   </Card>
 )
 
+export function goldenRecordToParty(record: GoldenRecord, id: string): Party {
+  return {
+    id,
+    type: 'buyer',
+    goldenRecordId: record.goldenRecordId,
+    entityType: record.entityType,
+    registrationNo: record.registrationNo,
+    mastersOffice: record.mastersOffice,
+    isTrust: record.isTrust,
+    name: record.name,
+    idNumber: record.entityType === 'person' ? record.idNumber : record.registrationNo ?? '',
+    email: record.email || '',
+    phone: record.phone || '',
+    address: record.address || '',
+    company: record.entityType === 'person' ? '' : record.name,
+    isPrimary: true
+  }
+}
+
 const StepParties: React.FC = () => {
   const { state, dispatch } = useTransfer()
   const { parties } = state
   const location = useLocation()
-  const goldenRecord = location.state?.goldenRecord
-  const goldenRecordSearch = location.state?.goldenRecordSearch
+  const goldenRecord = location.state?.goldenRecord as GoldenRecord | undefined
+  const goldenRecordSearch = location.state?.goldenRecordSearch as { entityType: GoldenRecordEntityType; query: string } | undefined
 
   // Auto-populate buyer from golden record if available
   useEffect(() => {
     if (parties.filter(p => p.type === 'buyer').length > 0) return
 
     if (goldenRecord) {
-      const newParty: Party = {
-        id: Date.now().toString(),
-        type: 'buyer',
-        name: goldenRecord.name,
-        idNumber: goldenRecord.idNumber,
-        email: goldenRecord.email || '',
-        phone: goldenRecord.phone || '',
-        address: goldenRecord.address || '',
-        isPrimary: true
-      }
+      const newParty = goldenRecordToParty(goldenRecord, Date.now().toString())
       dispatch({ type: 'ADD_PARTY', payload: newParty })
     } else if (goldenRecordSearch) {
-      const { searchType, searchTerm } = goldenRecordSearch as { searchType: 'id' | 'name' | 'registration'; searchTerm: string }
       const newParty: Party = {
         id: Date.now().toString(),
         type: 'buyer',
-        name: searchType === 'name' ? searchTerm : '',
-        idNumber: searchType === 'id' || searchType === 'registration' ? searchTerm : '',
+        entityType: goldenRecordSearch.entityType,
+        name: '',
+        idNumber: '',
         email: '',
         phone: '',
         address: '',
-        company: searchType === 'registration' ? searchTerm : '',
+        company: '',
         isPrimary: true
       }
       dispatch({ type: 'ADD_PARTY', payload: newParty })
