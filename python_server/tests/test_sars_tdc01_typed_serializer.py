@@ -134,6 +134,14 @@ class TypedSerializerTests(MinimalDocumentMixin, unittest.TestCase):
         result = validate_tdc01_xml(xml)
         self.assertFalse(result.valid)
 
+    def test_unresolved_placeholder_is_not_a_sars_value(self):
+        doc = self._minimal_document()
+        doc.sellers_details[0].nature_of_person = "UNRESOLVED"
+        xml = serialize_tdc01(doc)
+        result = validate_tdc01_xml(xml)
+        self.assertFalse(result.valid)
+        self.assertTrue(any("NatureOfPerson" in e for e in result.errors))
+
 
 class GoldenFixtureTests(MinimalDocumentMixin, unittest.TestCase):
     def test_golden_fixture_matches_deterministic_output(self):
@@ -259,16 +267,14 @@ class TypedBuilderTests(unittest.IsolatedAsyncioTestCase):
     async def test_builder_unresolved_nature_of_person_for_company(self):
         payload = self._minimal_payload()
         payload["ownership_groups"]["golden_record_sourced"][0]["entity_type"] = "company"
-        doc = await build_tdc01_document(
-            payload,
-            transaction_type="Sale",
-            td_reference_no="TDE0A1B2C3",
-            form_wizard={"normal": True},
-        )
-        self.assertEqual(doc.sellers_details[0].nature_of_person, "UNRESOLVED")
-        xml = serialize_tdc01(doc)
-        result = validate_tdc01_xml(xml)
-        self.assertFalse(result.valid)
+        with self.assertRaises(SarsTdc01BuilderError) as ctx:
+            await build_tdc01_document(
+                payload,
+                transaction_type="Sale",
+                td_reference_no="TDE0A1B2C3",
+                form_wizard={"normal": True},
+            )
+        self.assertIn("nature_of_person_unresolved", " ".join(ctx.exception.blockers or []))
 
     async def test_builder_no_sellers_fails(self):
         payload = self._minimal_payload()

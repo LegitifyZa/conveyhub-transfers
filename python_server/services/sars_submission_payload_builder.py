@@ -29,6 +29,9 @@ async def build_payload(
 
     The returned dictionary is intended to be stored in
     ``sars_submissions.submission_payload`` as an immutable snapshot.
+    ``form_wizard`` and ``transaction_type`` may be supplied by the caller and
+    are recorded inside the snapshot; no additional schema is required for the
+    local-foundation JSONB capture.
     """
     transfer = await sars_repository.get_transfer_with_property(transfer_id, connection=connection)
     if not transfer:

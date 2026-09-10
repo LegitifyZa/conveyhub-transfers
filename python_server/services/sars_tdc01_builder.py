@@ -73,10 +73,16 @@ async def build_tdc01_document(
 ) -> SarsTdc01Document:
     """Build a SarsTdc01Document from the canonical payload snapshot.
 
-    ``transaction_type`` and ``td_reference_no`` are required. ``form_wizard``
-    should be the dict of wizard answers used to determine TransactionType.
-    ``golden_records`` may provide canonical identity data by golden_record_id;
-    otherwise ``entities_client`` is consulted for person records.
+    ``transaction_type`` and ``td_reference_no`` are required external SARS
+    contract gates. ``transaction_type`` is passed through as the SARS
+    DescriptionTextType; no authoritative DEEDLY-to-SARS vocabulary is assumed.
+    ``td_reference_no`` must be supplied by the caller; the initial allocation
+    lifecycle is unresolved, so this gate remains closed until the number is
+    available. ``form_wizard`` should be the dict of wizard answers used to
+    determine the V1.17 wizard structure. ``golden_records`` may provide
+    canonical identity data by golden_record_id; otherwise ``entities_client``
+    is consulted for person records. Company and trust parties remain an
+    explicit unresolved ``NatureOfPerson`` gate.
     """
     groups = payload.get("ownership_groups", {})
     transfer = groups.get("transfer_matter_sourced", {}) or {}
@@ -110,8 +116,29 @@ async def build_tdc01_document(
         if entity_type == "person" and entities_client is not None:
             golden_records[grid] = await entities_client.get_entity(grid, "person")
 
-    sellers = [_build_representative(p, party_sars, golden_records) for p in parties if p.get("role") == "transferor"]
-    purchasers = [_build_representative(p, party_sars, golden_records) for p in parties if p.get("role") == "transferee"]
+    unresolved: list[str] = []
+    sellers: list[SarsPropertyRepresentative] = []
+    purchasers: list[SarsPropertyRepresentative] = []
+
+    for p in parties:
+        try:
+            rep = _build_representative(p, party_sars, golden_records)
+        except SarsUnresolvedMappingError as exc:
+            unresolved.append(
+                f"nature_of_person_unresolved:entity_type={p.get('entity_type')}:"
+                f"golden_record_id={p.get('golden_record_id')}:reason={exc}"
+            )
+            continue
+        if p.get("role") == "transferor":
+            sellers.append(rep)
+        elif p.get("role") == "transferee":
+            purchasers.append(rep)
+
+    if unresolved:
+        raise SarsTdc01BuilderError(
+            "NatureOfPerson unresolved for one or more parties",
+            blockers=unresolved,
+        )
 
     if not sellers:
         raise SarsTdc01BuilderError("No seller party found in payload", blockers=["missing_sellers"])
@@ -165,12 +192,7 @@ def _build_representative(
     gr = golden_records.get(grid) or {}
 
     entity_type = (party.get("entity_type") or "").lower()
-    try:
-        nature = map_nature_of_person(entity_type, gr)
-    except SarsUnresolvedMappingError:
-        # Explicit unresolved gate: the party is included in the doc model with a
-        # sentinel nature_of_person so the readiness service can report it.
-        nature = "UNRESOLVED"
+    nature = map_nature_of_person(entity_type, gr)
 
     spouse = sars.get("spouse_details") or {}
     return SarsPropertyRepresentative(

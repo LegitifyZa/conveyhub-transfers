@@ -65,6 +65,12 @@ async def check_tdc01_readiness(
     Builds the typed V1.17 document from the immutable payload snapshot and
     validates it against the bundled XSD. Every returned blocker is a dict with
     ``field`` and ``message`` keys.
+
+    This is a fail-closed local gate. It does not make live SARS calls.
+    ``transaction_type``, ``td_reference_no`` and ``form_wizard`` are unresolved
+    SARS contract gates: if they are absent, the document cannot be produced and
+    a blocker is returned. ``td_reference_no`` in particular is a hard gate; the
+    implementation does not assume how the initial allocation lifecycle works.
     """
     blockers: List[Dict[str, Any]] = []
 
