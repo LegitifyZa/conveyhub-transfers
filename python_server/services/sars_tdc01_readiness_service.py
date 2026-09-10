@@ -8,7 +8,9 @@ from uuid import UUID
 
 import repositories.sars as sars_repository
 from services.sars_submission_payload_builder import SarsSubmissionPayloadBuilderError, build_payload
-from services.sars_xml_validator import validate_payload
+from services.sars_tdc01_builder import SarsTdc01BuilderError, build_tdc01_document
+from services.sars_tdc01_value_maps import SarsUnresolvedMappingError, SarsValueMapError
+from services.sars_xml_validator import validate_payload, validate_tdc01_document
 
 
 class SarsTdc01ReadinessServiceError(Exception):
@@ -45,6 +47,111 @@ async def check_readiness(
     await _check_xml_payload(transfer_id, blockers, connection)
 
     return blockers
+
+
+async def check_tdc01_readiness(
+    transfer_id: Union[UUID, str],
+    *,
+    submission_id: Optional[Union[UUID, str]] = None,
+    form_wizard: Optional[Dict[str, Any]] = None,
+    transaction_type: Optional[str] = None,
+    td_reference_no: Optional[str] = None,
+    golden_records: Optional[Dict[str, Dict[str, Any]]] = None,
+    entities_client: Any = None,
+    connection: Any = None,
+) -> List[Dict[str, Any]]:
+    """Return typed TDC01 readiness blockers for a transfer.
+
+    Builds the typed V1.17 document from the immutable payload snapshot and
+    validates it against the bundled XSD. Every returned blocker is a dict with
+    ``field`` and ``message`` keys.
+    """
+    blockers: List[Dict[str, Any]] = []
+
+    if submission_id:
+        submission = await sars_repository.get_sars_submission(submission_id, connection=connection)
+    else:
+        submission = await sars_repository.get_active_draft_submission(transfer_id, connection=connection)
+    submission = submission or {}
+
+    td_reference_no = td_reference_no or submission.get("sars_reference_no")
+    form_wizard = form_wizard or submission.get("submission_payload", {}).get("form_wizard")
+    transaction_type = transaction_type or submission.get("submission_payload", {}).get("transaction_type")
+
+    if not td_reference_no:
+        blockers.append({"field": "submission.td_reference_no", "message": "TDReferenceNo is required"})
+    if not transaction_type:
+        blockers.append({"field": "submission.transaction_type", "message": "TransactionType is required"})
+    if not form_wizard:
+        blockers.append({"field": "submission.form_wizard", "message": "FormWizard is required"})
+
+    if blockers:
+        return blockers
+
+    try:
+        payload = await build_payload(transfer_id, submission_id=submission_id, connection=connection)
+    except SarsSubmissionPayloadBuilderError as exc:
+        blockers.append({"field": "submission_payload", "message": f"Unable to build submission payload: {exc}"})
+        return blockers
+
+    try:
+        document = await build_tdc01_document(
+            payload,
+            transaction_type=transaction_type,
+            td_reference_no=td_reference_no,
+            form_wizard=form_wizard,
+            golden_records=golden_records,
+            entities_client=entities_client,
+            submission=submission,
+        )
+    except SarsTdc01BuilderError as exc:
+        blockers.extend(exc.blockers or [{"field": "tdc01", "message": str(exc)}])
+        return blockers
+    except SarsUnresolvedMappingError as exc:
+        blockers.append({"field": exc.target, "message": str(exc)})
+        return blockers
+    except SarsValueMapError as exc:
+        blockers.append({"field": exc.target, "message": str(exc)})
+        return blockers
+
+    _check_tdc01_document(document, blockers)
+
+    if blockers:
+        return blockers
+
+    result = validate_tdc01_document(document)
+    if not result.valid:
+        blockers.extend(
+            [{"field": "tdc01.xsd", "message": e} for e in result.errors]
+            or [{"field": "tdc01.xsd", "message": "XML validation failed"}]
+        )
+
+    return blockers
+
+
+def _check_tdc01_document(document: Any, blockers: List[Dict[str, Any]]) -> None:
+    for rep in document.sellers_details + document.purchasers_details:
+        if rep.nature_of_person == "UNRESOLVED":
+            blockers.append(
+                {
+                    "field": "party.nature_of_person",
+                    "message": "NatureOfPerson is unresolved for a party; supply the authoritative mapping",
+                }
+            )
+    if not document.sellers_details:
+        blockers.append({"field": "sellers_details", "message": "At least one seller is required"})
+    if not document.purchasers_details:
+        blockers.append({"field": "purchasers_details", "message": "At least one purchaser is required"})
+    if not document.property_details:
+        blockers.append({"field": "property_details", "message": "PropertyDetails is required"})
+    if not document.duty_interest_payable:
+        blockers.append({"field": "duty_interest_payable", "message": "DutyInterestPayable is required"})
+    if not document.conveyancer_details:
+        blockers.append({"field": "conveyancer_details", "message": "ConveyancerDetails is required"})
+    if not document.sellers_declarations:
+        blockers.append({"field": "sellers_declarations", "message": "Seller declarations are required"})
+    if not document.purchasers_declarations:
+        blockers.append({"field": "purchasers_declarations", "message": "Purchaser declarations are required"})
 
 
 def _check_transfer(transfer: Dict[str, Any], blockers: List[Dict[str, Any]]) -> None:

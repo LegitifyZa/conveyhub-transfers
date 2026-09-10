@@ -25,7 +25,7 @@ from services.sars_submission_lifecycle_service import (
     SarsSubmissionLifecycleServiceError,
     create_or_refresh_draft,
 )
-from services.sars_tdc01_readiness_service import check_readiness
+from services.sars_tdc01_readiness_service import check_readiness, check_tdc01_readiness
 from utils.validate import is_uuid
 
 router = APIRouter()
@@ -122,7 +122,7 @@ async def get_sars_aggregate(
     calculations = await sars_repository.get_latest_sars_calculation(transfer_id)
     party_details = await sars_repository.list_transfer_parties_with_sars_details(transfer_id)
     property_details = await sars_repository.get_sars_property_details(transfer_id)
-    readiness = await check_readiness(transfer_id)
+    readiness = await check_tdc01_readiness(transfer_id)
 
     data = {
         "transferId": transfer_id,
@@ -314,5 +314,5 @@ async def get_sars_readiness(
     if not transfer:
         raise HTTPException(status_code=404, detail="Not found")
 
-    blockers = await check_readiness(transfer_id)
+    blockers = await check_tdc01_readiness(transfer_id)
     return {"message": "OK", "data": {"ready": not blockers, "blockers": blockers}}

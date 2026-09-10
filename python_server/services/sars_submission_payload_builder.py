@@ -21,6 +21,8 @@ async def build_payload(
     transfer_id: Union[UUID, str],
     *,
     submission_id: Optional[Union[UUID, str]] = None,
+    form_wizard: Optional[Dict[str, Any]] = None,
+    transaction_type: Optional[str] = None,
     connection: Any = None,
 ) -> Dict[str, Any]:
     """Assemble the canonical SARS TDC01 payload for ``transfer_id``.
@@ -47,6 +49,8 @@ async def build_payload(
     payload = {
         "snapshot_at": datetime.now(timezone.utc).isoformat(),
         "payload_version": "1.0",
+        "form_wizard": form_wizard,
+        "transaction_type": transaction_type,
         "ownership_groups": {
             "transfer_matter_sourced": _build_transfer_section(transfer, financials),
             "golden_record_sourced": _build_parties_section(parties),

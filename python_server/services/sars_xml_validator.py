@@ -118,3 +118,24 @@ def validate_payload(payload: Dict[str, Any], *, schema_path: Optional[str] = No
             errors=[f"Payload serialization failed: {exc}"],
         )
     return validate(xml_string, schema_path=schema_path)
+
+
+def validate_tdc01_xml(xml_string: str, *, schema_path: Optional[str] = None) -> ValidationResult:
+    """Validate a typed TDC01 XML string against the configured V1.17 XSD."""
+    return validate(xml_string, schema_path=schema_path)
+
+
+def validate_tdc01_document(document: Any, *, schema_path: Optional[str] = None) -> ValidationResult:
+    """Serialize a typed SarsTdc01Document and validate against V1.17."""
+    from services.sars_tdc01_xml_serializer import serialize_tdc01
+
+    try:
+        xml_string = serialize_tdc01(document)
+    except Exception as exc:
+        return ValidationResult(
+            valid=False,
+            schema_loaded=False,
+            schema_path=schema_path or _load_xsd_path(),
+            errors=[f"Typed TDC01 document serialization failed: {exc}"],
+        )
+    return validate_tdc01_xml(xml_string, schema_path=schema_path)

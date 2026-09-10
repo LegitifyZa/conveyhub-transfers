@@ -125,7 +125,7 @@ class SarsRouteTests(unittest.TestCase):
             new=AsyncMock(return_value={"id": str(uuid.uuid4()), "declaration_type": "seller"}),
         )
         self.readiness_patch = patch(
-            "routers.v1.sars.check_readiness",
+            "routers.v1.sars.check_tdc01_readiness",
             new=AsyncMock(return_value=[]),
         )
         self.submissions_patch = patch(
