@@ -12,6 +12,7 @@ from config import load_settings
 from db import close_pool, get_pool
 from routers import address, clauses, document_catalogue, documents, generated_documents, health, milestones, template_data_fields, transfers, users
 from routers.v1 import golden_records as v1_golden_records
+from routers.v1 import sars as v1_sars
 from routers.v1 import transfers as v1_transfers
 
 
@@ -55,6 +56,7 @@ app.include_router(health.router, prefix="/api/health")
 app.include_router(transfers.router, prefix="/api/transfers")
 app.include_router(v1_transfers.router, prefix="/api/v1/transfers")
 app.include_router(v1_golden_records.router, prefix="/api/v1/golden-records")
+app.include_router(v1_sars.router, prefix="/api/v1/transfers")
 app.include_router(milestones.router, prefix="/api")
 app.include_router(document_catalogue.router, prefix="/api/catalogue")
 app.include_router(address.router, prefix="/api/address")

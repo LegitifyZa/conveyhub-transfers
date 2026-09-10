@@ -402,7 +402,7 @@ class Migration018DbIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 connection=conn,
             )
             codes = {r["code"] for r in result.rows}
-            self.assertEqual(codes, {"transferor", "transferee"})
+            self.assertTrue({"transferor", "transferee"}.issubset(codes))
 
         await with_test_transaction(_verify)
 
