@@ -229,7 +229,9 @@ class _Gateway:
             if (entity_id, ai) not in self.linkages:
                 return httpx.Response(404, json={"message": "Not found", "data": []})
             self.authorized.add(entity_id)
-            return httpx.Response(200, json={"message": "Client", "data": {"id": 701}})
+            return httpx.Response(200, json={"message": "Client", "data": {
+                "id": 701, "golden_record_id": entity_id, "accountable_institution_id": ai,
+            }})
         assert path.startswith("/api/v1/entities/")
         assert entity_id in self.authorized, "Canonical GET must follow a successful AI linkage"
         data = await self.landed.service.get_entity(UUID(entity_id), request.url.params["entity_type"])
@@ -455,3 +457,107 @@ async def test_deedly_route_maps_capped_multipage_scan_to_503(landed, monkeypatc
     assert response.status_code == 503
     assert json.loads(response.body)["success"] is False
     assert "Smith" not in response.body.decode()
+
+
+@pytest.mark.parametrize("kind", ["person", "company", "trust"])
+async def test_retrieval_projects_actual_landed_serializer_without_private_fields(landed, kind):
+    from services.golden_record_visibility import resolve_visible_golden_record
+
+    if kind == "person":
+        row = landed.add(full_name="Canonical Person", passport_no="AB123", cellphone=" +27 21 000 0000 ",
+                         residential_address=" 1 Test Road ", tenant_id=OTHER_CREATOR,
+                         profile={"cellphone": "PRIVATE-PHONE", "private": "PRIVATE-PROFILE"})
+    else:
+        row = landed.add("Company", legal_name="Canonical Legal Name", registration_no="REG-1",
+                         company_type="Trust" if kind == "trust" else "Private", masters_office="cape_town" if kind == "trust" else None,
+                         phone_number=" +27 21 000 0000 ", tenant_id=OTHER_CREATOR,
+                         profile={"office_address": "1 Test Road", "phone_number": "PRIVATE-PHONE", "private": "PRIVATE-PROFILE"})
+    async with _Gateway(landed, {(str(row.id), AI)}) as gateway:
+        visible = await resolve_visible_golden_record(gateway.client, golden_record_id=row.id,
+                                                      accountable_institution_id=AI, expected_entity_type=kind)
+        data = visible.details
+        assert [request.method for request in gateway.requests] == ["GET", "GET"]
+        assert gateway.requests[-1].url.params["entity_type"] == ("person" if kind == "person" else "company")
+    assert data["goldenRecordId"] == str(row.id)
+    assert data["entityType"] == kind
+    assert data["phone"] == "+27 21 000 0000"
+    assert data["address"] == "1 Test Road"
+    assert "PRIVATE" not in repr(data)
+    assert str(OTHER_CREATOR) not in repr(data)
+    expected_keys = {"goldenRecordId", "entityType", "name", "idNumber", "email", "phone", "address"}
+    if kind == "person":
+        assert "entity_type" not in visible.entity
+        assert data["idNumber"] == "AB123"
+    else:
+        expected_keys |= {"registrationNo", "mastersOffice", "isTrust"}
+        assert data["isTrust"] is (kind == "trust")
+        assert data["registrationNo"] == "REG-1"
+    assert set(data) == expected_keys
+
+
+@pytest.mark.parametrize("kind,company_type", [("person", "Private"), ("company", "Trust"), ("trust", "Private")])
+async def test_retrieval_rejects_actual_landed_company_logical_mismatches(landed, kind, company_type):
+    from services.golden_record_visibility import GoldenRecordVisibilityError, resolve_visible_golden_record
+
+    row = landed.add("Company", legal_name="PRIVATE-NAME", company_type=company_type)
+    async with _Gateway(landed, {(str(row.id), AI)}) as gateway:
+        with pytest.raises(GoldenRecordVisibilityError) as error:
+            await resolve_visible_golden_record(gateway.client, golden_record_id=row.id,
+                                                accountable_institution_id=AI, expected_entity_type=kind)
+    assert "PRIVATE-NAME" not in error.value.public_message
+
+
+async def test_retrieval_of_actual_person_as_company_and_missing_entity_fails_safely(landed):
+    from services.golden_record_visibility import GoldenRecordVisibilityError, resolve_visible_golden_record
+
+    person = landed.add(full_name="PRIVATE-NAME")
+    for entity_id, kind in ((person.id, "company"), (uuid4(), "person")):
+        async with _Gateway(landed, {(str(entity_id), AI)}) as gateway:
+            with pytest.raises(GoldenRecordVisibilityError) as error:
+                await resolve_visible_golden_record(gateway.client, golden_record_id=entity_id,
+                                                    accountable_institution_id=AI, expected_entity_type=kind)
+        assert error.value.http_status == 400
+        assert error.value.public_message == "Unknown or inaccessible Golden Record"
+
+
+async def test_retrieval_never_fetches_actual_entity_linked_only_to_another_ai(landed):
+    from services.golden_record_visibility import GoldenRecordVisibilityError, resolve_visible_golden_record
+
+    row = landed.add(full_name="PRIVATE-NAME", tenant_id=CREATOR)
+    async with _Gateway(landed, {(str(row.id), AI + 1)}) as gateway:
+        with pytest.raises(GoldenRecordVisibilityError) as error:
+            await resolve_visible_golden_record(gateway.client, golden_record_id=row.id,
+                                                accountable_institution_id=AI, expected_entity_type="person")
+        assert len(gateway.requests) == 1
+        assert not gateway.authorized
+    assert error.value.http_status == 400
+
+
+async def test_retrieval_keeps_same_number_trusts_distinct_and_accepts_landed_profile_classification(landed):
+    from services.golden_record_visibility import resolve_visible_golden_record
+
+    rows = [landed.add("Company", legal_name="Family Trust", registration_no="1841/2023", company_type=tag,
+                       masters_office=office, profile={"company_type": "Trust"})
+            for tag, office in (("Trust", "cape_town"), (None, "johannesburg"))]
+    async with _Gateway(landed, {(str(row.id), AI) for row in rows}) as gateway:
+        details = [(await resolve_visible_golden_record(gateway.client, golden_record_id=row.id,
+                    accountable_institution_id=AI, expected_entity_type="trust")).details for row in rows]
+    assert {data["goldenRecordId"] for data in details} == {str(row.id) for row in rows}
+    assert {data["mastersOffice"] for data in details} == {"cape_town", "johannesburg"}
+    assert all(data["isTrust"] is True for data in details)
+
+
+@pytest.mark.parametrize("kind", ["person", "company"])
+async def test_malformed_contact_values_from_actual_serializer_are_not_displayed(landed, kind):
+    from services.golden_record_visibility import GoldenRecordVisibilityError, resolve_visible_golden_record
+
+    row = landed.add(cellphone={"private": "PRIVATE-DATA"}) if kind == "person" else landed.add(
+        "Company", company_type="Private", profile={"office_address": ["PRIVATE-DATA"]},
+    )
+    async with _Gateway(landed, {(str(row.id), AI)}) as gateway:
+        with pytest.raises(GoldenRecordVisibilityError) as error:
+            visible = await resolve_visible_golden_record(gateway.client, golden_record_id=row.id,
+                                                          accountable_institution_id=AI, expected_entity_type=kind)
+            _ = visible.details
+    assert error.value.http_status == 503
+    assert "PRIVATE-DATA" not in error.value.public_message

@@ -318,3 +318,145 @@ describe('Golden Record search BFF proxy', async () => {
     assert.deepEqual(JSON.parse(upstreamReq.body), searchBody())
   })
 })
+
+const personDetails = { ...personCandidate, phone: '0210000000', address: '1 Test Road' }
+const retrievalPath = `/api/v1/golden-records/${personCandidate.goldenRecordId}?entity_type=person`
+
+async function httpRetrieve(path = retrievalPath, headers: Record<string, string> = { Authorization: `Bearer ${makeToken(3, 5)}` }) {
+  const response = await fetch(`${baseUrl}${path}`, { headers })
+  return { status: response.status, headers: response.headers, body: await response.json() }
+}
+
+describe('Golden Record retrieval BFF proxy', () => {
+  beforeEach(() => {
+    captured = []
+    upstreamMode = 'normal'
+    upstreamResponse = { status: 200, body: { message: 'OK', data: personDetails } }
+  })
+
+  it('requires a valid user JWT and rejects service-key-only access before forwarding', async () => {
+    const cases: Record<string, string>[] = [{}, { Authorization: 'Bearer invalid' }, { 'X-Service-Key': 'browser-key' }]
+    for (const headers of cases) {
+      assert.equal((await httpRetrieve(retrievalPath, headers)).status, 401)
+    }
+    assert.equal(captured.length, 0)
+  })
+
+  for (const kind of ['person', 'company', 'trust']) {
+    it(`forwards an authenticated ${kind} GET without changing its logical type or details`, async () => {
+      const path = `/api/v1/golden-records/${personCandidate.goldenRecordId}?entity_type=${kind}`
+      const token = makeToken(3, 5)
+      const data = kind === 'person' ? personDetails : {
+        ...personDetails, entityType: kind, registrationNo: 'REG-1', isTrust: kind === 'trust',
+        mastersOffice: kind === 'trust' ? 'cape_town' : null,
+      }
+      upstreamResponse = { status: 200, body: { message: 'OK', data } }
+      const result = await httpRetrieve(path, { Authorization: `Bearer ${token}` })
+      assert.equal(result.status, 200)
+      assert.deepEqual(result.body, upstreamResponse.body)
+      assert.equal(result.headers.get('cache-control'), 'no-store')
+      assert.equal(captured.length, 1)
+      assert.equal(captured[0].method, 'GET')
+      assert.equal(captured[0].url, path)
+      assert.equal(captured[0].headers.authorization, `Bearer ${token}`)
+      assert.equal(captured[0].body, '')
+    })
+  }
+
+  it('rejects malformed identifiers, types, repeated parameters and tenant overrides before forwarding', async () => {
+    const root = `/api/v1/golden-records/${personCandidate.goldenRecordId}`
+    for (const path of [
+      '/api/v1/golden-records/PRIVATE-ID?entity_type=person',
+      '/api/v1/golden-records/%2e%2e%2Ftransfers?entity_type=person',
+      root, `${root}?entity_type=Trust`, `${root}?entity_type=person&entity_type=company`,
+      `${root}?entity_type[override]=person`,
+      ...['tenant_id', 'accountable_institution_id', 'actor', 'query'].map(field => `${root}?entity_type=person&${field}=PRIVATE-OVERRIDE`),
+    ]) {
+      const response = await httpRetrieve(path)
+      assert.equal(response.status, 422)
+      assert.doesNotMatch(JSON.stringify(response.body), /PRIVATE/)
+    }
+    assert.equal(captured.length, 0)
+  })
+
+  it('forwards no service keys, tenant headers, cookies, or caller-controlled destination', async () => {
+    const response = await httpRetrieve(retrievalPath, {
+      Authorization: `Bearer ${makeToken(3, 5)}`, 'X-Service-Key': 'browser-key',
+      'X-Accountable-Institution-Id': '999', 'X-Tenant-Id': 'other', Cookie: 'private-cookie',
+      'X-Forwarded-Host': 'untrusted.invalid',
+    })
+    assert.equal(response.status, 200)
+    for (const name of ['x-service-key', 'x-accountable-institution-id', 'x-tenant-id', 'cookie', 'x-forwarded-host']) {
+      assert.equal(captured[0].headers[name], undefined)
+    }
+  })
+
+  it('preserves safe FastAPI authorization, visibility and validation failures', async () => {
+    for (const status of [400, 401, 403, 404, 422]) {
+      upstreamResponse = { status, body: { success: false, error: 'Request rejected' } }
+      const response = await httpRetrieve()
+      assert.equal(response.status, status)
+      assert.deepEqual(response.body, upstreamResponse.body)
+      assert.equal(response.headers.get('cache-control'), 'no-store')
+    }
+  })
+
+  it('sanitizes FastAPI failures rather than returning internal exception bodies', async () => {
+    for (const status of [500, 502, 503, 504]) {
+      upstreamResponse = { status, body: { privateUpstreamData: 'PRIVATE-STACK' } }
+      const response = await httpRetrieve()
+      assert.equal(response.status, 503)
+      assert.deepEqual(response.body, { success: false, error: 'Golden Record service unavailable' })
+    }
+  })
+
+  it('handles missing configuration without a fallback upstream', async () => {
+    const saved = process.env.DEEDLY_API_BASE_URL
+    delete process.env.DEEDLY_API_BASE_URL
+    try {
+      const response = await httpRetrieve()
+      assert.equal(response.status, 503)
+      assert.equal(captured.length, 0)
+    } finally {
+      process.env.DEEDLY_API_BASE_URL = saved
+    }
+  })
+
+  it('maps a network failure to a safe 503', async () => {
+    const saved = process.env.DEEDLY_API_BASE_URL
+    process.env.DEEDLY_API_BASE_URL = 'http://127.0.0.1:1'
+    try {
+      const response = await httpRetrieve()
+      assert.equal(response.status, 503)
+      assert.deepEqual(response.body, { success: false, error: 'Golden Record service unavailable' })
+    } finally {
+      process.env.DEEDLY_API_BASE_URL = saved
+    }
+  })
+
+  it('never forwards a partial broken response body', async () => {
+    upstreamMode = 'broken-body'
+    const response = await httpRetrieve()
+    assert.equal(response.status, 503)
+    assert.deepEqual(response.body, { success: false, error: 'Golden Record service unavailable' })
+  })
+
+  for (const mode of ['stalled-headers', 'stalled-body'] as const) {
+    it(`bounds retrieval including ${mode} with the existing 35-second BFF deadline`, async () => {
+      const nativeTimeout = AbortSignal.timeout.bind(AbortSignal)
+      const timeout = mock.method(AbortSignal, 'timeout', (milliseconds: number) => {
+        assert.equal(milliseconds, 35_000)
+        return nativeTimeout(100)
+      })
+      upstreamMode = mode
+      try {
+        const response = await httpRetrieve()
+        assert.equal(response.status, 503)
+        assert.deepEqual(response.body, { success: false, error: 'Golden Record service unavailable' })
+        assert.equal(timeout.mock.callCount(), 1)
+      } finally {
+        timeout.mock.restore()
+      }
+    })
+  }
+})

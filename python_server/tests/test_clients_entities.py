@@ -602,3 +602,60 @@ class EntitiesClientErrorTests(unittest.IsolatedAsyncioTestCase):
             await client.get_entity("ent-1", "person")
 
         self.assertIn("non-JSON", str(ctx.exception))
+
+
+class EntitiesClientTransportFailureTests(unittest.IsolatedAsyncioTestCase):
+    async def test_other_request_errors_are_sanitized_without_retry(self):
+        for error_type in (httpx.RemoteProtocolError, httpx.LocalProtocolError, httpx.DecodingError, httpx.TooManyRedirects):
+            for operation in ("get_entity", "get_client_by_golden_record"):
+                with self.subTest(error_type=error_type.__name__, operation=operation):
+                    requests = []
+
+                    def handle(request):
+                        requests.append(request)
+                        raise error_type("PRIVATE-TRANSPORT-DATA test-secret", request=request)
+
+                    client = EntitiesClient(_make_settings(), transport=httpx.MockTransport(handle))
+                    try:
+                        args = ("gr-1", "person") if operation == "get_entity" else ("gr-1", 5)
+                        with _no_sleep() as backoff, self.assertRaises(EntityServiceError) as ctx:
+                            await getattr(client, operation)(*args)
+                        self.assertEqual(ctx.exception.operation, operation)
+                        self.assertEqual(ctx.exception.category, "network")
+                        self.assertNotIn("PRIVATE-TRANSPORT-DATA", str(ctx.exception))
+                        self.assertNotIn("test-secret", repr(ctx.exception))
+                        self.assertEqual(len(requests), 1)
+                        backoff.assert_not_awaited()
+                    finally:
+                        await client.close()
+
+    async def test_invalid_compressed_response_is_a_safe_service_error(self):
+        def handle(request):
+            return httpx.Response(200, headers={"Content-Encoding": "gzip"}, content=b"PRIVATE-invalid-gzip")
+
+        client = EntitiesClient(_make_settings(), transport=httpx.MockTransport(handle))
+        try:
+            with self.assertRaises(EntityServiceError) as ctx:
+                await client.get_entity("gr-1", "person")
+            self.assertEqual(ctx.exception.category, "network")
+            self.assertNotIn("PRIVATE", str(ctx.exception))
+        finally:
+            await client.close()
+
+    async def test_broken_response_body_never_returns_partial_data(self):
+        class BrokenStream(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                yield b'{"data":{"full_name":"PRIVATE-NAME"'
+                raise httpx.RemoteProtocolError("PRIVATE-BODY-FAILURE")
+
+        client = EntitiesClient(
+            _make_settings(),
+            transport=httpx.MockTransport(lambda request: httpx.Response(200, stream=BrokenStream())),
+        )
+        try:
+            with self.assertRaises(EntityServiceError) as ctx:
+                await client.get_entity("gr-1", "person")
+            self.assertEqual(ctx.exception.category, "network")
+            self.assertNotIn("PRIVATE", str(ctx.exception))
+        finally:
+            await client.close()

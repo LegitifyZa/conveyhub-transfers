@@ -116,6 +116,26 @@ class VisibleGoldenRecord:
             email=_display_email(self.entity),
         )
 
+    @property
+    def details(self) -> dict:
+        cache = self.display_cache
+        data = {
+            "goldenRecordId": str(self.golden_record_id),
+            "entityType": self.entity_type,
+            "name": cache.name,
+            "idNumber": cache.id_number,
+            "email": cache.email,
+            "phone": _text(self.entity, "cellphone" if self.entity_type == "person" else "phone_number"),
+            "address": _display_address(self.entity, self.entity_type),
+        }
+        if self.entity_type in {"company", "trust"}:
+            data.update(
+                registrationNo=_text(self.entity, "registration_no") or _text(self.entity, "registration_number"),
+                mastersOffice=_text(self.entity, "masters_office"),
+                isTrust=self.entity_type == "trust",
+            )
+        return data
+
 
 def _validate_inputs(
     golden_record_id: Union[UUID, str],
@@ -168,10 +188,17 @@ async def resolve_visible_golden_record(
             "upstream_unavailable", operation=exc.operation, status_code=exc.status_code
         ) from exc
 
-    if not isinstance(linkage, dict):
+    if (
+        not isinstance(linkage, dict)
+        or type(linkage.get("id")) is not int
+        or linkage["id"] <= 0
+        or type(linkage.get("accountable_institution_id")) is not int
+        or linkage["accountable_institution_id"] != accountable_institution_id
+    ):
         raise GoldenRecordVisibilityError(
             "invalid_response", operation="get_client_by_golden_record"
         )
+    _validate_response_id(linkage.get("golden_record_id"), gr_id, "get_client_by_golden_record")
 
     retrieval_type = "company" if expected_entity_type == "trust" else expected_entity_type
     try:
@@ -188,30 +215,31 @@ async def resolve_visible_golden_record(
     if not isinstance(entity, dict):
         raise GoldenRecordVisibilityError("invalid_response", operation="get_entity")
 
-    returned_id = entity.get("id")
-    if "id" in entity:
-        if not isinstance(returned_id, str) or not returned_id:
-            raise GoldenRecordVisibilityError("invalid_response", operation="get_entity")
-        try:
-            returned_uuid = UUID(returned_id)
-        except (ValueError, TypeError) as exc:
-            raise GoldenRecordVisibilityError("invalid_response", operation="get_entity") from exc
-        if str(returned_uuid) != str(gr_id):
-            raise GoldenRecordVisibilityError("invalid_response", operation="get_entity")
+    _validate_response_id(entity.get("id"), gr_id, "get_entity")
 
     returned_type = entity.get("entity_type")
     if expected_entity_type == "trust":
-        if not isinstance(returned_type, str) or returned_type != "company":
-            raise GoldenRecordVisibilityError("invalid_response", operation="get_entity")
-        if entity.get("is_trust") is not True:
+        if returned_type != "company" or entity.get("is_trust") is not True:
             raise GoldenRecordVisibilityError("invalid_response", operation="get_entity")
     else:
-        if "entity_type" in entity and returned_type is not None:
+        if "entity_type" in entity:
             if not isinstance(returned_type, str) or not returned_type:
                 raise GoldenRecordVisibilityError("invalid_response", operation="get_entity")
             if returned_type != retrieval_type:
                 raise GoldenRecordVisibilityError("type_mismatch_or_missing", operation="get_entity")
-        if expected_entity_type == "company" and entity.get("is_trust") is True:
+        elif expected_entity_type == "company":
+            raise GoldenRecordVisibilityError("invalid_response", operation="get_entity")
+        if (expected_entity_type == "company" or "is_trust" in entity) and entity.get("is_trust") is not False:
+            raise GoldenRecordVisibilityError("invalid_response", operation="get_entity")
+
+    for key in (
+        "display_name", "full_name", "legal_name", "name", "registered_name", "first_name", "surname", "last_name",
+        "id_number", "passport_number", "registration_no", "registration_number", "email", "masters_office",
+        "status", "deleted_at",
+    ):
+        _text(entity, key)
+    for key in ("is_active", "is_deleted"):
+        if entity.get(key) is not None and not isinstance(entity[key], bool):
             raise GoldenRecordVisibilityError("invalid_response", operation="get_entity")
 
     if not _is_usable(entity):
@@ -269,3 +297,38 @@ def _display_id_number(entity: dict) -> Optional[str]:
 
 def _display_email(entity: dict) -> Optional[str]:
     return _clean(entity.get("email"))
+
+
+def _validate_response_id(value: Any, expected: UUID, operation: str) -> None:
+    if not isinstance(value, str):
+        raise GoldenRecordVisibilityError("invalid_response", operation=operation)
+    try:
+        matches = UUID(value) == expected
+    except (ValueError, TypeError) as exc:
+        raise GoldenRecordVisibilityError("invalid_response", operation=operation) from exc
+    if not matches:
+        raise GoldenRecordVisibilityError("invalid_response", operation=operation)
+
+
+def _text(entity: dict, key: str) -> Optional[str]:
+    value = entity.get(key)
+    if value is not None and not isinstance(value, str):
+        raise GoldenRecordVisibilityError("invalid_response", operation="get_entity")
+    if isinstance(value, str):
+        try:
+            value.encode("utf-8")
+        except UnicodeError as exc:
+            raise GoldenRecordVisibilityError("invalid_response", operation="get_entity") from exc
+    return _clean(value)
+
+
+def _display_address(entity: dict, entity_type: str) -> Optional[str]:
+    keys = (
+        "residential_address_line1", "residential_address_line2", "residential_city",
+        "residential_province", "residential_postal_code", "residential_country",
+    ) if entity_type == "person" else (
+        "office_address", "office_city", "office_province", "office_postal_code",
+    )
+    parts = [_text(entity, key) for key in keys]
+    full_address = _text(entity, "residential_address") if entity_type == "person" else None
+    return full_address or ", ".join(part for part in parts if part) or None

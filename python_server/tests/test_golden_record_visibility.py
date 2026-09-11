@@ -121,6 +121,7 @@ class ResolveVisibleGoldenRecordHappyPathTests(unittest.IsolatedAsyncioTestCase)
             "entity_type": "company",
             "registered_name": "Acme (Pty) Ltd",
             "registration_number": "2020/123456/07",
+            "is_trust": False,
             "is_active": True,
         }
         client = _client(entity=company)
@@ -139,10 +140,12 @@ class ResolveVisibleGoldenRecordHappyPathTests(unittest.IsolatedAsyncioTestCase)
         self.assertEqual(visible.display_cache.name, "Dean Smith")
         self.assertEqual(visible.entity_type, "person")
 
-    async def test_entity_without_id_or_type_fields_is_accepted(self):
+    async def test_entity_without_canonical_id_is_rejected(self):
         client = _client(entity={"name": "Dean Smith"})
-        visible = await _resolve(client)
-        self.assertEqual(visible.display_cache.name, "Dean Smith")
+        with self.assertRaises(GoldenRecordVisibilityError) as ctx:
+            await _resolve(client)
+        self.assertEqual(ctx.exception.reason, "invalid_response")
+        self.assertEqual(ctx.exception.http_status, 503)
 
 
 class ResolveVisibleGoldenRecordFailClosedTests(unittest.IsolatedAsyncioTestCase):
@@ -464,6 +467,164 @@ class DisplayCacheExtractionTests(unittest.TestCase):
         self.assertIsNone(self._visible({"email": ""}).display_cache.email)
         self.assertIsNone(self._visible({"email": None}).display_cache.email)
         self.assertIsNone(self._visible({}).display_cache.email)
+
+
+class CanonicalRetrievalValidationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_missing_canonical_id_is_rejected_for_all_logical_types(self):
+        for kind in ("person", "company", "trust"):
+            with self.subTest(kind=kind):
+                entity = {"full_name": "PRIVATE-NAME"} if kind == "person" else {
+                    "entity_type": "company", "is_trust": kind == "trust", "legal_name": "PRIVATE-NAME",
+                }
+                with self.assertRaises(GoldenRecordVisibilityError) as ctx:
+                    await _resolve(_client(entity=entity), expected_entity_type=kind)
+                self.assertEqual(ctx.exception.http_status, 503)
+                self.assertNotIn("PRIVATE-NAME", str(ctx.exception))
+
+    async def test_empty_entity_is_not_a_usable_person(self):
+        with self.assertRaises(GoldenRecordVisibilityError) as ctx:
+            await _resolve(_client(entity={}))
+        self.assertEqual(ctx.exception.reason, "invalid_response")
+
+    async def test_linkage_requires_its_landed_identity_fields(self):
+        cases = [{}] + [{key: value for key, value in _linkage().items() if key != missing}
+                        for missing in ("id", "golden_record_id", "accountable_institution_id")]
+        for field, values in {
+            "id": [None, True, 0, -1, "77", 77.0, [], {}],
+            "golden_record_id": [None, 1, "", "PRIVATE-BAD-ID", [], {}],
+            "accountable_institution_id": [None, True, 0, "5", 5.0, [], {}],
+        }.items():
+            cases.extend(_linkage(**{field: value}) for value in values)
+        for linkage in cases:
+            with self.subTest(linkage=linkage):
+                client = _client(linkage=linkage)
+                with self.assertRaises(GoldenRecordVisibilityError) as ctx:
+                    await _resolve(client)
+                self.assertEqual(ctx.exception.reason, "invalid_response")
+                self.assertEqual(ctx.exception.operation, "get_client_by_golden_record")
+                self.assertEqual(ctx.exception.http_status, 503)
+                self.assertNotIn("PRIVATE-BAD-ID", str(ctx.exception))
+                client.get_entity.assert_not_awaited()
+
+    async def test_linkage_must_match_both_requested_record_and_ai(self):
+        for linkage in (_linkage(accountable_institution_id=6), _linkage(golden_record_id=str(uuid4()))):
+            with self.subTest(linkage=linkage):
+                client = _client(linkage=linkage)
+                with self.assertRaises(GoldenRecordVisibilityError) as ctx:
+                    await _resolve(client)
+                self.assertEqual(ctx.exception.http_status, 503)
+                client.get_entity.assert_not_awaited()
+
+    async def test_equivalent_uuid_casing_and_unapproved_linkage_are_not_new_gates(self):
+        client = _client(linkage=_linkage(golden_record_id=str(_GR_ID).upper(), approval_status="pending"))
+        visible = await _resolve(client)
+        self.assertEqual(visible.golden_record_id, _GR_ID)
+
+    async def test_company_requires_company_discriminator_and_strict_false_trust_marker(self):
+        for metadata in ({}, {"entity_type": None}, {"is_trust": False}, {"entity_type": "company"},
+                         *({"entity_type": "company", "is_trust": value} for value in (None, True, 0, 1, "false", "true", [], {}))):
+            with self.subTest(metadata=metadata):
+                with self.assertRaises(GoldenRecordVisibilityError) as ctx:
+                    await _resolve(_client(entity=dict(_person(), **metadata)), expected_entity_type="company")
+                self.assertEqual(ctx.exception.http_status, 503)
+
+    async def test_person_does_not_accept_null_type_or_contradictory_trust_metadata(self):
+        for metadata in ({"entity_type": None}, {"is_trust": True}, {"is_trust": "false"}):
+            with self.subTest(metadata=metadata):
+                with self.assertRaises(GoldenRecordVisibilityError) as ctx:
+                    await _resolve(_client(entity=_person(**metadata)))
+                self.assertEqual(ctx.exception.http_status, 503)
+
+    async def test_malformed_usability_fields_are_integration_faults(self):
+        for metadata in ({"status": []}, {"is_active": "false"}, {"is_deleted": 1}, {"deleted_at": 123}):
+            with self.subTest(metadata=metadata):
+                with self.assertRaises(GoldenRecordVisibilityError) as ctx:
+                    await _resolve(_client(entity=_person(**metadata)))
+                self.assertEqual(ctx.exception.reason, "invalid_response")
+
+    async def test_malformed_canonical_display_strings_are_integration_faults(self):
+        for field in ("full_name", "first_name", "surname", "id_number", "passport_number", "email", "registration_no", "masters_office"):
+            with self.subTest(field=field):
+                with self.assertRaises(GoldenRecordVisibilityError) as ctx:
+                    await _resolve(_client(entity=_person(**{field: {"private": "PRIVATE-DATA"}})))
+                self.assertEqual(ctx.exception.reason, "invalid_response")
+                self.assertNotIn("PRIVATE-DATA", str(ctx.exception))
+
+
+class GoldenRecordDetailProjectionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_person_details_are_canonical_allowlisted_and_transient(self):
+        client = _client(
+            entity=_person(cellphone=" +27 21 000 0000 ", residential_address=" 1 Test Road ",
+                           tenant_id="OTHER-CREATOR", profile={"private": "PRIVATE-PROFILE"},
+                           bank_accounts=[{"account_number": "PRIVATE-BANK"}], tax_number="PRIVATE-TAX"),
+            linkage=_linkage(full_name="LINKAGE-NAME", email="LINKAGE-EMAIL"),
+        )
+        visible = await _resolve(client)
+        self.assertEqual(visible.details, {
+            "goldenRecordId": str(_GR_ID), "entityType": "person", "name": "Dean Smith",
+            "idNumber": "9001010001081", "email": "dean@example.com",
+            "phone": "+27 21 000 0000", "address": "1 Test Road",
+        })
+        self.assertEqual(set(DisplayCache.__dataclass_fields__), {"name", "id_number", "email"})
+        self.assertEqual(set(visible.display_cache.__dict__), {"name", "id_number", "email"})
+        client.search_entities.assert_not_awaited()
+        client.submit_person.assert_not_awaited()
+
+    async def test_passport_and_residential_address_components_are_normalized(self):
+        visible = await _resolve(_client(entity=_person(
+            id_number=None, passport_number=" AB123 ", residential_address=" ",
+            residential_address_line1=" 1 Test Road ", residential_address_line2=None,
+            residential_city=" Cape Town ", residential_province="Western Cape",
+            residential_postal_code="8000", residential_country="ZA",
+        )))
+        self.assertEqual(visible.details["idNumber"], "AB123")
+        self.assertEqual(visible.details["address"], "1 Test Road, Cape Town, Western Cape, 8000, ZA")
+        self.assertIsNone(visible.details["phone"])
+
+    async def test_company_and_trust_use_company_contact_fields_and_preserve_logical_type(self):
+        for kind in ("company", "trust"):
+            with self.subTest(kind=kind):
+                visible = await _resolve(_client(entity={
+                    "id": str(_GR_ID), "entity_type": "company", "is_trust": kind == "trust",
+                    "legal_name": " Canonical Legal Name ", "registration_no": " REG-1 ",
+                    "masters_office": " cape_town " if kind == "trust" else None,
+                    "email": " contact@example.test ", "phone_number": " +27 11 000 0000 ",
+                    "office_address": " 2 Office Road ", "office_city": "Johannesburg",
+                    "office_province": "Gauteng", "office_postal_code": "2000",
+                    "profile": {"office_address": "PRIVATE-PROFILE"}, "directors": ["PRIVATE-DIRECTOR"],
+                    "cellphone": "WRONG-PERSON-PHONE", "residential_address": "WRONG-PERSON-ADDRESS",
+                }), expected_entity_type=kind)
+                self.assertEqual(visible.details, {
+                    "goldenRecordId": str(_GR_ID), "entityType": kind, "name": "Canonical Legal Name",
+                    "idNumber": "REG-1", "email": "contact@example.test", "phone": "+27 11 000 0000",
+                    "address": "2 Office Road, Johannesburg, Gauteng, 2000", "registrationNo": "REG-1",
+                    "mastersOffice": "cape_town" if kind == "trust" else None, "isTrust": kind == "trust",
+                })
+
+    async def test_optional_details_remain_null_and_do_not_fall_back_to_raw_profile(self):
+        for kind in ("person", "company", "trust"):
+            with self.subTest(kind=kind):
+                entity = {"id": str(_GR_ID), "profile": {"email": "PRIVATE-EMAIL", "cellphone": "PRIVATE-PHONE"}}
+                if kind != "person":
+                    entity.update(entity_type="company", is_trust=kind == "trust")
+                visible = await _resolve(_client(entity=entity), expected_entity_type=kind)
+                for field in ("name", "idNumber", "email", "phone", "address"):
+                    self.assertIsNone(visible.details[field])
+                self.assertNotIn("PRIVATE", repr(visible.details))
+
+    async def test_malformed_detail_fields_fail_closed_without_leaking_values(self):
+        for kind, field in (("person", "cellphone"), ("person", "residential_address"),
+                            ("person", "residential_city"), ("company", "phone_number"),
+                            ("trust", "office_address"), ("company", "office_postal_code")):
+            with self.subTest(kind=kind, field=field):
+                entity = _person(**{field: {"private": "PRIVATE-DATA"}})
+                if kind != "person":
+                    entity.update(entity_type="company", is_trust=kind == "trust")
+                with self.assertRaises(GoldenRecordVisibilityError) as ctx:
+                    visible = await _resolve(_client(entity=entity), expected_entity_type=kind)
+                    _ = visible.details
+                self.assertEqual(ctx.exception.http_status, 503)
+                self.assertNotIn("PRIVATE-DATA", str(ctx.exception))
 
 
 if __name__ == "__main__":
