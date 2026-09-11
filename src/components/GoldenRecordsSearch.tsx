@@ -1,7 +1,7 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react'
+import React, { useEffect, useState, useSyncExternalStore } from 'react'
 import { Search, User, AlertCircle, CheckCircle } from 'lucide-react'
 import { Modal, Button, Input } from './ui'
-import { GoldenRecordsApi, GoldenRecordSearchError, candidateToGoldenRecord, goldenRecordCandidateDescription } from '@/lib/api/goldenRecordsApi'
+import { GoldenRecordsApi, GoldenRecordSearchError, GoldenRecordRetrievalError, goldenRecordCandidateDescription } from '@/lib/api/goldenRecordsApi'
 import type { GoldenRecord, GoldenRecordCandidate, GoldenRecordEntityType } from '@/lib/api/goldenRecordsApi'
 
 interface GoldenRecordsSearchProps {
@@ -21,87 +21,192 @@ export const GoldenRecordCandidateDetails: React.FC<{ candidate: GoldenRecordCan
   </>
 )
 
-export function useGoldenRecordSearch(active: boolean) {
-  const [searchTerm, updateSearchTerm] = useState('')
-  const [searchType, updateSearchType] = useState<GoldenRecordEntityType>('person')
-  const [isSearching, setIsSearching] = useState(false)
-  const [searchResult, setSearchResult] = useState<GoldenRecord | null>(null)
-  const [candidates, setCandidates] = useState<GoldenRecordCandidate[]>([])
-  const [error, setError] = useState<string | null>(null)
-  const [notFound, setNotFound] = useState(false)
-  const requestVersion = useRef(0)
-  const pending = useRef(false)
+export const GoldenRecordDetails: React.FC<{ record: GoldenRecord }> = ({ record }) => (
+  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+    <div>
+      <span className="font-medium text-gray-700">Full Name:</span>
+      <p className="text-gray-900">{record.name}</p>
+    </div>
+    <div>
+      <span className="font-medium text-gray-700">ID Number:</span>
+      <p className="text-gray-900">{record.idNumber}</p>
+    </div>
+    <div>
+      <span className="font-medium text-gray-700">Entity Type:</span>
+      <p className="text-gray-900 capitalize">{record.entityType}</p>
+    </div>
+    {record.entityType === 'trust' && (
+      <div>
+        <span className="font-medium text-gray-700">Master’s Office:</span>
+        <p className="text-gray-900">{record.mastersOffice ?? 'Not available'}</p>
+      </div>
+    )}
+    {record.registrationNumber && (
+      <div>
+        <span className="font-medium text-gray-700">Registration Number:</span>
+        <p className="text-gray-900">{record.registrationNumber}</p>
+      </div>
+    )}
+    {record.email && (
+      <div>
+        <span className="font-medium text-gray-700">Email:</span>
+        <p className="text-gray-900">{record.email}</p>
+      </div>
+    )}
+    {record.phone && (
+      <div>
+        <span className="font-medium text-gray-700">Phone:</span>
+        <p className="text-gray-900">{record.phone}</p>
+      </div>
+    )}
+    {record.address && (
+      <div className="md:col-span-2">
+        <span className="font-medium text-gray-700">Address:</span>
+        <p className="text-gray-900">{record.address}</p>
+      </div>
+    )}
+    {record.propertyAddress && (
+      <div className="md:col-span-2">
+        <span className="font-medium text-gray-700">Property Address:</span>
+        <p className="text-gray-900">{record.propertyAddress}</p>
+      </div>
+    )}
+    {record.propertyValue && (
+      <div>
+        <span className="font-medium text-gray-700">Property Value:</span>
+        <p className="text-gray-900">R {record.propertyValue.toLocaleString('en-ZA')}</p>
+      </div>
+    )}
+  </div>
+)
 
-  const resetSearch = useCallback(() => {
-    requestVersion.current += 1
-    pending.current = false
-    setIsSearching(false)
-    setSearchResult(null)
-    setCandidates([])
-    setError(null)
-    setNotFound(false)
-  }, [])
+interface GoldenRecordSearchState {
+  searchTerm: string
+  searchType: GoldenRecordEntityType
+  isSearching: boolean
+  isRetrieving: boolean
+  searchResult: GoldenRecord | null
+  candidates: GoldenRecordCandidate[]
+  error: string | null
+  notFound: boolean
+  retrievalTarget: Pick<GoldenRecordCandidate, 'goldenRecordId' | 'entityType'> | null
+}
 
-  useEffect(() => {
+export function createGoldenRecordSearchSession() {
+  const emptySelection = () => ({
+    isSearching: false, isRetrieving: false, searchResult: null,
+    candidates: [] as GoldenRecordCandidate[], error: null, notFound: false, retrievalTarget: null
+  })
+  let state: GoldenRecordSearchState = { searchTerm: '', searchType: 'person', ...emptySelection() }
+  let active = false
+  let requestVersion = 0
+  let pending = false
+  const listeners = new Set<() => void>()
+  const update = (values: Partial<GoldenRecordSearchState>) => {
+    state = { ...state, ...values }
+    listeners.forEach(listener => listener())
+  }
+  const current = (version: number) => active && requestVersion === version
+  const resetSearch = () => {
+    requestVersion += 1
+    pending = false
+    update(emptySelection())
+  }
+  const setActive = (value: boolean) => {
+    active = value
     if (!active) resetSearch()
-    return () => {
-      requestVersion.current += 1
-      pending.current = false
-    }
-  }, [active, resetSearch])
-
+  }
   const setSearchTerm = (value: string) => {
     resetSearch()
-    updateSearchTerm(value)
+    update({ searchTerm: value })
   }
-
   const setSearchType = (value: GoldenRecordEntityType) => {
     resetSearch()
-    updateSearchType(value)
+    update({ searchType: value })
+  }
+
+  const retrieve = async (reference: NonNullable<GoldenRecordSearchState['retrievalTarget']>, version: number) => {
+    if (!current(version)) return
+    pending = true
+    update({ ...emptySelection(), isRetrieving: true, retrievalTarget: reference })
+    try {
+      const record = await GoldenRecordsApi.retrieve(reference.goldenRecordId, reference.entityType)
+      if (current(version)) update({ searchResult: record, retrievalTarget: null })
+    } catch (error) {
+      if (current(version)) update({
+        error: error instanceof GoldenRecordRetrievalError ? error.message : new GoldenRecordRetrievalError('server').message
+      })
+    } finally {
+      if (current(version)) {
+        pending = false
+        update({ isRetrieving: false })
+      }
+    }
   }
 
   const handleSearch = async () => {
-    if (!active || pending.current) return
+    if (!active || pending) return
     resetSearch()
-    const version = requestVersion.current
-    pending.current = true
-    setIsSearching(true)
+    const version = requestVersion
+    pending = true
+    update({ isSearching: true })
     try {
-      const result = await GoldenRecordsApi.search({ entity_type: searchType, query: searchTerm })
-      if (requestVersion.current !== version) return
+      const result = await GoldenRecordsApi.search({ entity_type: state.searchType, query: state.searchTerm })
+      if (!current(version)) return
       switch (result.status) {
         case 'matched':
-          setSearchResult(candidateToGoldenRecord(result.record!))
+          await retrieve({ goldenRecordId: result.record!.goldenRecordId, entityType: result.record!.entityType }, version)
           break
         case 'ambiguous':
-          setCandidates(result.candidates ?? [])
+          update({ candidates: result.candidates ?? [] })
           break
         case 'not_found':
-          setNotFound(true)
-          setError('No matching record was found in Golden Records.')
+          update({ notFound: true, error: 'No matching record was found in Golden Records.' })
           break
       }
-    } catch (err) {
-      if (requestVersion.current !== version) return
-      setError(err instanceof GoldenRecordSearchError ? err.message : new GoldenRecordSearchError('server').message)
+    } catch (error) {
+      if (current(version)) update({ error: error instanceof GoldenRecordSearchError ? error.message : new GoldenRecordSearchError('server').message })
     } finally {
-      if (requestVersion.current === version) {
-        pending.current = false
-        setIsSearching(false)
+      if (current(version)) {
+        pending = false
+        update({ isSearching: false })
       }
     }
   }
 
-  const handleSelectCandidate = (candidate: GoldenRecordCandidate) => {
-    if (!active || pending.current || !candidates.includes(candidate)) return
-    setSearchResult(candidateToGoldenRecord(candidate))
-    setCandidates([])
+  const handleSelectCandidate = async (candidate: GoldenRecordCandidate) => {
+    if (!active || pending || !state.candidates.includes(candidate)) return
+    resetSearch()
+    await retrieve({ goldenRecordId: candidate.goldenRecordId, entityType: candidate.entityType }, requestVersion)
+  }
+  const retryRetrieval = async () => {
+    if (!active || pending || !state.retrievalTarget) return
+    const reference = state.retrievalTarget
+    resetSearch()
+    await retrieve(reference, requestVersion)
   }
 
   return {
-    searchTerm, setSearchTerm, searchType, setSearchType, isSearching,
-    searchResult, candidates, error, setError, notFound, resetSearch,
-    handleSearch, handleSelectCandidate
+    getSnapshot: () => state,
+    subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener) } },
+    setActive, setSearchTerm, setSearchType, resetSearch, handleSearch, handleSelectCandidate, retryRetrieval,
+    setError: (error: string | null) => update({ error })
+  }
+}
+
+export function useGoldenRecordSearch(active: boolean) {
+  const [session] = useState(createGoldenRecordSearchSession)
+  const state = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot)
+  useEffect(() => {
+    session.setActive(active)
+    return () => session.setActive(false)
+  }, [active, session])
+  return {
+    ...state,
+    setSearchTerm: session.setSearchTerm, setSearchType: session.setSearchType, setError: session.setError,
+    resetSearch: session.resetSearch, handleSearch: session.handleSearch, handleSelectCandidate: session.handleSelectCandidate,
+    retryRetrieval: session.retryRetrieval,
+    canRetryRetrieval: !!state.error && !!state.retrievalTarget && !state.isRetrieving
   }
 }
 
@@ -111,8 +216,8 @@ export const GoldenRecordsSearch: React.FC<GoldenRecordsSearchProps> = ({
   onRecordFound
 }) => {
   const {
-    searchTerm, setSearchTerm, searchType, setSearchType, isSearching,
-    searchResult, candidates, error, resetSearch, handleSearch, handleSelectCandidate
+    searchTerm, setSearchTerm, searchType, setSearchType, isSearching, isRetrieving,
+    searchResult, candidates, error, resetSearch, handleSearch, handleSelectCandidate, retryRetrieval, canRetryRetrieval
   } = useGoldenRecordSearch(isOpen)
 
   const handleClose = () => {
@@ -121,7 +226,7 @@ export const GoldenRecordsSearch: React.FC<GoldenRecordsSearchProps> = ({
   }
 
   const handleUseRecord = () => {
-    if (searchResult) {
+    if (searchResult && !isSearching && !isRetrieving) {
       onRecordFound(searchResult)
       handleClose()
     }
@@ -203,7 +308,7 @@ export const GoldenRecordsSearch: React.FC<GoldenRecordsSearchProps> = ({
           <div className="mb-6">
             <Button
               onClick={handleSearch}
-              disabled={isSearching}
+              disabled={isSearching || isRetrieving}
               className="w-full flex items-center justify-center space-x-2"
             >
               <Search className="w-4 h-4" />
@@ -212,12 +317,14 @@ export const GoldenRecordsSearch: React.FC<GoldenRecordsSearchProps> = ({
           </div>
 
           {/* Search Results */}
+          {isRetrieving && <p role="status" className="mb-4 text-sm text-gray-600">Retrieving selected Golden Record...</p>}
           {error && (
             <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg">
               <div className="flex items-center space-x-2">
                 <AlertCircle className="w-5 h-5 text-red-600" />
                 <span className="text-red-800">{error}</span>
               </div>
+              {canRetryRetrieval && <Button onClick={retryRetrieval} variant="outline" className="mt-3">Retry retrieval</Button>}
             </div>
           )}
 
@@ -235,6 +342,7 @@ export const GoldenRecordsSearch: React.FC<GoldenRecordsSearchProps> = ({
                   <button
                     key={candidate.goldenRecordId}
                     onClick={() => handleSelectCandidate(candidate)}
+                    disabled={isSearching || isRetrieving}
                     className="w-full text-left p-3 bg-white border border-gray-200 rounded-lg hover:border-blue-400 transition-colors"
                   >
                     <GoldenRecordCandidateDetails candidate={candidate} />
@@ -255,64 +363,7 @@ export const GoldenRecordsSearch: React.FC<GoldenRecordsSearchProps> = ({
               </div>
 
               {/* Record Details */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
-                <div>
-                  <span className="font-medium text-gray-700">Full Name:</span>
-                  <p className="text-gray-900">{searchResult.name}</p>
-                </div>
-                <div>
-                  <span className="font-medium text-gray-700">ID Number:</span>
-                  <p className="text-gray-900">{searchResult.idNumber}</p>
-                </div>
-                <div>
-                  <span className="font-medium text-gray-700">Entity Type:</span>
-                  <p className="text-gray-900 capitalize">{searchResult.entityType}</p>
-                </div>
-                {searchResult.entityType === 'trust' && (
-                  <div>
-                    <span className="font-medium text-gray-700">Master’s Office:</span>
-                    <p className="text-gray-900">{searchResult.mastersOffice ?? 'Not available'}</p>
-                  </div>
-                )}
-                {searchResult.registrationNumber && (
-                  <div>
-                    <span className="font-medium text-gray-700">Registration Number:</span>
-                    <p className="text-gray-900">{searchResult.registrationNumber}</p>
-                  </div>
-                )}
-                {searchResult.email && (
-                  <div>
-                    <span className="font-medium text-gray-700">Email:</span>
-                    <p className="text-gray-900">{searchResult.email}</p>
-                  </div>
-                )}
-                {searchResult.phone && (
-                  <div>
-                    <span className="font-medium text-gray-700">Phone:</span>
-                    <p className="text-gray-900">{searchResult.phone}</p>
-                  </div>
-                )}
-                {searchResult.address && (
-                  <div className="md:col-span-2">
-                    <span className="font-medium text-gray-700">Address:</span>
-                    <p className="text-gray-900">{searchResult.address}</p>
-                  </div>
-                )}
-                {searchResult.propertyAddress && (
-                  <div className="md:col-span-2">
-                    <span className="font-medium text-gray-700">Property Address:</span>
-                    <p className="text-gray-900">{searchResult.propertyAddress}</p>
-                  </div>
-                )}
-                {searchResult.propertyValue && (
-                  <div>
-                    <span className="font-medium text-gray-700">Property Value:</span>
-                    <p className="text-gray-900">
-                      R {searchResult.propertyValue.toLocaleString('en-ZA')}
-                    </p>
-                  </div>
-                )}
-              </div>
+              <GoldenRecordDetails record={searchResult} />
             </div>
           )}
 
@@ -321,6 +372,7 @@ export const GoldenRecordsSearch: React.FC<GoldenRecordsSearchProps> = ({
             <div className="flex space-x-3">
               <Button
                 onClick={handleUseRecord}
+                disabled={isSearching || isRetrieving}
                 className="flex-1 flex items-center justify-center space-x-2"
               >
                 <User className="w-4 h-4" />

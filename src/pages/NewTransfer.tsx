@@ -4,7 +4,7 @@ import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui'
 import { Button, Input } from '@/components/ui'
 import { Search, Building, Folder, ArrowRight, AlertCircle, CheckCircle } from 'lucide-react'
 import type { GoldenRecordEntityType } from '@/lib/api/goldenRecordsApi'
-import { GoldenRecordCandidateDetails, useGoldenRecordSearch } from '@/components/GoldenRecordsSearch'
+import { GoldenRecordCandidateDetails, GoldenRecordDetails, useGoldenRecordSearch } from '@/components/GoldenRecordsSearch'
 type MatterCategory = 'transfer' | 'development'
 
 const transferOptions = [
@@ -50,9 +50,9 @@ const NewTransfer: React.FC = () => {
   const [transferFrom, setTransferFrom] = useState('')
 
   const {
-    searchTerm, setSearchTerm, searchType, setSearchType, isSearching,
+    searchTerm, setSearchTerm, searchType, setSearchType, isSearching, isRetrieving,
     searchResult, candidates, error, setError, notFound, resetSearch,
-    handleSearch, handleSelectCandidate
+    handleSearch, handleSelectCandidate, retryRetrieval, canRetryRetrieval
   } = useGoldenRecordSearch(step === 'search')
 
   const canContinueToSearch = !!(fileReference.trim() && matterType.trim())
@@ -74,7 +74,7 @@ const NewTransfer: React.FC = () => {
   }
 
   const handleContinueWithRecord = () => {
-    if (searchResult) {
+    if (searchResult && !isSearching && !isRetrieving) {
       resetSearch()
       navigate('/transfers/workflow', {
         state: {
@@ -264,7 +264,7 @@ const NewTransfer: React.FC = () => {
                     />
                     <Button
                       onClick={handleSearch}
-                      disabled={isSearching}
+                      disabled={isSearching || isRetrieving}
                       aria-label="Search"
                       className="!p-0 h-10 w-10 flex items-center justify-center"
                     >
@@ -296,6 +296,7 @@ const NewTransfer: React.FC = () => {
                         <button
                           key={candidate.goldenRecordId}
                           onClick={() => handleSelectCandidate(candidate)}
+                          disabled={isSearching || isRetrieving}
                           className="w-full text-left p-3 bg-white border border-gray-200 rounded-lg hover:border-blue-400 transition-colors"
                         >
                           <GoldenRecordCandidateDetails candidate={candidate} />
@@ -306,15 +307,17 @@ const NewTransfer: React.FC = () => {
                 )}
 
                 {/* Error / Not Found */}
+                {isRetrieving && <p role="status" className="text-sm text-gray-600">Retrieving selected Golden Record...</p>}
                 {error && (
                   <div className="p-4 bg-red-50 border border-red-200 rounded-lg">
                     <div className="flex items-start space-x-3">
                       <AlertCircle className="w-5 h-5 text-red-600 mt-0.5" />
                       <div className="flex-1">
-                        <h3 className="font-medium text-red-800">{notFound ? 'No record found' : 'Search could not be completed'}</h3>
+                        <h3 className="font-medium text-red-800">{notFound ? 'No record found' : canRetryRetrieval ? 'Record could not be retrieved' : 'Search could not be completed'}</h3>
                         <p className="text-sm text-red-600 mb-4">
                           {error}
                         </p>
+                        {canRetryRetrieval && <Button onClick={retryRetrieval} variant="outline">Retry retrieval</Button>}
                         {notFound && (
                           <Button
                             onClick={handleContinueWithoutRecord}
@@ -343,61 +346,11 @@ const NewTransfer: React.FC = () => {
                       </div>
                     </div>
 
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm mb-4">
-                      <div>
-                        <span className="font-medium text-gray-700">Full Name:</span>
-                        <p className="text-gray-900">{searchResult.name}</p>
-                      </div>
-                      <div>
-                        <span className="font-medium text-gray-700">ID Number:</span>
-                        <p className="text-gray-900">{searchResult.idNumber}</p>
-                      </div>
-                      <div>
-                        <span className="font-medium text-gray-700">Entity Type:</span>
-                        <p className="text-gray-900 capitalize">{searchResult.entityType}</p>
-                      </div>
-                      {searchResult.entityType === 'trust' && (
-                        <div>
-                          <span className="font-medium text-gray-700">Master’s Office:</span>
-                          <p className="text-gray-900">{searchResult.mastersOffice ?? 'Not available'}</p>
-                        </div>
-                      )}
-                      {searchResult.registrationNumber && (
-                        <div>
-                          <span className="font-medium text-gray-700">Registration Number:</span>
-                          <p className="text-gray-900">{searchResult.registrationNumber}</p>
-                        </div>
-                      )}
-                      {searchResult.email && (
-                        <div>
-                          <span className="font-medium text-gray-700">Email:</span>
-                          <p className="text-gray-900">{searchResult.email}</p>
-                        </div>
-                      )}
-                      {searchResult.phone && (
-                        <div>
-                          <span className="font-medium text-gray-700">Phone:</span>
-                          <p className="text-gray-900">{searchResult.phone}</p>
-                        </div>
-                      )}
-                      {searchResult.propertyAddress && (
-                        <div className="md:col-span-2">
-                          <span className="font-medium text-gray-700">Property Address:</span>
-                          <p className="text-gray-900">{searchResult.propertyAddress}</p>
-                        </div>
-                      )}
-                      {searchResult.propertyValue && (
-                        <div>
-                          <span className="font-medium text-gray-700">Property Value:</span>
-                          <p className="text-gray-900">
-                            R {searchResult.propertyValue.toLocaleString('en-ZA')}
-                          </p>
-                        </div>
-                      )}
-                    </div>
+                    <div className="mb-4"><GoldenRecordDetails record={searchResult} /></div>
 
                     <Button
                       onClick={handleContinueWithRecord}
+                      disabled={isSearching || isRetrieving}
                       className="w-full flex items-center justify-center space-x-2"
                     >
                       <span>Continue with Record</span>

@@ -84,7 +84,11 @@ def _upstream_error(operation: str, status_code: int = 500) -> EntityServiceErro
     )
 
 
-class V1GoldenRecordSearchTests(unittest.TestCase):
+def _linkage_row(gr_id, ai):
+    return {"id": 77, "golden_record_id": gr_id, "accountable_institution_id": ai, "approval_status": "approved"}
+
+
+class _GoldenRecordsRouteFixture:
     @classmethod
     def setUpClass(cls):
         os.environ["JWT_SECRET"] = TEST_JWT_SECRET
@@ -109,9 +113,7 @@ class V1GoldenRecordSearchTests(unittest.TestCase):
     def setUp(self):
         self.entities_client = self.mock_entities_client
         self.entities_client.search_entities = AsyncMock(return_value=[])
-        self.entities_client.get_client_by_golden_record = AsyncMock(
-            return_value={"id": 77, "approval_status": "approved"}
-        )
+        self.entities_client.get_client_by_golden_record = AsyncMock(side_effect=_linkage_row)
         self.entities_client.get_entity = AsyncMock()
         self.client = TestClient(app).__enter__()
 
@@ -126,6 +128,8 @@ class V1GoldenRecordSearchTests(unittest.TestCase):
             headers=headers or _auth_header(role, ai, abilities),
         )
 
+
+class V1GoldenRecordSearchTests(_GoldenRecordsRouteFixture, unittest.TestCase):
     # --- auth ---------------------------------------------------------------
 
     def test_no_token_returns_401(self):
@@ -297,7 +301,7 @@ class V1GoldenRecordSearchTests(unittest.TestCase):
         async def _linkage(gr_id, ai):
             if gr_id == _GR_B:
                 raise _not_found("get_client_by_golden_record")
-            return {"id": 77}
+            return _linkage_row(gr_id, ai)
 
         async def _entity(gr_id, entity_type):
             return _person(gr_id, first_name="Visible")
@@ -496,13 +500,13 @@ class V1GoldenRecordSearchTests(unittest.TestCase):
             for failing_id in (_GR_A, _GR_B):
                 with self.subTest(operation=operation, failing_id=failing_id):
                     self.entities_client.search_entities.return_value = [{"id": _GR_A}, {"id": _GR_B}]
-                    self.entities_client.get_client_by_golden_record = AsyncMock(return_value={"id": 77})
+                    self.entities_client.get_client_by_golden_record = AsyncMock(side_effect=_linkage_row)
                     self.entities_client.get_entity = AsyncMock(side_effect=lambda gr_id, et: _person(gr_id))
 
                     async def fail(gr_id, scope):
                         if gr_id == failing_id:
                             raise _upstream_error(operation)
-                        return {"id": 77} if operation == "get_client_by_golden_record" else _person(gr_id)
+                        return _linkage_row(gr_id, scope) if operation == "get_client_by_golden_record" else _person(gr_id)
 
                     getattr(self.entities_client, operation).side_effect = fail
                     r = self._search({"entity_type": "person", "query": "Dean"})
@@ -537,6 +541,246 @@ class V1GoldenRecordSearchTests(unittest.TestCase):
             r = self._search({"entity_type": "person", "query": "Dean"})
         self.assertEqual(r.status_code, 200)
         reconcile.assert_not_awaited()
+
+
+class V1GoldenRecordRetrievalTests(_GoldenRecordsRouteFixture, unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        self.entities_client.get_client_by_golden_record = AsyncMock(side_effect=_linkage_row)
+        self.entities_client.get_entity = AsyncMock(return_value=_person(_GR_A))
+
+    def _retrieve(self, gr_id=_GR_A, entity_type="person", *, role=3, ai=5, abilities=None, params=None, headers=None):
+        return self.client.get(
+            f"/api/v1/golden-records/{gr_id}",
+            params={"entity_type": entity_type} if params is None else params,
+            headers=_auth_header(role, ai, abilities) if headers is None else headers,
+        )
+
+    def _assert_no_lookup(self):
+        self.entities_client.search_entities.assert_not_awaited()
+        self.entities_client.get_client_by_golden_record.assert_not_awaited()
+        self.entities_client.get_entity.assert_not_awaited()
+
+    def test_person_retrieval_is_canonical_allowlisted_and_not_cached(self):
+        events = []
+
+        async def linkage(gr_id, ai):
+            events.append("linkage")
+            return dict(_linkage_row(gr_id, ai), full_name="LINKAGE-NAME", email="LINKAGE-EMAIL")
+
+        async def entity(gr_id, kind):
+            events.append("entity")
+            return _person(gr_id, full_name=" Canonical Person ", cellphone=" +27 21 000 0000 ",
+                           residential_address=" 1 Test Road ", tenant_id="OTHER-CREATOR",
+                           profile={"private": "PRIVATE-PROFILE"}, bank_accounts=["PRIVATE-BANK"])
+
+        self.entities_client.get_client_by_golden_record.side_effect = linkage
+        self.entities_client.get_entity.side_effect = entity
+        with patch("db.query", new_callable=AsyncMock) as query, patch("db.with_transaction", new_callable=AsyncMock) as transaction:
+            response = self._retrieve()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(events, ["linkage", "entity"])
+        self.assertEqual(response.headers["cache-control"], "no-store")
+        self.assertEqual(response.json(), {"message": "OK", "data": {
+            "goldenRecordId": _GR_A, "entityType": "person", "name": "Canonical Person",
+            "idNumber": "9001010001081", "email": "dean@example.com",
+            "phone": "+27 21 000 0000", "address": "1 Test Road",
+        }})
+        self.entities_client.get_client_by_golden_record.assert_awaited_once_with(_GR_A, 5)
+        self.entities_client.get_entity.assert_awaited_once_with(_GR_A, "person")
+        self.entities_client.search_entities.assert_not_awaited()
+        self.entities_client.submit_person.assert_not_awaited()
+        query.assert_not_awaited()
+        transaction.assert_not_awaited()
+
+    def test_passport_only_person_preserves_logical_type_without_upstream_discriminator(self):
+        self.entities_client.get_entity.return_value = _person(_GR_A, id_number=None, passport_number=" AB123 ")
+        response = self._retrieve()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["data"]["idNumber"], "AB123")
+        self.assertEqual(response.json()["data"]["entityType"], "person")
+
+    def test_company_retrieval_uses_company_contract(self):
+        self.entities_client.get_entity.return_value = {
+            "id": _GR_A, "entity_type": "company", "is_trust": False, "legal_name": "Acme",
+            "registration_no": "2020/123456/07", "phone_number": "0210000000", "office_address": "1 Office Road",
+        }
+        response = self._retrieve(entity_type="company")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()["data"]
+        self.assertEqual((data["entityType"], data["isTrust"], data["registrationNo"]), ("company", False, "2020/123456/07"))
+        self.assertEqual((data["phone"], data["address"]), ("0210000000", "1 Office Road"))
+        self.entities_client.get_entity.assert_awaited_once_with(_GR_A, "company")
+
+    def test_trust_retrieval_uses_company_get_and_retains_office_and_logical_type(self):
+        self.entities_client.get_entity.return_value = {
+            "id": _GR_A, "entity_type": "company", "is_trust": True, "legal_name": "Family Trust",
+            "registration_no": "IT123/2020", "masters_office": "cape_town",
+        }
+        response = self._retrieve(entity_type="trust")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()["data"]
+        self.assertEqual((data["entityType"], data["isTrust"], data["mastersOffice"]), ("trust", True, "cape_town"))
+        self.entities_client.get_entity.assert_awaited_once_with(_GR_A, "company")
+
+    def test_uuid_is_normalized_before_lookup(self):
+        response = self._retrieve(gr_id=_GR_A.upper())
+        self.assertEqual(response.status_code, 200)
+        self.entities_client.get_entity.assert_awaited_once_with(_GR_A, "person")
+
+    def test_unauthenticated_invalid_and_service_key_only_requests_never_lookup(self):
+        for headers in ({}, {"Authorization": "Bearer invalid"}, {"X-Service-Key": "browser-key"}):
+            with self.subTest(headers=headers):
+                response = self._retrieve(headers=headers)
+                self.assertEqual(response.status_code, 401)
+        self._assert_no_lookup()
+
+    def test_client_role_and_missing_read_ability_are_denied(self):
+        self.assertEqual(self._retrieve(role=4).status_code, 404)
+        self.assertEqual(self._retrieve(abilities=["api"]).status_code, 403)
+        self._assert_no_lookup()
+
+    def test_invalid_uuid_and_logical_types_never_lookup_or_echo_input(self):
+        for kind in ("", "PERSON", "Trust", "estate", "PRIVATE-TYPE"):
+            with self.subTest(kind=kind):
+                response = self._retrieve(entity_type=kind)
+                self.assertEqual(response.status_code, 422)
+                self.assertNotIn("PRIVATE-TYPE", response.text)
+        response = self._retrieve(gr_id="PRIVATE-BAD-ID")
+        self.assertEqual(response.status_code, 422)
+        self.assertNotIn("PRIVATE-BAD-ID", response.text)
+        self._assert_no_lookup()
+
+    def test_missing_duplicate_and_override_query_parameters_are_rejected(self):
+        cases = [{}, [("entity_type", "person"), ("entity_type", "company")]]
+        cases.extend({"entity_type": "person", field: "PRIVATE-OVERRIDE"}
+                     for field in ("accountable_institution_id", "tenant_id", "ai", "actor", "is_trust", "query", "unknown"))
+        for params in cases:
+            with self.subTest(params=params):
+                response = self._retrieve(params=params)
+                self.assertEqual(response.status_code, 422)
+                self.assertNotIn("PRIVATE-OVERRIDE", response.text)
+        self._assert_no_lookup()
+
+    def test_jwt_ai_is_authoritative_even_for_admins_and_override_headers(self):
+        for role in (1, 3, 6):
+            with self.subTest(role=role):
+                headers = dict(_auth_header(role, 42), **{"X-Accountable-Institution-Id": "999", "X-Tenant-Id": "OTHER", "X-Service-Key": "browser-key"})
+                response = self._retrieve(headers=headers)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(self.entities_client.get_client_by_golden_record.await_args.args, (_GR_A, 42))
+                self.assertNotIn("999", response.text)
+
+    def test_unknown_and_inaccessible_ids_have_identical_safe_rejections(self):
+        self.entities_client.get_client_by_golden_record.side_effect = _not_found("get_client_by_golden_record")
+        responses = [self._retrieve(gr_id=gr_id) for gr_id in (_GR_A, _GR_B)]
+        for response in responses:
+            self.assertEqual(response.status_code, 400)
+            self.assertEqual(response.json(), {"success": False, "error": "Unknown or inaccessible Golden Record"})
+        self.entities_client.get_entity.assert_not_awaited()
+        self.entities_client.search_entities.assert_not_awaited()
+
+    def test_visibility_is_rechecked_after_a_successful_search(self):
+        self.entities_client.search_entities.return_value = [{"id": _GR_A}]
+        self.assertEqual(self._search({"entity_type": "person", "query": "Dean"}).status_code, 200)
+        self.entities_client.get_client_by_golden_record.side_effect = _not_found("get_client_by_golden_record")
+        self.entities_client.get_entity.reset_mock()
+        response = self._retrieve()
+        self.assertEqual(response.status_code, 400)
+        self.entities_client.get_entity.assert_not_awaited()
+        self.assertNotIn("Dean", response.text)
+
+    def test_upstream_missing_or_explicit_wrong_type_is_a_safe_rejection(self):
+        for payload in (_not_found("get_entity"), _person(_GR_A, entity_type="company")):
+            with self.subTest(payload=type(payload).__name__):
+                self.entities_client.get_entity.side_effect = payload if isinstance(payload, Exception) else None
+                self.entities_client.get_entity.return_value = payload
+                response = self._retrieve()
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.json()["error"], "Unknown or inaccessible Golden Record")
+
+    def test_company_trust_and_missing_discriminator_mismatches_fail_closed(self):
+        for kind, metadata in (("company", {"entity_type": "company", "is_trust": True}),
+                               ("company", {}), ("company", {"entity_type": "company", "is_trust": "false"}),
+                               ("trust", {"entity_type": "company", "is_trust": False}),
+                               ("trust", {"entity_type": "trust", "is_trust": True})):
+            with self.subTest(kind=kind, metadata=metadata):
+                self.entities_client.get_entity.return_value = dict(id=_GR_A, full_name="PRIVATE-NAME", **metadata)
+                response = self._retrieve(entity_type=kind)
+                self.assertEqual(response.status_code, 503)
+                self.assertNotIn("PRIVATE-NAME", response.text)
+
+    def test_malformed_entity_payloads_and_consumed_fields_return_safe_503(self):
+        for entity in (None, [], {}, {"full_name": "PRIVATE-NAME"}, _person(_GR_B),
+                       _person(_GR_A, id="PRIVATE-ID"), _person(_GR_A, email={"private": "PRIVATE-DATA"}),
+                       _person(_GR_A, cellphone=["PRIVATE-PHONE"]), _person(_GR_A, status=[]),
+                       _person(_GR_A, full_name="PRIVATE-\ud800"), _person(_GR_A, residential_address="PRIVATE-\udfff")):
+            with self.subTest(entity=entity):
+                self.entities_client.get_entity.return_value = entity
+                response = self._retrieve()
+                self.assertEqual(response.status_code, 503)
+                self.assertEqual(response.json(), {"success": False, "error": "Golden Record service unavailable"})
+
+    def test_malformed_or_mismatched_linkage_never_fetches_entity(self):
+        self.entities_client.get_client_by_golden_record.side_effect = None
+        for linkage in (None, [], {}, {"id": 77}, _linkage_row(_GR_A, 6), _linkage_row(_GR_B, 5)):
+            with self.subTest(linkage=linkage):
+                self.entities_client.get_client_by_golden_record.return_value = linkage
+                response = self._retrieve()
+                self.assertEqual(response.status_code, 503)
+        self.entities_client.get_entity.assert_not_awaited()
+
+    def test_inactive_or_deleted_record_cannot_be_retrieved(self):
+        for fields in ({"status": "archived"}, {"is_active": False}, {"deleted_at": "2026-01-01"}):
+            with self.subTest(fields=fields):
+                self.entities_client.get_entity.return_value = _person(_GR_A, **fields)
+                response = self._retrieve()
+                self.assertEqual(response.status_code, 400)
+                self.assertNotIn("Dean", response.text)
+
+    def test_upstream_errors_and_timeouts_are_unavailable_not_tenant_decisions(self):
+        for operation in ("get_client_by_golden_record", "get_entity"):
+            for status in (401, 403, 422, 500, 503, None):
+                with self.subTest(operation=operation, status=status):
+                    self.entities_client.get_client_by_golden_record = AsyncMock(side_effect=_linkage_row)
+                    self.entities_client.get_entity = AsyncMock(return_value=_person(_GR_A))
+                    getattr(self.entities_client, operation).side_effect = EntityServiceError(
+                        "PRIVATE-UPSTREAM-DATA", operation=operation, status_code=status,
+                        category="timeout" if status is None else "http_error",
+                    )
+                    response = self._retrieve()
+                    self.assertEqual(response.status_code, 503)
+                    self.assertEqual(response.json()["error"], "Golden Record service unavailable")
+                    if operation == "get_client_by_golden_record":
+                        self.entities_client.get_entity.assert_not_awaited()
+
+    def test_overall_deadline_bounds_each_stage_and_returns_no_partial_data(self):
+        import asyncio
+
+        async def hang(*args):
+            await asyncio.Event().wait()
+
+        for operation in ("get_client_by_golden_record", "get_entity"):
+            with self.subTest(operation=operation):
+                self.entities_client.get_client_by_golden_record = AsyncMock(side_effect=_linkage_row)
+                self.entities_client.get_entity = AsyncMock(return_value=_person(_GR_A))
+                getattr(self.entities_client, operation).side_effect = hang
+                with patch("routers.v1.golden_records.RETRIEVAL_TIMEOUT_SECONDS", 0.01, create=True):
+                    response = self._retrieve()
+                self.assertEqual(response.status_code, 503)
+                self.assertNotIn("data", response.json())
+                if operation == "get_client_by_golden_record":
+                    self.entities_client.get_entity.assert_not_awaited()
+
+    def test_absent_client_is_service_unavailable(self):
+        saved = app.state.entities_client
+        try:
+            app.state.entities_client = None
+            response = self._retrieve()
+            self.assertEqual(response.status_code, 503)
+        finally:
+            app.state.entities_client = saved
+        self._assert_no_lookup()
 
 
 if __name__ == "__main__":

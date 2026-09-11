@@ -1,6 +1,7 @@
+import asyncio
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from auth.current_user import CurrentUser
@@ -16,9 +17,12 @@ from services.golden_record_search import (
 from services.golden_record_visibility import (
     UPSTREAM_UNAVAILABLE_MESSAGE,
     GoldenRecordVisibilityError,
+    resolve_visible_golden_record,
 )
 
 router = APIRouter()
+RETRIEVAL_TIMEOUT_SECONDS = 30
+_NO_STORE_HEADERS = {"Cache-Control": "no-store"}
 
 # Allow-list: anything else (tenant ids, actor fields, undocumented search keys)
 # is rejected rather than silently ignored.
@@ -126,3 +130,45 @@ async def search_golden_records(
         )
 
     return {"message": "OK", "data": _map_result(result)}
+
+
+@router.get("/{golden_record_id}")
+async def retrieve_golden_record(
+    golden_record_id: str,
+    request: Request,
+    entity_type: Optional[str] = None,
+    user: CurrentUser = Depends(require_jwt),
+    entities_client: EntitiesClient = Depends(get_entities_client),
+):
+    if user.is_client:
+        raise HTTPException(status_code=404, detail="Not found")
+    if not user.has_ability("transfers:read"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    if list(request.query_params.multi_items()) != [("entity_type", entity_type)]:
+        raise HTTPException(status_code=422, detail="Exactly one entity_type query parameter is required")
+
+    try:
+        async with asyncio.timeout(RETRIEVAL_TIMEOUT_SECONDS):
+            visible = await resolve_visible_golden_record(
+                entities_client,
+                golden_record_id=golden_record_id,
+                accountable_institution_id=user.accountable_institution_id,
+                expected_entity_type=entity_type,
+            )
+            data = visible.details
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except GoldenRecordVisibilityError as exc:
+        return JSONResponse(
+            status_code=exc.http_status,
+            content={"success": False, "error": exc.public_message},
+            headers=_NO_STORE_HEADERS,
+        )
+    except (EntityServiceError, TimeoutError):
+        return JSONResponse(
+            status_code=503,
+            content={"success": False, "error": UPSTREAM_UNAVAILABLE_MESSAGE},
+            headers=_NO_STORE_HEADERS,
+        )
+
+    return JSONResponse(content={"message": "OK", "data": data}, headers=_NO_STORE_HEADERS)

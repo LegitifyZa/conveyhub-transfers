@@ -69,12 +69,14 @@ def _upstream_error(operation: str, status_code: int = 500) -> EntityServiceErro
     )
 
 
+def _linkage_row(gr_id, ai):
+    return {"id": 77, "golden_record_id": gr_id, "accountable_institution_id": ai, "approval_status": "approved"}
+
+
 def _client(*, search_data=None) -> AsyncMock:
     client = AsyncMock(spec=EntitiesClient)
     client.search_entities = AsyncMock(return_value=search_data)
-    client.get_client_by_golden_record = AsyncMock(
-        return_value={"id": 77, "approval_status": "approved"}
-    )
+    client.get_client_by_golden_record = AsyncMock(side_effect=_linkage_row)
     client.get_entity = AsyncMock(side_effect=lambda gr_id, et: _person(UUID(gr_id)))
     return client
 
@@ -92,7 +94,7 @@ class PersonSearchWorkflowTests(unittest.IsolatedAsyncioTestCase):
 
         async def _linkage(gr_id, ai):
             calls.append(("linkage", gr_id, ai))
-            return {"id": 77}
+            return _linkage_row(gr_id, ai)
 
         async def _entity(gr_id, entity_type):
             calls.append(("entity", gr_id, entity_type))
@@ -156,7 +158,7 @@ class TenantSafetyTests(unittest.IsolatedAsyncioTestCase):
         async def _linkage(gr_id, ai):
             if gr_id == str(_GR_B):
                 raise _not_found("get_client_by_golden_record")
-            return {"id": 77, "tenant_id": "CALLER-TENANT"}
+            return dict(_linkage_row(gr_id, ai), tenant_id="CALLER-TENANT")
 
         client.get_client_by_golden_record.side_effect = _linkage
         client.get_entity.side_effect = lambda gr_id, et: _person(UUID(gr_id), tenant_id="OTHER-CREATOR-TENANT")
@@ -221,7 +223,7 @@ class TenantSafetyTests(unittest.IsolatedAsyncioTestCase):
                     async def fail(gr_id, scope):
                         if gr_id == str(failing_id):
                             raise _upstream_error(operation)
-                        return {"id": 77} if operation == "get_client_by_golden_record" else _person(UUID(gr_id))
+                        return _linkage_row(gr_id, scope) if operation == "get_client_by_golden_record" else _person(UUID(gr_id))
 
                     getattr(client, operation).side_effect = fail
                     with self.assertRaises(_FAULTS):
@@ -372,7 +374,7 @@ class PaginationTests(unittest.IsolatedAsyncioTestCase):
         async def linkage(gr_id, ai):
             if gr_id == str(_GR_A):
                 raise _not_found("get_client_by_golden_record")
-            return {"id": 77}
+            return _linkage_row(gr_id, ai)
 
         client.get_client_by_golden_record.side_effect = linkage
         with patch.object(search_module, "SEARCH_PAGE_SIZE", 1):

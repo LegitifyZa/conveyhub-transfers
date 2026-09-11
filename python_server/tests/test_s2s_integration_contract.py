@@ -120,6 +120,10 @@ class FakeLegitifyGateway:
                 (str(GR_SHARED), AI_OTHER): {"id": 706, "approval_status": "approved"},
             }
         )
+        self.linkages = {
+            (gr_id, ai): {"golden_record_id": gr_id, "accountable_institution_id": ai, **row}
+            for (gr_id, ai), row in self.linkages.items()
+        }
         self.entities = (
             entities
             if entities is not None
@@ -295,7 +299,10 @@ class TenantVisibilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(visible.golden_record_id, GR_PERSON)
         self.assertEqual(visible.entity_type, "person")
         self.assertEqual(visible.accountable_institution_id, AI_OWN)
-        self.assertEqual(visible.linkage, {"id": 701, "approval_status": "approved"})
+        self.assertEqual(visible.linkage, {
+            "id": 701, "golden_record_id": str(GR_PERSON), "accountable_institution_id": AI_OWN,
+            "approval_status": "approved",
+        })
         cache = visible.display_cache
         self.assertEqual(cache.name, "Dean Smith")
         self.assertEqual(cache.id_number, "9001010001081")
@@ -904,6 +911,111 @@ class SearchWorkflowContractTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises((EntityReconciliationError, GoldenRecordVisibilityError)):
             await self._search(gateway, entity_type="company", query="Smith")
         self.assertEqual(len(gateway.entity_requests), 1)
+
+
+class RetrievalHttpContractTests(unittest.IsolatedAsyncioTestCase):
+    async def _retrieve(self, gateway, gr_id=GR_PERSON, kind="person", ai=AI_OWN):
+        import time
+        from dataclasses import replace
+
+        import jwt
+        from main import app
+
+        settings = replace(_settings(), jwt_secret="retrieval-contract-jwt-key-32-bytes")
+        token = jwt.encode({
+            "type": "access", "user_id": 1, "user_roles_id": 3, "accountable_institution_id": ai,
+            "abilities": ["transfers:read"], "exp": int(time.time()) + 60,
+        }, settings.jwt_secret, algorithm="HS256")
+        client = _client(gateway)
+        try:
+            with patch.object(app.state, "settings", settings, create=True), patch.object(app.state, "entities_client", client, create=True):
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://retrieval-contract.invalid") as browser:
+                    return await browser.get(
+                        f"/api/v1/golden-records/{gr_id}", params={"entity_type": kind},
+                        headers={"Authorization": f"Bearer {token}", "X-Accountable-Institution-Id": "999"},
+                    )
+        finally:
+            await client.close()
+
+    async def test_authenticated_read_uses_scoped_linkage_then_typed_get_for_all_types(self):
+        for gr_id, kind in ((GR_PERSON, "person"), (GR_COMPANY, "company"), (GR_TRUST, "trust")):
+            with self.subTest(kind=kind):
+                gateway = FakeLegitifyGateway()
+                response = await self._retrieve(gateway, gr_id, kind)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json()["data"]["entityType"], kind)
+                self.assertEqual(response.json()["data"]["goldenRecordId"], str(gr_id))
+                self.assertEqual(gateway.paths, [LINKAGE_PREFIX + str(gr_id), ENTITIES_PREFIX + str(gr_id)])
+                self.assertEqual(gateway.linkage_requests[0].url.params["accountable_institution_id"], str(AI_OWN))
+                self.assertEqual(gateway.entity_requests[0].url.params["entity_type"], "company" if kind == "trust" else kind)
+                for request in gateway.requests:
+                    self.assertEqual(request.headers["X-Service-Key"], SERVICE_KEY)
+                    self.assertNotIn("Authorization", request.headers)
+                    self.assertNotIn("X-Accountable-Institution-Id", request.headers)
+                self.assertEqual(response.headers["cache-control"], "no-store")
+                self.assertNotIn("tenant_id", response.text)
+                self.assertNotIn("risk_rating", response.text)
+
+    async def test_unknown_and_other_ai_records_are_indistinguishable_and_never_fetched(self):
+        for gr_id in (GR_UNKNOWN, GR_OTHER_AI):
+            with self.subTest(gr_id=gr_id):
+                gateway = FakeLegitifyGateway()
+                response = await self._retrieve(gateway, gr_id)
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.json(), {"success": False, "error": NOT_VISIBLE_MESSAGE})
+                self.assertEqual(len(gateway.linkage_requests), 1)
+                self.assertEqual(gateway.entity_requests, [])
+
+    async def test_shared_records_are_visible_to_each_linked_ai_not_the_creator_tenant(self):
+        for ai, expected_status in ((AI_OWN, 200), (AI_OTHER, 200), (42, 400)):
+            with self.subTest(ai=ai):
+                gateway = FakeLegitifyGateway()
+                response = await self._retrieve(gateway, GR_SHARED, ai=ai)
+                self.assertEqual(response.status_code, expected_status)
+                self.assertEqual(gateway.linkage_requests[0].url.params["accountable_institution_id"], str(ai))
+                self.assertNotIn("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", response.text)
+
+    async def test_bad_envelopes_and_payloads_at_each_http_stage_fail_safely(self):
+        for stage in ("_handle_linkage", "_handle_entity"):
+            for envelope in ({}, {"data": None}, {"data": []}, {"data": {}}, {"data": {"id": "PRIVATE-ID"}},
+                             {"data": dict(_PERSON_RECORD, full_name="PRIVATE-\ud800")}, "PRIVATE-HTML"):
+                with self.subTest(stage=stage, envelope=envelope):
+                    gateway = FakeLegitifyGateway()
+                    response = httpx.Response(200, text=envelope if isinstance(envelope, str) else json.dumps(envelope))
+                    with patch.object(gateway, stage, return_value=response):
+                        result = await self._retrieve(gateway)
+                    self.assertEqual(result.status_code, 503)
+                    self.assertEqual(result.json(), {"success": False, "error": UPSTREAM_UNAVAILABLE_MESSAGE})
+                    if stage == "_handle_linkage":
+                        self.assertEqual(gateway.entity_requests, [])
+
+    async def test_protocol_decode_and_timeout_failures_have_bounded_safe_http_results(self):
+        for stage in ("_handle_linkage", "_handle_entity"):
+            for error_type in (httpx.RemoteProtocolError, httpx.DecodingError, httpx.ReadTimeout):
+                with self.subTest(stage=stage, error_type=error_type.__name__):
+                    gateway = FakeLegitifyGateway()
+                    with patch.object(gateway, stage, side_effect=error_type("PRIVATE-TRANSPORT")), _no_sleep():
+                        response = await self._retrieve(gateway)
+                    self.assertEqual(response.status_code, 503)
+                    self.assertEqual(response.json(), {"success": False, "error": UPSTREAM_UNAVAILABLE_MESSAGE})
+                    failed_requests = gateway.linkage_requests if stage == "_handle_linkage" else gateway.entity_requests
+                    self.assertEqual(len(failed_requests), READ_MAX_ATTEMPTS if error_type is httpx.ReadTimeout else 1)
+                    if stage == "_handle_linkage":
+                        self.assertEqual(gateway.entity_requests, [])
+
+    async def test_reads_refresh_canonical_details_and_do_not_reuse_prior_visibility(self):
+        gateway = FakeLegitifyGateway()
+        first = await self._retrieve(gateway)
+        self.assertEqual(first.status_code, 200)
+        gateway.entities[str(GR_PERSON)]["cellphone"] = "+27 21 000 0000"
+        second = await self._retrieve(gateway)
+        self.assertEqual(second.json()["data"]["phone"], "+27 21 000 0000")
+        gateway.linkages.pop((str(GR_PERSON), AI_OWN))
+        third = await self._retrieve(gateway)
+        self.assertEqual(third.status_code, 400)
+        self.assertEqual(len(gateway.linkage_requests), 3)
+        self.assertEqual(len(gateway.entity_requests), 2)
+        self.assertEqual(gateway.search_requests, [])
 
 
 class FakeGatewaySearchShapeTests(unittest.TestCase):

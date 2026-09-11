@@ -398,11 +398,23 @@ class Migration018DbIntegrationTests(unittest.IsolatedAsyncioTestCase):
             await self._run_migration_on_connection(conn)
 
             result = await query(
-                "SELECT code FROM party_role_definitions WHERE is_active = TRUE",
+                """
+                SELECT code, label, description, is_active
+                FROM party_role_definitions
+                WHERE code IN ('transferor', 'transferee')
+                """,
                 connection=conn,
             )
-            codes = {r["code"] for r in result.rows}
-            self.assertEqual(codes, {"transferor", "transferee"})
+            roles = {r["code"]: r for r in result.rows}
+            self.assertEqual(set(roles), {"transferor", "transferee"})
+            for code, label, description in (
+                ("transferor", "Transferor", "Entity transferring ownership or interest"),
+                ("transferee", "Transferee", "Entity receiving ownership or interest"),
+            ):
+                with self.subTest(role=code):
+                    self.assertEqual(roles[code]["label"], label)
+                    self.assertEqual(roles[code]["description"], description)
+                    self.assertIs(roles[code]["is_active"], True)
 
         await with_test_transaction(_verify)
 

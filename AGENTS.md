@@ -52,3 +52,25 @@ npx tsx --test src/components/GoldenRecordsSearch.test.tsx
 npx tsc --noEmit
 npm run typecheck:server
 ```
+
+## Golden Record retrieval P0
+
+- `GET /api/v1/golden-records/{uuid}?entity_type=person|company|trust` uses the
+  authenticated Node BFF → FastAPI path. FastAPI requires `transfers:read`, denies
+  client-role access, and derives the linkage AI from the verified user.
+- Every retrieval rechecks AI linkage before the canonical Entities GET. Trust
+  retrieval remains company-style upstream with strict trust classification.
+  The detail projection is transient; retrieval performs no DB writes and does
+  not expand the persistent display cache.
+- Browser JWT wiring remains an external Authentication-project blocker. The
+  upstream `docs/deedly_external_integration.md` also contains an unresolved
+  external-ingress/key-rotation HOLD. Do not bypass either dependency or claim
+  live browser/S2S certification from mock-transport tests.
+- The configured Entities source directory is a snapshot without Git metadata;
+  executing its contract tests does not attest an upstream or deployed SHA.
+
+For full Python verification, from `python_server/`, set `ENTITIES_SOURCE_ROOT`
+(as above) and run `python -m pytest -q -rs -p no:cacheprovider tests`. Unlike
+unittest discovery, pytest executes the function-based landed-source contracts.
+DB-dependent tests require `TEST_DATABASE_URL`; an unset value means skipped
+DB integration coverage, not a successful database certification.

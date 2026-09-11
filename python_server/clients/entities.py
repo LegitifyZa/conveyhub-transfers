@@ -261,6 +261,12 @@ class EntitiesClient:
                         operation=operation,
                         category=category,
                     ) from exc
+            except httpx.RequestError as exc:
+                raise EntityServiceError(
+                    f"Entity service {operation} failed: network",
+                    operation=operation,
+                    category="network",
+                ) from exc
             else:
                 if response.status_code < 500 or attempt >= max_attempts:
                     return response
