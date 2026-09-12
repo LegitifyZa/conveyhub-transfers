@@ -5,7 +5,7 @@ from uuid import UUID
 
 import httpx
 
-from clients.entities import SUPPORTED_ENTITY_TYPES, EntitiesClient, EntityServiceError
+from clients.entity_protocol import SUPPORTED_ENTITY_TYPES, EntityServiceError, extract_entity_data
 
 
 LogicalEntityType = Literal["person", "company", "trust"]
@@ -144,7 +144,7 @@ def parse_submission_response(
     operation = f"submit_{expected_entity_type}"
     if response.is_success and response.status_code != 201:
         raise _invalid_response(operation, response.status_code)
-    data = EntitiesClient._extract_data(response, operation=operation, allowed_error_fields=_SUBMISSION_ERROR_FIELDS)
+    data = extract_entity_data(response, operation=operation, allowed_error_fields=_SUBMISSION_ERROR_FIELDS)
     if not isinstance(data, dict) or not isinstance(data.get("id"), str):
         raise _invalid_response(operation, response.status_code)
     try:

@@ -421,16 +421,25 @@ Trust responses must match the explicitly expected office. The returned
 provider payloads, or creation/verification/visibility claims. Upstream 201 also covers
 reused identities; it does not establish that a new row was created.
 
-The existing envelope decoder is reused without constructing a client. Its optional
-error-field allow-list is applied only by these adapters; legacy callers retain their
-existing decoding behavior. Non-2xx responses, including 409, remain errors. Nothing
-registers a client, authorizes an AI relationship, fetches canonical data, retries, writes
-a database row, or exposes a public endpoint/UI. Existing submit runtime payloads,
-returns, timeouts and retry counts are unchanged. Any eventual create flow must still
-prove the approved AI linkage before canonical retrieval; a 409 is never authorization.
+The shared definitions and decoder live in configuration-free
+`python_server/clients/entity_protocol.py`. Adapters import this pure layer, not the
+runtime client or configuration; importing them must not load dotenv, initialize
+runtime configuration, or construct HTTP clients. The runtime client preserves its
+configuration bootstrap, re-exports the same exception/type objects, and retains its
+existing decoder signature/defaults through delegation. The optional error-field
+allow-list is applied only by adapters; legacy callers retain their existing decoding
+behavior. Non-2xx responses, including 409, remain errors. Nothing registers a client,
+authorizes an AI relationship, fetches canonical data, retries, writes a database row,
+or exposes a public endpoint/UI. Existing submit runtime payloads, returns, timeouts
+and retry counts are unchanged. Any eventual create flow must still prove the approved
+AI linkage before canonical retrieval; a 409 is never authorization.
 
 `test_entity_submissions.py` covers structural inputs, typed references, safe failures,
-no I/O and the absence of passport/override inputs. The existing landed-source harness
+no I/O and the absence of passport/override inputs. Its fresh-process regressions install
+runtime-import, dotenv and HTTP-client guards before adapter import and verify that the
+environment remains unchanged; a separate fresh import checks that the legacy client
+still initializes configuration. Client compatibility tests pin shared exception/export
+identity, unfiltered decoder defaults and opt-in error filtering. The existing landed-source harness
 also exercises submit schemas, route dispatch, actual serializers, trust normalization,
 and passport limitations (number-only identity and skipped SA-keyed orchestration).
 Its repositories/providers are synthetic or mocked and its SQL fixtures use in-memory

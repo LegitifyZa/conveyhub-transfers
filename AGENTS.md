@@ -83,6 +83,11 @@ DB integration coverage, not a successful database certification.
   request adapters and a response-reference parser. They are not wired into
   `EntitiesClient.submit_person`, a route, or the UI. Runtime submit payloads,
   returns, timeouts and retries remain unchanged.
+- Shared definitions/decoding live in configuration-free `clients.entity_protocol`.
+  Adapters do not import the runtime client or configuration. The client re-exports
+  the same exception/type objects and delegates decoding, retaining its existing
+  configuration bootstrap. Fresh-process tests install import/dotenv/HTTP-client
+  guards before importing adapters; call-time no-I/O guards remain in place.
 - Request checks cover source structure, not approved P0 business requirements.
   Person requests use `id_number`; there is no passport-pair adapter. The existing
   client's unused passport transport remains unchanged. Trust requests require
@@ -104,8 +109,8 @@ DB integration coverage, not a successful database certification.
 Focused Python type checks from `python_server/` (Windows; `nul` disables cache):
 
 ```powershell
-python -m mypy --follow-imports=silent --ignore-missing-imports --no-incremental --cache-dir=nul clients/entities.py clients/entity_submissions.py services/entity_reconciliation.py
-python -m mypy --strict --follow-imports=silent --ignore-missing-imports --no-incremental --cache-dir=nul clients/entity_submissions.py
+python -m mypy --follow-imports=silent --ignore-missing-imports --no-incremental --cache-dir=nul clients/entity_protocol.py clients/entities.py clients/entity_submissions.py services/entity_reconciliation.py
+python -m mypy --strict --follow-imports=silent --ignore-missing-imports --no-incremental --cache-dir=nul clients/entity_protocol.py clients/entity_submissions.py
 ```
 
 Adapter/client checks use `tests/test_entity_submissions.py` and

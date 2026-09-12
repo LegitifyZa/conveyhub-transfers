@@ -7,6 +7,7 @@ import httpx
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from clients import entities as runtime_entities, entity_protocol
 from clients.entities import (
     PERSON_SUBMIT_TIMEOUT_SECONDS,
     READ_MAX_ATTEMPTS,
@@ -65,6 +66,63 @@ def _make_response(status_code: int = 200, json_body=None, is_success: bool = Tr
 def _no_sleep():
     """Patch the retry backoff so tests never wait on real time."""
     return mock.patch("clients.entities.asyncio.sleep", new_callable=mock.AsyncMock)
+
+
+class EntitiesProtocolCompatibilityTests(unittest.TestCase):
+    def test_legacy_exports_share_protocol_identity_and_catch_protocol_errors(self):
+        self.assertIs(EntityServiceError, entity_protocol.EntityServiceError)
+        self.assertIs(SUPPORTED_ENTITY_TYPES, entity_protocol.SUPPORTED_ENTITY_TYPES)
+        self.assertIs(runtime_entities._validation_error_fields, entity_protocol._validation_error_fields)
+        with self.assertRaises(EntityServiceError) as caught:
+            entity_protocol.extract_entity_data(
+                _make_response(409, {"data": {"id": "existing"}}, is_success=False), operation="compatibility",
+            )
+        self.assertIs(type(caught.exception), EntityServiceError)
+        self.assertEqual(caught.exception.status_code, 409)
+        self.assertEqual(caught.exception.category, "http_error")
+
+    def test_legacy_bound_decoder_preserves_success_data_without_adapter_validation(self):
+        client = object.__new__(EntitiesClient)
+        for data in (None, [], {}, {"id": "not-a-uuid"}, "raw", 0, False):
+            with self.subTest(data=data):
+                upstream = _make_response(200, {"data": data, "status_code": 500})
+                self.assertIs(client._extract_data(upstream, operation="compatibility"), data)
+
+    def test_legacy_decoder_preserves_error_categories_messages_and_metadata(self):
+        client = object.__new__(EntitiesClient)
+        for status in (400, 401, 403, 404, 409, 422, 429, 500, 503):
+            upstream = _make_response(status, {
+                "message": "PRIVATE", "data": {"id": "PRIVATE"},
+                "errors": {"id_number": ["PRIVATE"], "future_field": ["PRIVATE"]},
+            }, is_success=False)
+            with self.subTest(status=status), self.assertRaises(EntityServiceError) as caught:
+                client._extract_data(upstream, operation="compatibility")
+            self.assertEqual(str(caught.exception), f"Entity service compatibility failed with status {status}")
+            self.assertEqual(vars(caught.exception), {
+                "operation": "compatibility", "status_code": status,
+                "category": {404: "not_found", 422: "validation_error"}.get(status, "http_error"),
+                "response_body_present": True, "error_fields": ("future_field", "id_number"),
+            })
+            self.assertEqual(caught.exception.is_not_found, status == 404)
+        for body, category, message in (
+            (None, "malformed_json", "Entity service compatibility returned non-JSON response"),
+            ({}, "missing_data_envelope", "Entity service compatibility response missing 'data' envelope"),
+            ([], "missing_data_envelope", "Entity service compatibility response missing 'data' envelope"),
+        ):
+            with self.subTest(body=body), self.assertRaises(EntityServiceError) as caught:
+                client._extract_data(_make_response(200, body), operation="compatibility")
+            self.assertEqual(str(caught.exception), message)
+            self.assertEqual(caught.exception.category, category)
+            self.assertEqual(caught.exception.status_code, 200)
+            self.assertEqual(caught.exception.error_fields, ())
+
+    def test_legacy_error_field_filter_remains_opt_in(self):
+        upstream = _make_response(422, {"errors": {"id_number": ["PRIVATE"], "future_field": ["PRIVATE"]}}, is_success=False)
+        self.assertEqual(runtime_entities._validation_error_fields(upstream), ("future_field", "id_number"))
+        for allowed, expected in ((None, ("future_field", "id_number")), (frozenset(), ()), (frozenset({"id_number"}), ("id_number",))):
+            with self.subTest(allowed=allowed), self.assertRaises(EntityServiceError) as caught:
+                EntitiesClient._extract_data(upstream, operation="compatibility", allowed_error_fields=allowed)
+            self.assertEqual(caught.exception.error_fields, expected)
 
 
 class EntitiesClientConstructionTests(unittest.IsolatedAsyncioTestCase):

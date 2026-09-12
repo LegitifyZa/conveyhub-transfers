@@ -1,5 +1,7 @@
 import os
+import subprocess
 import sys
+import textwrap
 import unittest
 from dataclasses import FrozenInstanceError, asdict
 from unittest.mock import patch
@@ -9,7 +11,7 @@ import httpx
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from clients.entities import EntityServiceError
+from clients.entity_protocol import EntityServiceError
 from clients.entity_submissions import (
     CompanySubmission,
     PersonSubmission,
@@ -32,6 +34,75 @@ def reference(kind):
     if kind != "person":
         data.update(entity_type="company", is_trust=kind == "trust", masters_office="cape_town" if kind == "trust" else None)
     return data
+
+
+class SubmissionImportIsolationTests(unittest.TestCase):
+    def _run_probe(self, script):
+        result = subprocess.run(
+            [sys.executable, "-c", textwrap.dedent(script)],
+            cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_fresh_adapter_import_does_not_initialize_runtime_state(self):
+        self._run_probe('''
+            import importlib
+            import importlib.abc
+            import os
+            import sys
+            from unittest.mock import patch
+
+            forbidden = {
+                "config", "python_server.config", "clients.entities", "python_server.clients.entities",
+                "db", "python_server.db", "main", "python_server.main",
+            }
+
+            class ImportGuard(importlib.abc.MetaPathFinder):
+                def find_spec(self, fullname, path=None, target=None):
+                    if fullname in forbidden:
+                        raise AssertionError(f"Runtime import forbidden: {fullname}")
+                    return None
+
+            with patch("dotenv.load_dotenv", side_effect=AssertionError("Dotenv loading forbidden")) as dotenv, \\
+                    patch("httpx.AsyncClient", side_effect=AssertionError("HTTP client forbidden")) as async_client, \\
+                    patch("httpx.Client", side_effect=AssertionError("HTTP client forbidden")) as sync_client:
+                assert forbidden.isdisjoint(sys.modules)
+                environment = dict(os.environ)
+                sys.meta_path.insert(0, ImportGuard())
+                adapters = importlib.import_module("clients.entity_submissions")
+                protocol = importlib.import_module("clients.entity_protocol")
+                assert adapters.EntityServiceError is protocol.EntityServiceError
+                assert forbidden.isdisjoint(sys.modules)
+                assert dict(os.environ) == environment, "Adapter import changed the environment"
+                dotenv.assert_not_called()
+                async_client.assert_not_called()
+                sync_client.assert_not_called()
+        ''')
+
+    def test_fresh_legacy_import_preserves_configuration_bootstrap_and_exports(self):
+        self._run_probe('''
+            import importlib
+            import sys
+            from unittest.mock import patch
+
+            with patch("dotenv.load_dotenv", return_value=False) as dotenv, \\
+                    patch("httpx.AsyncClient", side_effect=AssertionError("HTTP client forbidden")) as async_client, \\
+                    patch("httpx.Client", side_effect=AssertionError("HTTP client forbidden")) as sync_client:
+                protocol = importlib.import_module("clients.entity_protocol")
+                assert "config" not in sys.modules
+                dotenv.assert_not_called()
+                legacy = importlib.import_module("clients.entities")
+                assert "config" in sys.modules
+                dotenv.assert_called_once_with()
+                assert legacy.Settings is sys.modules["config"].Settings
+                assert legacy.EntityServiceError is protocol.EntityServiceError
+                assert legacy.SUPPORTED_ENTITY_TYPES is protocol.SUPPORTED_ENTITY_TYPES
+                assert legacy._validation_error_fields is protocol._validation_error_fields
+                async_client.assert_not_called()
+                sync_client.assert_not_called()
+        ''')
 
 
 class SubmissionRequestTests(unittest.TestCase):
@@ -154,7 +225,7 @@ class SubmissionRequestTests(unittest.TestCase):
         )
         with patch("httpx.AsyncClient") as async_client, patch("httpx.Client") as client, \
                 patch("db.query") as query, patch("db.with_transaction") as transaction, \
-                patch("clients.entities.asyncio.sleep") as sleep:
+                patch("asyncio.sleep") as sleep:
             for request, kind, options in requests:
                 request.to_payload()
                 self.assertEqual(parse_submission_response(response(reference(kind)), kind, **options).golden_record_id, GR)
