@@ -8,13 +8,14 @@ import ast
 import copy
 import json
 import os
+import re
 import sys
 import types
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Literal
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 from uuid import UUID, uuid4
 
 import pytest
@@ -33,7 +34,7 @@ import httpx
 from fastapi import Depends, Header
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, model_validator
 from sqlalchemy import Column, DateTime, MetaData, String, Table, Uuid, create_engine, select
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Session, registry
@@ -41,6 +42,7 @@ from sqlalchemy.orm import Session, registry
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from clients.entities import EntitiesClient
+from clients.entity_submissions import CompanySubmission, PersonSubmission, TrustSubmission, parse_submission_response
 from routers.v1.golden_records import search_golden_records
 from services import golden_record_search as deedly_search
 from services.entity_reconciliation import EntityReconciliationError
@@ -108,7 +110,7 @@ class _Harness:
             table = Table(
                 "persons" if name == "Person" else "companies", self.mapper.metadata,
                 Column("id", Uuid, primary_key=True), Column("tenant_id", Uuid),
-                Column("created_at", DateTime), *[Column(field, String) for field in fields],
+                Column("created_at", DateTime), Column("updated_at", DateTime), *[Column(field, String) for field in fields],
             )
             self.mapper.map_imperatively(model, table)
             self.models[name] = model
@@ -561,3 +563,152 @@ async def test_malformed_contact_values_from_actual_serializer_are_not_displayed
             _ = visible.details
     assert error.value.http_status == 503
     assert "PRIVATE-DATA" not in error.value.public_message
+
+
+@pytest.fixture
+def submission_source(landed):
+    landed.ns.update(model_validator=model_validator, re=re)
+    _load(landed.ns, "services/entities/src/api/v1/schemas.py", "SubmitClientRequest")
+    _load(landed.ns, ROUTES, "submit_client", remove_decorators=True)
+    trust_path = SHARED + "utils/trust.py"
+    tree = ast.parse((SOURCE_ROOT / trust_path).read_text(encoding="utf-8-sig"))
+    noise = next(node.value for node in tree.body if isinstance(node, ast.Assign)
+                 and any(isinstance(target, ast.Name) and target.id == "_MASTERS_OFFICE_NOISE" for target in node.targets))
+    landed.ns["_MASTERS_OFFICE_NOISE"] = ast.literal_eval(noise)
+    for name in ("normalise_trust_number", "normalise_masters_office"):
+        _load(landed.ns, trust_path, name)
+    return landed
+
+
+@pytest.mark.parametrize("kind,submission", [
+    ("person", PersonSubmission(tenant_id=CREATOR, id_number="6202268145089")),
+    ("person", PersonSubmission(tenant_id=CREATOR, id_number="6202268145089", first_name="Draft", surname="Name",
+                                email="draft@example.invalid", cellphone="", is_south_african=True, lookup_profile_slug="source-profile")),
+    ("company", CompanySubmission(tenant_id=CREATOR, registration_no="2026/123456/07")),
+    ("company", CompanySubmission(tenant_id=CREATOR, registration_no="2026/123456/07", legal_name="Draft Company")),
+    ("trust", TrustSubmission(tenant_id=CREATOR, registration_no="IT001841/2023(G)", masters_office="Cape Town")),
+    ("trust", TrustSubmission(tenant_id=CREATOR, registration_no="001841/2023", masters_office="Johannesburg", legal_name="Draft Trust")),
+])
+async def test_submit_adapters_round_trip_actual_schema_route_and_serializers(submission_source, kind, submission):
+    source = submission_source
+    payload = submission.to_payload()
+    body = source.ns["SubmitClientRequest"](**payload)
+    if kind == "person":
+        row = source.add(full_name="Canonical Person", national_id=body.id_number, tenant_id=OTHER_CREATOR)
+        data = await source.service._person_to_dict(row)
+    else:
+        row = source.add("Company", legal_name="Canonical Organisation", registration_no=body.id_number,
+                         company_type="Trust" if kind == "trust" else "Private",
+                         masters_office=body.masters_office, tenant_id=OTHER_CREATOR)
+        data = source.service._company_to_dict(row)
+    service = SimpleNamespace(handle_submit_client=AsyncMock(return_value=data))
+    source.ns["_get_entity_service"] = lambda request, session: service
+    result = await source.ns["submit_client"](body, source.request, caller=None, session=None)
+    assert result.status_code == 201
+    assert set(json.loads(result.body)) == {"message", "data"}
+    options = {"expected_masters_office": submission.masters_office} if kind == "trust" else {}
+    parsed = parse_submission_response(httpx.Response(result.status_code, content=result.body), kind, **options)
+    assert parsed.golden_record_id == row.id
+    assert parsed.entity_type == kind
+    assert set(vars(parsed)) == {"golden_record_id", "entity_type"}
+    assert "Canonical" not in repr(parsed)
+    kwargs = service.handle_submit_client.await_args.kwargs
+    assert kwargs["tenant_id"] == CREATOR
+    assert kwargs["id_number"] == payload["id_number"]
+    assert kwargs["is_company"] is (kind != "person")
+    assert kwargs["is_trust"] is (kind == "trust")
+    assert kwargs["is_south_african"] is payload.get("is_south_african", False)
+    assert kwargs["passport_number"] is None and kwargs["passport_country"] is None
+    assert kwargs["force_refresh"] is False
+    assert kwargs["accountable_institution_id"] is None and kwargs["user_id"] == 0
+    assert kwargs["lookup_profile_slug"] == payload.get("lookup_profile_slug")
+    assert kwargs["extra_data"] == (body.model_dump(exclude={
+        "id_number", "passport_number", "passport_country", "tenant_id", "is_company", "is_trust",
+        "is_south_african", "lookup_profile_slug",
+    }, exclude_none=True) or None)
+
+
+@pytest.mark.parametrize("number,office", [
+    ("IT 1841/2023(G)", "CAPE TOWN MASTERS OFFICE"),
+    ("IT001841/2023J", "Johannesburg"),
+    ("  IT001841/2023(JHB)", "JOHANNESBURG MASTERS OFFICE"),
+    ("it 1841/2023 (g)", "master of the high court Cape Town"),
+    ("1841/2023", "Port Elizabeth"),
+    ("1841/2023", "pretoria"),
+])
+async def test_trust_adapter_matches_selected_source_normalizers(submission_source, number, office):
+    payload = TrustSubmission(tenant_id=CREATOR, registration_no=number, masters_office=office).to_payload()
+    assert payload["id_number"] == submission_source.ns["normalise_trust_number"](number)
+    assert payload["masters_office"] == submission_source.ns["normalise_masters_office"](office)
+    submission_source.ns["SubmitClientRequest"](**payload)
+
+
+async def test_submit_source_does_not_supply_product_required_fields(submission_source):
+    model = submission_source.ns["SubmitClientRequest"]
+    minimal = model(tenant_id=CREATOR, id_number="1")
+    assert all(getattr(minimal, field) is None for field in ("first_name", "surname", "email", "cellphone", "legal_name"))
+    assert model(tenant_id=CREATOR, id_number="1", email="not-an-email").email == "not-an-email"
+    assert model(tenant_id=CREATOR, id_number="1841/2023", is_trust=True).masters_office is None
+    with pytest.raises(ValueError):
+        TrustSubmission(tenant_id=CREATOR, registration_no="1841/2023", masters_office="").to_payload()
+
+
+@pytest.mark.parametrize("payload", [
+    {"id_number": "1"}, {"tenant_id": "not-a-uuid", "id_number": "1"},
+    {"tenant_id": CREATOR}, {"tenant_id": CREATOR, "id_number": " "},
+    {"tenant_id": CREATOR, "id_number": "X" * 51}, {"tenant_id": CREATOR, "id_number": []},
+    {"tenant_id": CREATOR, "passport_number": "AB123"},
+    {"tenant_id": CREATOR, "id_number": "1", "passport_number": "AB123", "passport_country": "GB"},
+    {"tenant_id": CREATOR, "passport_number": "AB123", "passport_country": "GBR"},
+])
+async def test_actual_submit_schema_rejects_structural_errors(submission_source, payload):
+    with pytest.raises(ValidationError):
+        submission_source.ns["SubmitClientRequest"](**payload)
+
+
+async def test_passport_schema_and_unique_key_limitations_do_not_enable_an_adapter(submission_source):
+    source = submission_source
+    model = source.ns["SubmitClientRequest"]
+    assert model(tenant_id=CREATOR, passport_number="AB123", passport_country="g").passport_country == "G"
+    assert model(tenant_id=CREATOR, id_number="1", passport_country="ZZ").passport_country == "ZZ"
+    person = source.add(passport_no="AB123", tenant_id=OTHER_CREATOR)
+    repo_class = _load(source.ns, REPOSITORIES, "PersonRepository", ["get_by_passport_no"])
+    repo = repo_class()
+    repo._session = source.adapter
+    for country in ("GB", "US"):
+        body = model(tenant_id=CREATOR, passport_number="AB123", passport_country=country)
+        assert (await repo.get_by_passport_no(body.passport_number)).id == person.id
+        where = source.sql().split("WHERE", 1)[1].split("ORDER BY", 1)[0]
+        assert "passport_no" in where and "country" not in where and "tenant_id" not in where
+        with pytest.raises(TypeError):
+            PersonSubmission(tenant_id=CREATOR, passport_number=body.passport_number, passport_country=body.passport_country)
+    upgrade = _node("services/entities/alembic/versions/0039_unique_passport_no.py", "upgrade")
+    index_sql = " ".join(ast.literal_eval(upgrade.body[0].value.args[0]).split())
+    assert "ON persons (passport_no)" in index_sql
+    assert "passport_country" not in index_sql
+
+
+async def test_source_passport_creation_skips_provider_orchestration(submission_source):
+    source = submission_source
+    person = source.add(passport_no="AB123", national_id=None)
+    source.ns.update(logger=Mock(), OrchestratorService=Mock(side_effect=AssertionError("No provider execution permitted")))
+    _load(source.ns, ENTITY_SERVICE, "_compose_full_name")
+    handle_submit = _load(source.ns, ENTITY_SERVICE, "EntityService.handle_submit_client")
+    service = source.service
+    service._providers = {}
+    service._log_audit = AsyncMock()
+    service._person_repo.get_by_passport_no = AsyncMock(return_value=None)
+    service._person_repo.create = AsyncMock(return_value=person)
+    result = await handle_submit(service, tenant_id=CREATOR, passport_number="AB123", passport_country="GB")
+    assert result["id"] == str(person.id)
+    assert result["id_number"] is None and result["status"] == "active"
+    assert service._person_repo.create.await_args.kwargs == {
+        "passport_no": "AB123", "tenant_id": CREATOR, "country_of_residence_iso": "GB",
+    }
+    source.ns["OrchestratorService"].assert_not_called()
+
+
+async def test_submit_endpoint_path_is_confirmed_by_source(submission_source):
+    endpoint = _node(ROUTES, "submit_client").decorator_list[0]
+    assert endpoint.func.attr == "post"
+    assert ast.literal_eval(endpoint.args[0]) == "/submit"

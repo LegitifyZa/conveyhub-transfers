@@ -21,9 +21,11 @@ DEEDLY_API_BASE_URL=http://localhost:3100
 so the auth-forwarding BFF proxy `POST /api/v1/golden-records/search` can reach
 FastAPI. See `server/routes/v1/goldenRecords.ts`.
 
-## Golden Record search branch status
+## Golden Record Search / Retrieve status
 
-Branch `deedly/mvp0/entities-golden-record/golden-record-search` — do not merge.
+Search and Retrieve are completed on `main` at the accepted checkpoint
+`7d8101c4928238d555b9c958241adbac6a6c3b24`. This status does not certify live
+browser authentication or a deployed upstream contract.
 
 - Person, company, and trust search implemented end-to-end (tenant-safe: search
   → candidate ids → linkage visibility → typed fetch → visible results only).
@@ -74,3 +76,39 @@ For full Python verification, from `python_server/`, set `ENTITIES_SOURCE_ROOT`
 unittest discovery, pytest executes the function-based landed-source contracts.
 DB-dependent tests require `TEST_DATABASE_URL`; an unset value means skipped
 DB integration coverage, not a successful database certification.
+
+## Create Golden Record foundation — slices A/B only
+
+- `python_server/clients/entity_submissions.py` contains typed, side-effect-free
+  request adapters and a response-reference parser. They are not wired into
+  `EntitiesClient.submit_person`, a route, or the UI. Runtime submit payloads,
+  returns, timeouts and retries remain unchanged.
+- Request checks cover source structure, not approved P0 business requirements.
+  Person requests use `id_number`; there is no passport-pair adapter. The existing
+  client's unused passport transport remains unchanged. Trust requests require
+  an explicit office and preserve leading zeros during source-matched normalization.
+- A parsed `SubmissionReference` contains only UUID and logical type. It is not
+  evidence of a newly created, verified, visible or registered record. A 409 is
+  an error, never authorization. Canonical details still require the existing
+  linkage-before-fetch workflow; no submit display data may become a cache.
+- The upstream `SubmitClientRequest`, submit route, serializers, trust utilities
+  and passport limitations are exercised through the existing landed-source
+  test harness using `ENTITIES_SOURCE_ROOT`. No upstream service is called.
+  This snapshot has no Git metadata and is not deployed-contract evidence.
+- Parent Create Golden Record remains blocked/incomplete: D1 registration and
+  relationship eligibility; D2 AI-to-tenant resolution and write authorization;
+  D3 non-prod ingress/credentials/deployed evidence; D4 passport uniqueness;
+  D5 deadlines/recovery/verification/billing; D6 approved P0 fields and types.
+  Durable matter attachment and authenticated matter saving remain separate P0 work.
+
+Focused Python type checks from `python_server/` (Windows; `nul` disables cache):
+
+```powershell
+python -m mypy --follow-imports=silent --ignore-missing-imports --no-incremental --cache-dir=nul clients/entities.py clients/entity_submissions.py services/entity_reconciliation.py
+python -m mypy --strict --follow-imports=silent --ignore-missing-imports --no-incremental --cache-dir=nul clients/entity_submissions.py
+```
+
+Adapter/client checks use `tests/test_entity_submissions.py` and
+`tests/test_clients_entities.py`. Include `tests/test_landed_entities_search_contract.py`
+with `ENTITIES_SOURCE_ROOT` set for executable source-contract coverage. Its SQL
+fixtures are synthetic in-memory SQLite, not PostgreSQL migration certification.

@@ -25,10 +25,10 @@ from config import Settings
 SUPPORTED_ENTITY_TYPES = frozenset({"person", "company", "trust"})
 
 # Guide §3.3. Reads (get, search, clients linkage) get the 5-10s band; a person
-# submit runs live provider lookups and gets 30s. Company/trust submits need
-# 120-180s and are not implemented here: their request shapes are defined in the
-# deep-dive (transfers_golden_record_providers_auth.md §2.4-§2.6), which this
-# repository does not have, and no caller needs them yet.
+# submit runs live provider lookups and gets 30s. Company/trust source contracts
+# are confirmed by the available Entities snapshot and deep-dive §2.5; pure
+# adapters live in clients.entity_submissions. No company/trust submit runtime
+# is enabled here, and the snapshot does not establish deployed support.
 CONNECT_TIMEOUT_SECONDS = 5.0
 READ_TIMEOUT_SECONDS = 10.0
 PERSON_SUBMIT_TIMEOUT_SECONDS = 30.0
@@ -54,7 +54,7 @@ class EntityServiceError(Exception):
 
     Categories: ``not_found`` (404, tenant-safe "unknown or not linked"),
     ``validation_error`` (422), ``http_error`` (other non-2xx), ``timeout``,
-    ``network``, ``malformed_json``, ``missing_data_envelope``.
+    ``network``, ``malformed_json``, ``missing_data_envelope``, ``invalid_response``.
     """
 
     def __init__(
@@ -272,7 +272,13 @@ class EntitiesClient:
                     return response
             await asyncio.sleep(RETRY_BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)))
 
-    def _extract_data(self, response: httpx.Response, *, operation: str) -> Any:
+    @staticmethod
+    def _extract_data(
+        response: httpx.Response,
+        *,
+        operation: str,
+        allowed_error_fields: Optional[frozenset[str]] = None,
+    ) -> Any:
         """Unwrap the platform response envelope (guide §3.4).
 
         Every response is ``{"message": ..., "data": ...}`` with no status key,
@@ -293,7 +299,7 @@ class EntitiesClient:
                 status_code=response.status_code,
                 category=category,
                 response_body_present=True,
-                error_fields=_validation_error_fields(response),
+                error_fields=_validation_error_fields(response, allowed_fields=allowed_error_fields),
             )
 
         try:
@@ -322,7 +328,7 @@ class EntitiesClient:
         await self._client.aclose()
 
 
-def _validation_error_fields(response: httpx.Response) -> tuple:
+def _validation_error_fields(response: httpx.Response, *, allowed_fields: Optional[frozenset[str]] = None) -> tuple:
     """Return the field names from an error envelope's ``errors`` map, never the messages."""
     try:
         envelope = response.json()
@@ -333,4 +339,4 @@ def _validation_error_fields(response: httpx.Response) -> tuple:
     errors = envelope.get("errors")
     if not isinstance(errors, dict):
         return ()
-    return tuple(sorted(str(key) for key in errors.keys()))
+    return tuple(sorted(str(key) for key in errors.keys() if allowed_fields is None or key in allowed_fields))

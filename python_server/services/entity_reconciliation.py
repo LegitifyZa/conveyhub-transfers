@@ -1,6 +1,6 @@
 import enum
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 from clients.entities import EntitiesClient, EntityServiceError
 
@@ -44,7 +44,7 @@ class PersonSearch:
     def to_search_payload(self) -> dict[str, Any]:
         return {
             "entity_type": "person",
-            "query": (self.id_number if self.id_number is not None else self.passport_number).strip(),
+            "query": cast(str, self.id_number if self.id_number is not None else self.passport_number).strip(),
             "limit": 50,
             "offset": 0,
         }
@@ -69,7 +69,7 @@ class EntityReconciliationService:
     async def reconcile_company(self) -> ReconciliationResult:
         """Company/trust reconciliation is not yet supported."""
         raise EntityReconciliationError(
-            "Company/trust reconciliation is not supported; submit contract not defined"
+            "Company/trust reconciliation is not supported; creation runtime remains deferred"
         )
 
     async def reconcile_person(self, search: PersonSearch) -> ReconciliationResult:
