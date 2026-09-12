@@ -332,7 +332,7 @@ Timeouts (guide §3.3) — 5 s connect throughout:
 |------|-----------|-------------|
 | Reads: `get_entity`, `search_entities`, clients linkage | 5–10 s | 10 s read |
 | Person submit (live provider lookups) | 30 s | 30 s read |
-| Company / trust submit (CIPC + ThisIsMe + director cascade) | 120–180 s | **not implemented** — see §8.6 |
+| Company / trust submit (CIPC + ThisIsMe + director cascade) | 120–180 s | **Runtime not implemented**; source-contract adapters only — see §8.9 |
 
 - Retries: only on 5xx responses and transport timeouts/network errors, with exponential backoff (0.25 s base). Reads get 3 attempts, submits 2. **Any 4xx, including the tenant-safe 404, is returned immediately and never retried**, so a scoped lookup can never be re-issued differently.
 - Response envelope (guide §3.4): every response is `{"message": ..., "data": ...}`, empty `data` is `[]` rather than null, there is no `status`/`status_code` key in the body, and validation errors add `"errors": {field: [msgs]}`. A missing `data` key is treated as malformed rather than as an empty result.
@@ -368,7 +368,7 @@ An externally-hosted Deedly cannot consume the platform's Redis Streams event bu
 | Item | Status |
 |------|--------|
 | `POST /v1/transfers/{id}/estate-contexts` and `POST /v1/transfers/{id}/representative-assignments` (§2.6, §6) | Not implemented. They must call `resolve_visible_golden_record` with `expected_entity_type="person"` after `_authorize_transfer`, following §8.5's ordering. |
-| Company / trust submit (120–180 s budget) | **Blocked.** The request shapes live in `transfers_golden_record_providers_auth.md` §2.4–§2.6, which this repository does not have. `EntityReconciliationService.reconcile_company` still raises "submit contract not defined". No consumer needs it yet. |
+| Company / trust submit (120–180 s budget) | **Source contracts confirmed; runtime remains blocked.** The available Entities source snapshot contains `SubmitClientRequest`, submit dispatch, serializers and trust normalization, supported by `transfers_golden_record_providers_auth.md` §2.5–§2.6. Side-effect-free adapters are covered in §8.9; they do not enable submission or reconciliation. This is source evidence, not deployed support. |
 | `X-Correlation-Id` | Not sent. Guide §3.7: upstream neither echoes nor logs it, so this is optional rather than outstanding. |
 | Route-level staleness policy (TTL on `synced_at`) | Not defined; see §8.6. |
 | `entity.*` events | Unavailable to an externally-hosted Deedly. If prompt reaction to `entity.screening_completed` / `entity.vital_status_deceased` becomes necessary, request that the notifications service add them to partner-webhook `SUPPORTED_EVENTS` rather than building a workaround. |
@@ -380,3 +380,74 @@ Unit coverage lives in `python_server/tests/`: `test_s2s_integration_contract.py
 `test_s2s_integration_contract.py` drives the real client and visibility service through `httpx.MockTransport`, asserting the emitted paths, query parameters and headers. Its simulator answers an unfiltered linkage lookup with `422 UNSCOPED LOOKUP` and any unsanctioned path with `404 UNSANCTIONED PATH`, so a regression that widens the lookup fails loudly rather than silently passing.
 
 The DB-backed suites (`test_v1_transfers.py`, `test_v1_specialist_contexts.py`, `test_migrations_0xx.py`) require `TEST_DATABASE_URL` pointing at a migration-020 baseline and are skipped otherwise.
+
+### 8.9 Create Golden Record foundation — source evidence only
+
+Search and Retrieve remain completed on `main` at checkpoint
+`7d8101c4928238d555b9c958241adbac6a6c3b24`. Create Golden Record remains blocked and
+incomplete. Only source-contract foundation and missing read-side regression
+protections are implemented here; this is not a create workflow or live certification.
+
+**Evidence:** the Entities snapshot selected by `ENTITIES_SOURCE_ROOT`, specifically
+`services/entities/src/api/v1/schemas.py::SubmitClientRequest`, the `/submit` route,
+`EntityService.handle_submit_client`, its serializers, and
+`shared/src/legitify_shared/utils/trust.py`. The companion deep-dive's §2.5–§2.6
+confirms the intended submit surface. The available snapshot has no Git metadata;
+executing selected bodies does not establish a deployed SHA or migration state.
+
+`python_server/clients/entity_submissions.py` provides immutable typed inputs:
+
+- `PersonSubmission`: the `id_number` branch; optional source-supported name/contact
+  fields, an explicit source validation flag and optional profile slug. No passport-pair
+  adapter is exposed. Existing `EntitiesClient.submit_person` behavior, including its
+  unused passport transport, is unchanged.
+- `CompanySubmission`: registration maps to upstream `id_number`, with `is_company`
+  true and `is_trust` false; only the source-supported `legal_name` extra is exposed.
+- `TrustSubmission`: registration maps to `id_number`, both flags are true, and an
+  explicit non-empty Master's office is required. Number/office normalization mirrors
+  the source utility and is parity-tested against its executed functions; leading zeros
+  are retained and no office is inferred from a number suffix.
+
+These checks validate structure, not product approval or legal identity: no required
+name/contact policy, company jurisdiction pattern, office catalogue, or new-record SA
+checksum rule is invented. The source applies the checksum conditionally after identity
+resolution. Approved P0 fields and entity coverage remain D6 decisions.
+
+`parse_submission_response` accepts the source-confirmed HTTP 201 envelope and validates
+the returned UUID and expected logical type. A person may omit the upstream type marker;
+company/trust responses require `entity_type=company` and strict `is_trust` booleans.
+Trust responses must match the explicitly expected office. The returned
+`SubmissionReference` contains only UUID and logical type, never submit display data,
+provider payloads, or creation/verification/visibility claims. Upstream 201 also covers
+reused identities; it does not establish that a new row was created.
+
+The shared definitions and decoder live in configuration-free
+`python_server/clients/entity_protocol.py`. Adapters import this pure layer, not the
+runtime client or configuration; importing them must not load dotenv, initialize
+runtime configuration, or construct HTTP clients. The runtime client preserves its
+configuration bootstrap, re-exports the same exception/type objects, and retains its
+existing decoder signature/defaults through delegation. The optional error-field
+allow-list is applied only by adapters; legacy callers retain their existing decoding
+behavior. Non-2xx responses, including 409, remain errors. Nothing registers a client,
+authorizes an AI relationship, fetches canonical data, retries, writes a database row,
+or exposes a public endpoint/UI. Existing submit runtime payloads, returns, timeouts
+and retry counts are unchanged. Any eventual create flow must still prove the approved
+AI linkage before canonical retrieval; a 409 is never authorization.
+
+`test_entity_submissions.py` covers structural inputs, typed references, safe failures,
+no I/O and the absence of passport/override inputs. Its fresh-process regressions install
+runtime-import, dotenv and HTTP-client guards before adapter import and verify that the
+environment remains unchanged; a separate fresh import checks that the legacy client
+still initializes configuration. Client compatibility tests pin shared exception/export
+identity, unfiltered decoder defaults and opt-in error filtering. The existing landed-source harness
+also exercises submit schemas, route dispatch, actual serializers, trust normalization,
+and passport limitations (number-only identity and skipped SA-keyed orchestration).
+Its repositories/providers are synthetic or mocked and its SQL fixtures use in-memory
+SQLite; this is not deployed PostgreSQL, registration, billing or live S2S certification.
+
+All external decisions remain open: **D1** registration/relationship eligibility;
+**D2** trusted AI-to-tenant resolution and write authorization; **D3** ingress,
+credentials and deployed evidence; **D4** passport identity; **D5** deadlines,
+uncertain outcomes, verification and billing; **D6** approved P0 fields/types.
+Durable matter attachment and authenticated new-matter persistence remain separate
+P0 dependencies; the legacy save path is not a fallback.

@@ -543,6 +543,50 @@ class V1GoldenRecordSearchTests(_GoldenRecordsRouteFixture, unittest.TestCase):
         reconcile.assert_not_awaited()
 
 
+class V1GoldenRecordFoundationBoundaryTests(_GoldenRecordsRouteFixture, unittest.TestCase):
+    def test_search_outcomes_for_all_types_never_submit_or_write(self):
+        for kind in ("person", "company", "trust"):
+            for outcome, ids, status in (
+                ("not_found", [], 200), ("matched", [_GR_A], 200),
+                ("ambiguous", [_GR_A, _GR_B], 200), ("fault", [], 503),
+            ):
+                with self.subTest(kind=kind, outcome=outcome):
+                    self.entities_client.reset_mock()
+                    self.entities_client.search_entities = AsyncMock(
+                        return_value=[{"id": gr_id} for gr_id in ids],
+                        side_effect=_upstream_error("search_entities") if outcome == "fault" else None,
+                    )
+                    self.entities_client.get_entity = AsyncMock(side_effect=lambda gr_id, retrieval_type: (
+                        _person(gr_id) if kind == "person" else {
+                            "id": gr_id, "entity_type": "company", "is_trust": kind == "trust",
+                            "legal_name": "Canonical", "registration_no": "REG-1",
+                            "masters_office": "cape_town" if kind == "trust" else None,
+                        }
+                    ))
+                    with patch("db.query", new_callable=AsyncMock) as query, \
+                            patch("db.with_transaction", new_callable=AsyncMock) as transaction:
+                        result = self._search({"entity_type": kind, "query": "Canonical"})
+                    self.assertEqual(result.status_code, status)
+                    if status == 200:
+                        self.assertEqual(result.json()["data"]["status"], outcome)
+                    self.entities_client.submit_person.assert_not_called()
+                    query.assert_not_called()
+                    transaction.assert_not_called()
+
+    def test_foundation_does_not_expose_a_public_create_endpoint(self):
+        for suffix in ("", "/", "/submit", "/create"):
+            with self.subTest(suffix=suffix):
+                result = self.client.post(
+                    f"/api/v1/golden-records{suffix}", json={"entity_type": "person", "id_number": "1"},
+                    headers=_auth_header(3, 5, ["transfers:read", "transfers:write"]),
+                )
+                self.assertIn(result.status_code, (404, 405))
+        self.entities_client.search_entities.assert_not_called()
+        self.entities_client.get_client_by_golden_record.assert_not_called()
+        self.entities_client.get_entity.assert_not_called()
+        self.entities_client.submit_person.assert_not_called()
+
+
 class V1GoldenRecordRetrievalTests(_GoldenRecordsRouteFixture, unittest.TestCase):
     def setUp(self):
         super().setUp()

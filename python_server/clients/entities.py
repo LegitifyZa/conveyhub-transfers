@@ -18,17 +18,18 @@ from typing import Any, Awaitable, Callable, Optional
 import httpx
 
 from config import Settings
-
-# Search supports person, company and trust. Canonical trust retrieval uses
-# company; the logical trust discriminator is validated by the visibility
-# service against the returned is_trust field.
-SUPPORTED_ENTITY_TYPES = frozenset({"person", "company", "trust"})
+from clients.entity_protocol import (
+    SUPPORTED_ENTITY_TYPES as SUPPORTED_ENTITY_TYPES,
+    EntityServiceError as EntityServiceError,
+    _validation_error_fields as _validation_error_fields,
+    extract_entity_data,
+)
 
 # Guide §3.3. Reads (get, search, clients linkage) get the 5-10s band; a person
-# submit runs live provider lookups and gets 30s. Company/trust submits need
-# 120-180s and are not implemented here: their request shapes are defined in the
-# deep-dive (transfers_golden_record_providers_auth.md §2.4-§2.6), which this
-# repository does not have, and no caller needs them yet.
+# submit runs live provider lookups and gets 30s. Company/trust source contracts
+# are confirmed by the available Entities snapshot and deep-dive §2.5; pure
+# adapters live in clients.entity_submissions. No company/trust submit runtime
+# is enabled here, and the snapshot does not establish deployed support.
 CONNECT_TIMEOUT_SECONDS = 5.0
 READ_TIMEOUT_SECONDS = 10.0
 PERSON_SUBMIT_TIMEOUT_SECONDS = 30.0
@@ -41,42 +42,6 @@ SUBMIT_MAX_ATTEMPTS = 2
 RETRY_BACKOFF_BASE_SECONDS = 0.25
 
 _RETRYABLE_TRANSPORT_ERRORS = (httpx.TimeoutException, httpx.NetworkError)
-
-
-class EntityServiceError(Exception):
-    """Raised when a Legitify service returns an error or an unexpected shape.
-
-    The exception message is intentionally sanitised: it contains only the
-    operation name, the HTTP status, and a generic failure category. The raw
-    remote response body is never retained; only a boolean flag indicating that
-    a body was present is kept, plus `operation`, `status_code`, `category` and,
-    for validation failures, the offending field names (never their values).
-
-    Categories: ``not_found`` (404, tenant-safe "unknown or not linked"),
-    ``validation_error`` (422), ``http_error`` (other non-2xx), ``timeout``,
-    ``network``, ``malformed_json``, ``missing_data_envelope``.
-    """
-
-    def __init__(
-        self,
-        message: str,
-        *,
-        operation: Optional[str] = None,
-        status_code: Optional[int] = None,
-        category: Optional[str] = None,
-        response_body_present: bool = False,
-        error_fields: tuple = (),
-    ) -> None:
-        super().__init__(message)
-        self.operation = operation
-        self.status_code = status_code
-        self.category = category
-        self.response_body_present = response_body_present
-        self.error_fields = tuple(error_fields)
-
-    @property
-    def is_not_found(self) -> bool:
-        return self.status_code == 404
 
 
 def _read_timeout() -> httpx.Timeout:
@@ -272,7 +237,13 @@ class EntitiesClient:
                     return response
             await asyncio.sleep(RETRY_BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)))
 
-    def _extract_data(self, response: httpx.Response, *, operation: str) -> Any:
+    @staticmethod
+    def _extract_data(
+        response: httpx.Response,
+        *,
+        operation: str,
+        allowed_error_fields: Optional[frozenset[str]] = None,
+    ) -> Any:
         """Unwrap the platform response envelope (guide §3.4).
 
         Every response is ``{"message": ..., "data": ...}`` with no status key,
@@ -280,57 +251,7 @@ class EntitiesClient:
         is ``[]`` rather than null, so a missing ``data`` key is treated as a
         malformed response rather than an empty result.
         """
-        if not response.is_success:
-            if response.status_code == 404:
-                category = "not_found"
-            elif response.status_code == 422:
-                category = "validation_error"
-            else:
-                category = "http_error"
-            raise EntityServiceError(
-                f"Entity service {operation} failed with status {response.status_code}",
-                operation=operation,
-                status_code=response.status_code,
-                category=category,
-                response_body_present=True,
-                error_fields=_validation_error_fields(response),
-            )
-
-        try:
-            envelope = response.json()
-        except Exception as exc:
-            raise EntityServiceError(
-                f"Entity service {operation} returned non-JSON response",
-                operation=operation,
-                status_code=response.status_code,
-                category="malformed_json",
-                response_body_present=True,
-            ) from exc
-
-        if not isinstance(envelope, dict) or "data" not in envelope:
-            raise EntityServiceError(
-                f"Entity service {operation} response missing 'data' envelope",
-                operation=operation,
-                status_code=response.status_code,
-                category="missing_data_envelope",
-                response_body_present=True,
-            )
-
-        return envelope["data"]
+        return extract_entity_data(response, operation=operation, allowed_error_fields=allowed_error_fields)
 
     async def close(self) -> None:
         await self._client.aclose()
-
-
-def _validation_error_fields(response: httpx.Response) -> tuple:
-    """Return the field names from an error envelope's ``errors`` map, never the messages."""
-    try:
-        envelope = response.json()
-    except Exception:
-        return ()
-    if not isinstance(envelope, dict):
-        return ()
-    errors = envelope.get("errors")
-    if not isinstance(errors, dict):
-        return ()
-    return tuple(sorted(str(key) for key in errors.keys()))
