@@ -1,6 +1,6 @@
 import React, { FormEvent, useEffect, useMemo, useState } from 'react'
 import { BookOpen, ChevronDown, ChevronUp, FilePlus2, FileText, Search } from 'lucide-react'
-import { Badge, Button, Card, CardContent, CardHeader, CardTitle, Input } from '@/components/ui'
+import { Badge, Button, Card, CardContent, CardHeader, CardTitle, Input, UnavailableNotice } from '@/components/ui'
 import { getTemplateDataField, TEMPLATE_DATA_DICTIONARY } from '@/lib/templateDataDictionary'
 import { apiRequest } from '@/lib/api/http'
 
@@ -143,6 +143,7 @@ const DocumentCatalogue: React.FC = () => {
   const [catalogue, setCatalogue] = useState<CatalogueDocument[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState('')
+  const [offline, setOffline] = useState(false)
   const [searchTerm, setSearchTerm] = useState('')
   const [moduleFilter, setModuleFilter] = useState('All modules')
   const [statusFilter, setStatusFilter] = useState('All statuses')
@@ -157,11 +158,12 @@ const DocumentCatalogue: React.FC = () => {
     setError('')
     try {
       const data = await apiRequest<CatalogueDocument[]>('/api/catalogue')
-      const normalised = data.map(normaliseCatalogueDocument)
-      setCatalogue(normalised.length > 0 ? normalised : seedCatalogue)
+      setCatalogue(data.map(normaliseCatalogueDocument))
+      setOffline(false)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load document catalogue')
       setCatalogue(seedCatalogue)
+      setOffline(true)
     } finally {
       setIsLoading(false)
     }
@@ -216,13 +218,19 @@ const DocumentCatalogue: React.FC = () => {
           <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Document Catalogue</h1>
           <p className="text-gray-600 dark:text-gray-400">A registry of document definitions, templates, and compliance requirements.</p>
         </div>
-        <Button onClick={() => setShowForm(previous => !previous)}>
+        <Button onClick={() => setShowForm(previous => !previous)} disabled={offline} title={offline ? 'The live catalogue is unavailable' : undefined}>
           <FilePlus2 className="mr-2 h-4 w-4" />
           {showForm ? 'Close Form' : 'Add Document'}
         </Button>
       </div>
 
-      {error && (
+      {offline && (
+        <UnavailableNotice
+          message="The document catalogue is temporarily unavailable."
+          detail="Bundled sample entries are shown for reference only — they are not live data and changes cannot be saved."
+        />
+      )}
+      {!offline && error && (
         <p className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-900/20 dark:text-red-300">
           {error}
         </p>

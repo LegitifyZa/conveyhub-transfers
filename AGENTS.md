@@ -194,30 +194,36 @@ python -m mypy --follow-imports=silent --ignore-missing-imports --no-incremental
   decision, name/DOB decisions and matter/file-reference lookup are not implemented
   by this security branch.
 
-### P1 UI readiness under P0 restoration
+### Quarantine UI handling — P0 functional states applied
 
-Source-level audit of currently routed screens (not live browser certification):
+Source-level audit of currently routed screens (not live browser certification).
+Functional failure states are P0 release requirements; the shared
+`UnavailableNotice` + `serviceUnavailableMessage` (`src/components/ui`,
+`src/lib/api/serviceStatus.ts`) provide status-only messaging:
 
 | Screen | Quarantine failure presentation |
 |---|---|
 | `/accounts`, `/calculators` | Explicit unavailable alert; no default figures/actions before settings load. |
 | Transfer milestones: Accounts tab | Explicit unavailable alert; stale request/statement state discarded. |
-| `/settings`: Firm Accounts tab | Not clear: `!settings` retains the loading spinner even after failure. |
-| `/settings`: Profile tab | Partial: raw API error is visible; form remains reachable. |
-| `/dashboard`, `/cases` | Not clear: transfer-load errors are not rendered; empty/zero views remain. |
-| `/transfers` | Partial: error banner plus zero statistics/"No transfers found" state. |
-| `/transfers/workflow` | Partial: load/save errors visible; document-catalogue failures only logged. |
-| Workflow: property/address lookup | Partial: search/retrieve errors visible; geocode failure only clears coordinates. |
-| `/transfers/:transferId/milestones` | Partial: aggregate load error visible; milestone/activity failures only logged. |
-| Transfer milestones: Documents tab | Not clear internally: load failure becomes an empty document/catalogue view. |
-| `/documents` | Not clear: load failure becomes "No documents found". |
-| `/document-catalogue`, `/data-dictionary`, `/template-engine`, `/clause-library` | Partial: error shown alongside bundled fallback/seed content. |
-| `/document-generator` | Partial: clause/sync errors shown, history failure becomes empty, local generation can continue. |
-| `/transfers/new` | GR APIs are not quarantined; browser JWT integration blocks live use and downstream saving is quarantined. |
+| `/settings`: Firm Accounts tab | Spinner only while loading; after failure an explicit unavailable notice replaces it. |
+| `/settings`: Profile tab | Explicit unavailable notice; form and save are removed until a profile loads. |
+| `/dashboard` | Explicit unavailable notice; stat cards show `—` instead of misleading zeros; recent-cases failure is stated. |
+| `/cases` | Explicit unavailable notice; case table hidden on failure; New Case disabled. |
+| `/transfers` (dashboard) | Explicit unavailable notice; stat cards show `—`; list shows "no data available" instead of an empty-results state. |
+| `/transfers/workflow` (`/transfers/new`, edit) | One-shot `GET /api/transfers?limit=1` probe disables Save Draft/Submit Transfer up front and shows an unavailable notice; save handlers no-op while persistence is down. Step document uploads/catalogue add are disabled with a notice; per-item failures remain inline. |
+| Workflow: property/address lookup | Address provider failures show a friendly unavailable message; manual address entry stays usable. |
+| `/transfers/:transferId/milestones` | Transfer/milestone/activity failures surface as unavailable notices; milestone tab hides seed data and editing on failure; failed saves roll back local milestone edits and add no audit entries; summary fields show `—` when no transfer loaded. |
+| Transfer milestones: Documents tab | Load failures show unavailable notices; document list, upload/replace and catalogue-add controls are hidden/disabled on failure. |
+| `/documents` | Load failure shows an unavailable notice instead of "No documents found"; upload is disabled; totals show `—`. |
+| `/document-catalogue`, `/clause-library` | Load failure shows an unavailable notice and bundled sample entries are labeled as non-live reference data; add forms are disabled while offline. |
+| `/data-dictionary`, `/template-engine` | Same labeled sample-data fallback; generation stays a local-only preview with a notice that nothing is saved. |
+| `/document-generator` | Clause-library failure shows a labeled sample-data notice; history failures surface as unavailable; generated files are stated to be local-only and audit-record save failures are reported. |
+| `/transfers/new` | GR APIs are not quarantined; browser JWT integration blocks live use and downstream saving is quarantined (Save/Submit disabled by the probe above). |
 
 `/bonds` and `/cancellations` are currently placeholders with no affected API calls.
-Clear unavailable states, demo/fallback labeling and stale-state handling are P1
-items within P0 restoration, not evidence that the quarantined workflows work.
+Remaining P1 items are cosmetic only (wording, retry controls, iconography). The
+unavailable states above do not certify that quarantined workflows work — the
+routes stay quarantined until approved authenticated contracts exist.
 
 ### P0 PostgreSQL verification prerequisite
 

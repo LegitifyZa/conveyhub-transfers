@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { Braces, Search } from 'lucide-react'
-import { Badge, Card, CardContent, CardHeader, CardTitle, Input } from '@/components/ui'
+import { Badge, Card, CardContent, CardHeader, CardTitle, Input, UnavailableNotice } from '@/components/ui'
 import { TemplateDataField, TEMPLATE_DATA_DICTIONARY } from '@/lib/templateDataDictionary'
 import { apiRequest } from '@/lib/api/http'
 
@@ -8,6 +8,7 @@ const DataDictionary: React.FC = () => {
   const [fields, setFields] = useState<TemplateDataField[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState('')
+  const [offline, setOffline] = useState(false)
   const [searchTerm, setSearchTerm] = useState('')
   const [entityFilter, setEntityFilter] = useState('All entities')
 
@@ -19,12 +20,14 @@ const DataDictionary: React.FC = () => {
       try {
         const data = await apiRequest<TemplateDataField[]>('/api/data-fields')
         if (!cancelled) {
-          setFields(data.length > 0 ? data : TEMPLATE_DATA_DICTIONARY)
+          setFields(data)
+          setOffline(false)
         }
       } catch (err) {
         if (!cancelled) {
           setError(err instanceof Error ? err.message : 'Failed to load data dictionary')
           setFields(TEMPLATE_DATA_DICTIONARY)
+          setOffline(true)
         }
       } finally {
         if (!cancelled) {
@@ -52,11 +55,16 @@ const DataDictionary: React.FC = () => {
         <p className="text-gray-600 dark:text-gray-400">Central metadata fields available to every document template.</p>
       </div>
 
-      {error && (
+      {offline ? (
+        <UnavailableNotice
+          message="The data dictionary is temporarily unavailable."
+          detail="Bundled sample fields are shown for reference only — they are not live data."
+        />
+      ) : error ? (
         <p className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-900/20 dark:text-red-300">
           {error}
         </p>
-      )}
+      ) : null}
 
       <Card>
         <CardContent className="p-4">

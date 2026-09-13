@@ -11,13 +11,13 @@ import {
   Mail
 } from 'lucide-react'
 import { formatZAR } from '@/utils/transferCalculations'
-import { Card, CardHeader, CardTitle, CardContent, EmailModal } from '@/components/ui'
+import { Card, CardHeader, CardTitle, CardContent, EmailModal, UnavailableNotice } from '@/components/ui'
 import { Button } from '@/components/ui'
 import { useTransfers } from '@/hooks/useTransfers'
 
 const Dashboard: React.FC = () => {
   const [isEmailModalOpen, setIsEmailModalOpen] = useState(false)
-  const { transfers, isLoading, fetchTransfers } = useTransfers()
+  const { transfers, isLoading, error, fetchTransfers } = useTransfers()
 
   useEffect(() => {
     fetchTransfers({ limit: 50 })
@@ -125,6 +125,13 @@ const Dashboard: React.FC = () => {
         </div>
       </div>
 
+      {error && (
+        <UnavailableNotice
+          message="Transfer data is temporarily unavailable."
+          detail={`${error} — the figures below are not live.`}
+        />
+      )}
+
       {/* Stats Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
         {stats.map((stat) => (
@@ -136,7 +143,7 @@ const Dashboard: React.FC = () => {
               <stat.icon className="h-4 w-4 text-gray-500" />
             </CardHeader>
             <CardContent className="space-y-3">
-              <div className="stats-value">{isLoading ? '—' : stat.value}</div>
+              <div className="stats-value">{isLoading || error ? '—' : stat.value}</div>
               <div className="flex items-center space-x-2">
                 {stat.change && (stat.changeType === 'positive' ? (
                   <ArrowUpRight className="h-3 w-3 text-green-500" />
@@ -163,6 +170,11 @@ const Dashboard: React.FC = () => {
           </CardHeader>
           <CardContent>
             <div className="space-y-4">
+              {error && (
+                <p className="py-6 text-center text-sm text-gray-500 dark:text-gray-400">
+                  Recent cases cannot be loaded right now.
+                </p>
+              )}
               {recentCases.map((case_) => (
                 <div key={case_.id} className="flex items-center justify-between p-4 border border-gray-200 dark:border-navy-700 rounded-xl hover:bg-gray-50 dark:hover:bg-navy-800/50 transition-colors duration-200">
                   <div className="flex items-center space-x-4">

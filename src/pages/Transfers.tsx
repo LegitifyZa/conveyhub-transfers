@@ -13,7 +13,10 @@ import { StepFinancials } from '@/components/transfers/StepFinancials'
 import { StepDocuments } from '@/components/transfers/StepDocuments'
 import { StepReview } from '@/components/transfers/StepReview'
 import { TransferNavigation } from '@/components/transfers/TransferNavigation'
+import { UnavailableNotice } from '@/components/ui'
 import { useTransfers, TransferAggregate } from '@/hooks/useTransfers'
+import { TransferApi } from '@/lib/api/transferApi'
+import { serviceUnavailableMessage } from '@/lib/api/serviceStatus'
 
 const Transfers: React.FC = () => {
   return (
@@ -39,6 +42,21 @@ const TransferWorkflow: React.FC = () => {
   const { fetchTransfer, createTransfer, updateTransfer, error, isLoading } = useTransfers()
   const [isSaving, setIsSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
+  const [persistenceError, setPersistenceError] = useState<Error | null>(null)
+  const [persistenceChecked, setPersistenceChecked] = useState(false)
+
+  // Probe the matter-persistence lane once so Save/Submit are disabled up front
+  // while the legacy transfers API is unavailable, instead of failing on click.
+  useEffect(() => {
+    let cancelled = false
+    TransferApi.getTransfers({ limit: 1 })
+      .then((response) => {
+        if (!cancelled && !response.success) setPersistenceError(new Error(response.error || 'unavailable'))
+      })
+      .catch((err) => { if (!cancelled) setPersistenceError(err instanceof Error ? err : new Error('Matter persistence unavailable')) })
+      .finally(() => { if (!cancelled) setPersistenceChecked(true) })
+    return () => { cancelled = true }
+  }, [])
 
   // Load an existing transfer aggregate when the component is entered with a transfer id.
   useEffect(() => {
@@ -64,6 +82,7 @@ const TransferWorkflow: React.FC = () => {
   }
 
   const persistAggregate = async (status?: TransferState['status']) => {
+    if (persistenceError) return null
     setIsSaving(true)
     setSaveError(null)
     try {
@@ -136,6 +155,15 @@ const TransferWorkflow: React.FC = () => {
           </p>
         </div>
 
+        {persistenceError && (
+          <div className="mb-6">
+            <UnavailableNotice
+              message={serviceUnavailableMessage('Matter saving', persistenceError)}
+              detail="Entered details are kept on this page but cannot be saved to the server until authenticated matter persistence is restored."
+            />
+          </div>
+        )}
+
         {(saveError || error) && (
           <div className="mb-6 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4">
             <p className="text-sm text-red-700 dark:text-red-300">
@@ -161,6 +189,7 @@ const TransferWorkflow: React.FC = () => {
               onSave={handleSaveDraft}
               onSubmit={handleSubmit}
               isSaving={isSaving}
+              persistenceDisabled={!persistenceChecked || persistenceError !== null}
             />
           </div>
 

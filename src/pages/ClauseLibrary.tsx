@@ -1,6 +1,6 @@
 import React, { FormEvent, useEffect, useMemo, useState } from 'react'
 import { ChevronDown, ChevronUp, FilePlus2, Library, Search } from 'lucide-react'
-import { Badge, Button, Card, CardContent, CardHeader, CardTitle, Input } from '@/components/ui'
+import { Badge, Button, Card, CardContent, CardHeader, CardTitle, Input, UnavailableNotice } from '@/components/ui'
 import { ClauseStatus, INITIAL_CLAUSES, LegalClause } from '@/lib/clauseLibrary'
 import { apiRequest } from '@/lib/api/http'
 
@@ -19,6 +19,7 @@ const ClauseLibrary: React.FC = () => {
   const [clauses, setClauses] = useState<LegalClause[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState('')
+  const [offline, setOffline] = useState(false)
   const [searchTerm, setSearchTerm] = useState('')
   const [statusFilter, setStatusFilter] = useState('All statuses')
   const [expandedClause, setExpandedClause] = useState<string | null>(null)
@@ -30,10 +31,12 @@ const ClauseLibrary: React.FC = () => {
     setError('')
     try {
       const data = await apiRequest<LegalClause[]>('/api/clauses')
-      setClauses(data.length > 0 ? data : INITIAL_CLAUSES)
+      setClauses(data)
+      setOffline(false)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load clause library')
       setClauses(INITIAL_CLAUSES)
+      setOffline(true)
     } finally {
       setIsLoading(false)
     }
@@ -77,14 +80,19 @@ const ClauseLibrary: React.FC = () => {
     <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div><h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Clause Library</h1><p className="text-gray-600 dark:text-gray-400">Versioned, reusable legal clauses assembled dynamically into templates.</p></div>
-        <Button onClick={() => setShowForm(current => !current)}><FilePlus2 className="mr-2 h-4 w-4" />{showForm ? 'Close Form' : 'Add Clause Version'}</Button>
+        <Button onClick={() => setShowForm(current => !current)} disabled={offline} title={offline ? 'The live clause library is unavailable' : undefined}><FilePlus2 className="mr-2 h-4 w-4" />{showForm ? 'Close Form' : 'Add Clause Version'}</Button>
       </div>
 
-      {error && (
+      {offline ? (
+        <UnavailableNotice
+          message="The clause library is temporarily unavailable."
+          detail="Bundled sample clauses are shown for reference only — they are not live data and new versions cannot be saved."
+        />
+      ) : error ? (
         <p className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-900/20 dark:text-red-300">
           {error}
         </p>
-      )}
+      ) : null}
 
       {showForm && (
         <Card>

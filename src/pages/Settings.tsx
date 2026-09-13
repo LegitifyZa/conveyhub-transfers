@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { User, Bell, Shield, Palette, Globe, CreditCard, HelpCircle, LogOut, Receipt } from 'lucide-react'
-import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui'
+import { Card, CardHeader, CardTitle, CardContent, UnavailableNotice } from '@/components/ui'
 import { Button } from '@/components/ui'
 import { Input } from '@/components/ui'
 import { apiRequest } from '@/lib/api/http'
@@ -167,6 +167,11 @@ const Settings: React.FC = () => {
 
             {isLoading ? (
               <p className="text-sm text-gray-500 dark:text-gray-400">Loading profile...</p>
+            ) : !user ? (
+              <UnavailableNotice
+                message="Your profile is temporarily unavailable."
+                detail={`${error ? `${error} — ` : ''}profile details cannot be loaded or saved right now.`}
+              />
             ) : (
               <>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -204,7 +209,7 @@ const Settings: React.FC = () => {
                 )}
 
                 <div className="flex justify-end">
-                  <Button onClick={handleSave} disabled={isSaving}>
+                  <Button onClick={handleSave} disabled={isSaving || !user}>
                     {isSaving ? 'Saving...' : 'Save Changes'}
                   </Button>
                 </div>

@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react'
 import { FileText, Upload, AlertCircle, Plus } from 'lucide-react'
-import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui'
+import { Card, CardHeader, CardTitle, CardContent, UnavailableNotice } from '@/components/ui'
 
 import { apiRequest } from '@/lib/api/http'
+import { serviceUnavailableMessage } from '@/lib/api/serviceStatus'
 import { TransferApi } from '@/lib/api/transferApi'
 import { Document as TransferDocument } from './TransferForm'
 import { cn } from '@/utils/cn'
@@ -35,6 +36,8 @@ const TransferDocumentsPanel: React.FC<TransferDocumentsPanelProps> = ({ transfe
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [selectedCatalogueId, setSelectedCatalogueId] = useState('')
   const [adding, setAdding] = useState(false)
+  const [documentsError, setDocumentsError] = useState<Error | null>(null)
+  const [catalogueError, setCatalogueError] = useState<Error | null>(null)
 
   const loadDocuments = async () => {
     try {
@@ -56,7 +59,8 @@ const TransferDocumentsPanel: React.FC<TransferDocumentsPanelProps> = ({ transfe
         })))
       }
     } catch (err) {
-      console.error('Failed to load transfer documents:', err)
+      setDocuments([])
+      setDocumentsError(err instanceof Error ? err : new Error('Transfer documents unavailable'))
     } finally {
       setIsLoading(false)
     }
@@ -67,8 +71,8 @@ const TransferDocumentsPanel: React.FC<TransferDocumentsPanelProps> = ({ transfe
       const response = await apiRequest<CatalogueItem[]>('/api/catalogue?status=Active')
       setCatalogue(response || [])
     } catch (err) {
-      console.error('Failed to load document catalogue:', err)
       setCatalogue([])
+      setCatalogueError(err instanceof Error ? err : new Error('Document catalogue unavailable'))
     } finally {
       setCatalogueLoading(false)
     }
@@ -191,7 +195,19 @@ const TransferDocumentsPanel: React.FC<TransferDocumentsPanelProps> = ({ transfe
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-6">
-        {availableCatalogue.length > 0 && (
+        {documentsError && (
+          <UnavailableNotice
+            message={serviceUnavailableMessage('Transfer documents', documentsError)}
+            detail="Documents for this transfer cannot be loaded, uploaded or updated right now."
+          />
+        )}
+        {catalogueError && !documentsError && (
+          <UnavailableNotice
+            message={serviceUnavailableMessage('The document catalogue', catalogueError)}
+            detail="New documents cannot be added from the catalogue right now."
+          />
+        )}
+        {!documentsError && availableCatalogue.length > 0 && (
           <div className="p-4 bg-gray-50 dark:bg-navy-800 rounded-lg space-y-3">
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
               Add a document from the catalogue
@@ -228,7 +244,7 @@ const TransferDocumentsPanel: React.FC<TransferDocumentsPanelProps> = ({ transfe
           </div>
         )}
 
-        {documents.length === 0 ? (
+        {!documentsError && (documents.length === 0 ? (
           <p className="text-sm text-gray-500 dark:text-gray-400">
             No documents have been added to this transfer. Use the catalogue selector above to add one.
           </p>
@@ -335,7 +351,7 @@ const TransferDocumentsPanel: React.FC<TransferDocumentsPanelProps> = ({ transfe
               )
             })}
           </tbody></table></div>
-        )}
+        ))}
       </CardContent>
     </Card>
   )

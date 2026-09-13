@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from 'react'
 import { FileText, Upload, CheckCircle, AlertCircle, Plus } from 'lucide-react'
-import { Card, CardContent } from '@/components/ui'
+import { Card, CardContent, UnavailableNotice } from '@/components/ui'
 import { Badge } from '@/components/ui'
 import { useTransfer, Document } from './TransferForm'
 import { TransferApi } from '@/lib/api/transferApi'
 import { apiRequest } from '@/lib/api/http'
+import { serviceUnavailableMessage } from '@/lib/api/serviceStatus'
 import { cn } from '@/utils/cn'
 
 interface CatalogueItem {
@@ -46,6 +47,7 @@ const StepDocuments: React.FC = () => {
   const [uploadingIds, setUploadingIds] = useState<Set<string>>(new Set())
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [catalogue, setCatalogue] = useState<CatalogueItem[]>([])
+  const [catalogueError, setCatalogueError] = useState<Error | null>(null)
   const [selectedCatalogueId, setSelectedCatalogueId] = useState('')
   const [adding, setAdding] = useState(false)
 
@@ -98,7 +100,8 @@ const StepDocuments: React.FC = () => {
         const response = await apiRequest<CatalogueItem[]>('/api/catalogue?status=Active')
         setCatalogue(response || [])
       } catch (err) {
-        console.error('Failed to load document catalogue:', err)
+        setCatalogue([])
+        setCatalogueError(err instanceof Error ? err : new Error('Document catalogue unavailable'))
       }
     }
     loadCatalogue()
@@ -138,6 +141,13 @@ const StepDocuments: React.FC = () => {
           Upload and manage the required documents for this transfer
         </p>
       </div>
+
+      {catalogueError && (
+        <UnavailableNotice
+          message={serviceUnavailableMessage('The document service', catalogueError)}
+          detail="Documents cannot be added, uploaded or updated for this matter right now."
+        />
+      )}
 
       {documents.length === 0 && (
         <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
@@ -226,10 +236,11 @@ const StepDocuments: React.FC = () => {
                         {doc.uploadDate && ` · Uploaded ${new Date(doc.uploadDate).toLocaleDateString()}`}
                       </p>
                     </div>
-                    <label className="cursor-pointer">
+                    <label className={cn('cursor-pointer', catalogueError !== null && 'opacity-50 cursor-not-allowed')}>
                       <input
                         type="file"
                         className="hidden"
+                        disabled={catalogueError !== null}
                         onChange={(e) => e.target.files && e.target.files[0] && handleFileSelect(doc, e.target.files[0])}
                       />
                       <span className="text-xs text-teal-600 dark:text-teal-400 hover:underline">
@@ -246,13 +257,13 @@ const StepDocuments: React.FC = () => {
                       <label
                         className={cn(
                           'inline-flex items-center justify-center px-4 py-2 text-sm rounded-lg font-medium transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 cursor-pointer btn-secondary-premium',
-                          isUploading && 'opacity-50 cursor-not-allowed'
+                          (isUploading || catalogueError !== null) && 'opacity-50 cursor-not-allowed'
                         )}
                       >
                         <input
                           type="file"
                           className="hidden"
-                          disabled={isUploading}
+                          disabled={isUploading || catalogueError !== null}
                           onChange={(e) => e.target.files && e.target.files[0] && handleFileSelect(doc, e.target.files[0])}
                         />
                         <Upload className="h-4 w-4 mr-2" />

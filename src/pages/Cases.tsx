@@ -9,13 +9,13 @@ import {
   Calendar
 } from 'lucide-react'
 import { formatZAR } from '@/utils/transferCalculations'
-import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui'
+import { Card, CardHeader, CardTitle, CardContent, UnavailableNotice } from '@/components/ui'
 import { Button } from '@/components/ui'
 import { Input } from '@/components/ui'
 import { useTransfers } from '@/hooks/useTransfers'
 
 const Cases: React.FC = () => {
-  const { transfers, fetchTransfers } = useTransfers()
+  const { transfers, isLoading, error, fetchTransfers } = useTransfers()
   const [searchTerm, setSearchTerm] = useState('')
 
   useEffect(() => {
@@ -86,11 +86,18 @@ const Cases: React.FC = () => {
           <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Cases</h1>
           <p className="text-gray-600 dark:text-gray-400">Manage and track all conveyancing cases</p>
         </div>
-        <Button>
+        <Button disabled={!!error} title={error ? 'Case management is unavailable' : undefined}>
           <Plus className="h-4 w-4 mr-2" />
           New Case
         </Button>
       </div>
+
+      {error && (
+        <UnavailableNotice
+          message="Cases are temporarily unavailable."
+          detail={`${error} — cases cannot be listed or changed right now.`}
+        />
+      )}
 
       {/* Filters */}
       <Card>
@@ -126,6 +133,13 @@ const Cases: React.FC = () => {
           <CardTitle className="text-lg">All Cases</CardTitle>
         </CardHeader>
         <CardContent>
+          {error ? (
+            <p className="py-8 text-center text-sm text-gray-500 dark:text-gray-400">
+              No case data is available.
+            </p>
+          ) : isLoading ? (
+            <p className="py-8 text-center text-sm text-gray-500 dark:text-gray-400">Loading cases...</p>
+          ) : (
           <div className="overflow-x-auto">
             <table className="w-full">
               <thead>
@@ -195,6 +209,7 @@ const Cases: React.FC = () => {
               </tbody>
             </table>
           </div>
+          )}
         </CardContent>
       </Card>
     </div>
