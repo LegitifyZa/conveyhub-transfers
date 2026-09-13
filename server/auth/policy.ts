@@ -1,4 +1,4 @@
-import { CurrentUser } from './currentUser'
+import { CurrentUser, isPositiveInteger } from './currentUser'
 
 export const AuthorizationDecision = {
   ALLOWED: 'allowed',
@@ -24,7 +24,8 @@ export class TenantBoundaryError extends Error {
  * are cross-tenant by design.
  */
 export function isCrossTenant(user: CurrentUser): boolean {
-  return CROSS_TENANT_ROLES.includes(user.user_roles_id)
+  return isPositiveInteger(user.accountable_institution_id)
+    && isPositiveInteger(user.user_roles_id) && CROSS_TENANT_ROLES.includes(user.user_roles_id)
 }
 
 /**
@@ -35,6 +36,10 @@ export function resolveEffectiveTenantId(
   user: CurrentUser,
   requestedAi?: number
 ): number {
+  if (!isPositiveInteger(user.accountable_institution_id)
+    || (requestedAi !== undefined && !isPositiveInteger(requestedAi))) {
+    throw new TenantBoundaryError('Invalid institution context')
+  }
   if (isCrossTenant(user)) {
     return requestedAi ?? user.accountable_institution_id
   }
@@ -55,6 +60,9 @@ export function authorizeRecordAccess(
   user: CurrentUser,
   recordAccountableInstitutionId: number
 ): AuthorizationDecision {
+  if (!isPositiveInteger(user.accountable_institution_id) || !isPositiveInteger(recordAccountableInstitutionId)) {
+    return AuthorizationDecision.NOT_FOUND
+  }
   if (isCrossTenant(user)) {
     return AuthorizationDecision.ALLOWED
   }
@@ -62,7 +70,8 @@ export function authorizeRecordAccess(
   if (user.isClient) {
     // Handover §5.5: client may only see matters where their golden_record_id
     // is a party. Without that proof, fail closed.
-    if (user.golden_record_id === null || user.golden_record_id === undefined) {
+    if (user.accountable_institution_id !== recordAccountableInstitutionId
+      || user.golden_record_id === null || user.golden_record_id === undefined) {
       return AuthorizationDecision.NOT_FOUND
     }
     return AuthorizationDecision.CLIENT_PARTY_CHECK_REQUIRED

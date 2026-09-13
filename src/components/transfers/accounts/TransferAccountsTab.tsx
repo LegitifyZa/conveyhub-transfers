@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { 
   RefreshCw, 
   CheckCircle
@@ -40,13 +40,23 @@ export const TransferAccountsTab: React.FC<TransferAccountsTabProps> = ({
   const [isLoading, setIsLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
   const [savedSuccess, setSavedSuccess] = useState(false)
+  const [accountsError, setAccountsError] = useState(false)
+  const [loadedTransferId, setLoadedTransferId] = useState<string | null>(null)
+  const requestVersion = useRef(0)
 
   useEffect(() => {
     loadAccounts()
+    return () => { requestVersion.current += 1 }
   }, [transferId, purchasePrice, depositAmount, buyerName, sellerName])
 
   const loadAccounts = async () => {
+    const version = ++requestVersion.current
     setIsLoading(true)
+    setStatement(null)
+    setFirmSettings(DEFAULT_FIRM_SETTINGS)
+    setIsSaving(false)
+    setAccountsError(false)
+    setSavedSuccess(false)
     try {
       const [settings, stmt] = await Promise.all([
         AccountsApi.getFirmSettings(),
@@ -58,30 +68,43 @@ export const TransferAccountsTab: React.FC<TransferAccountsTabProps> = ({
           erfNumber: erfNumber || 'Erf 4521'
         })
       ])
+      if (version !== requestVersion.current) return
       setFirmSettings(settings)
       setStatement(stmt)
-    } catch (e) {
-      console.error('Failed to load transfer accounts:', e)
+      setLoadedTransferId(transferId)
+    } catch {
+      if (version === requestVersion.current) setAccountsError(true)
     } finally {
-      setIsLoading(false)
+      if (version === requestVersion.current) setIsLoading(false)
     }
   }
 
   const handleUpdateStatement = async (updated: ProformaStatementData) => {
-    setStatement(updated)
+    const version = ++requestVersion.current
     setIsSaving(true)
+    setSavedSuccess(false)
     try {
-      await AccountsApi.saveProformaStatement(updated)
+      const saved = await AccountsApi.saveProformaStatement(updated)
+      if (version !== requestVersion.current) return
+      setStatement(saved)
       setSavedSuccess(true)
-      setTimeout(() => setSavedSuccess(false), 2500)
-    } catch (e) {
-      console.error('Failed to save statement:', e)
+      setTimeout(() => { if (version === requestVersion.current) setSavedSuccess(false) }, 2500)
+    } catch {
+      if (version === requestVersion.current) {
+        setStatement(null)
+        setFirmSettings(DEFAULT_FIRM_SETTINGS)
+        setAccountsError(true)
+      }
     } finally {
-      setIsSaving(false)
+      if (version === requestVersion.current) setIsSaving(false)
     }
   }
 
-  if (isLoading || !statement) {
+  if (accountsError) {
+    return <p role="alert" className="p-6">Accounts are unavailable pending authenticated institution access.</p>
+  }
+
+  if (isLoading || !statement || loadedTransferId !== transferId) {
     return (
       <div className="flex items-center justify-center p-16 text-gray-500">
         <RefreshCw className="h-6 w-6 animate-spin mr-3 text-teal-600" />

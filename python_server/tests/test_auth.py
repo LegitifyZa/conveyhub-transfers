@@ -160,6 +160,26 @@ class VerifyJwtTests(TestCase):
             self.assertNotIn(token, str(exc))
 
 
+class IntegerClaimSecurityTests(TestCase):
+    def test_identity_claims_reject_non_positive_fractional_and_unsafe_values(self):
+        for field in ("user_id", "accountable_institution_id", "user_roles_id"):
+            for value in (None, True, False, 0, -1, 6.9, "6.9", "", " 5", [], {}, 2**53, float("inf")):
+                with self.subTest(field=field, value=value):
+                    with self.assertRaises(JWTVerificationError):
+                        verify_jwt(_make_token(**{field: value}), TEST_JWT_SECRET)
+
+    def test_canonical_integer_strings_remain_supported(self):
+        user = verify_jwt(
+            _make_token(user_id="123", accountable_institution_id="5", user_roles_id="6"),
+            TEST_JWT_SECRET,
+        )
+        self.assertEqual((user.user_id, user.accountable_institution_id, user.user_roles_id), (123, 5, 6))
+
+    def test_non_finite_expiration_is_a_controlled_authentication_failure(self):
+        with self.assertRaises(JWTVerificationError):
+            verify_jwt(_make_token(exp=float("inf")), TEST_JWT_SECRET)
+
+
 class ServiceKeyTests(TestCase):
     def test_valid_service_key(self):
         verify_service_key(TEST_SERVICE_SECRET, TEST_SERVICE_SECRET)

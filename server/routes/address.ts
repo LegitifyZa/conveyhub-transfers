@@ -1,7 +1,9 @@
 import { Router, Request, Response } from 'express'
 import { asyncHandler } from '../utils/asyncHandler'
+import { quarantineLegacyRoute } from '../auth/requireJwt'
 
 const router = Router()
+router.use(quarantineLegacyRoute)
 const LOQATE_API_KEY = process.env.LOQATE_API_KEY
 
 const LOQATE_FIND_URL = 'https://api.addressy.com/Capture/Interactive/Find/v1.00/json3.ws'

@@ -1,5 +1,5 @@
 import jwt, { JwtPayload } from 'jsonwebtoken'
-import { CurrentUser } from './currentUser'
+import { CurrentUser, isPositiveInteger } from './currentUser'
 
 export class JWTVerificationError extends Error {
   constructor(message: string) {
@@ -36,7 +36,7 @@ export function verifyJwt(token: string, jwtSecret: string | undefined): Current
     throw new JWTVerificationError('Invalid JWT')
   }
 
-  if (typeof payload.exp !== 'number') {
+  if (typeof payload.exp !== 'number' || !Number.isFinite(payload.exp)) {
     throw new JWTVerificationError('JWT missing expiration')
   }
 
@@ -70,16 +70,11 @@ function buildCurrentUser(payload: TokenClaims): CurrentUser {
 }
 
 function toInt(value: unknown, name: string): number {
-  if (typeof value === 'boolean') {
+  const parsed = typeof value === 'string' && /^[0-9]+$/.test(value) ? Number(value) : value
+  if (!isPositiveInteger(parsed)) {
     throw new JWTVerificationError(`Invalid ${name} claim type`)
   }
-  if (typeof value === 'number') {
-    return value
-  }
-  if (typeof value === 'string' && /^-?\d+$/.test(value)) {
-    return Number(value)
-  }
-  throw new JWTVerificationError(`Invalid ${name} claim type`)
+  return parsed
 }
 
 function toStringArray(value: unknown, name: string): string[] {

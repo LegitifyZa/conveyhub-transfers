@@ -1,3 +1,7 @@
+export function isPositiveInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
+}
+
 export class CurrentUser {
   user_id: number
   golden_record_id: string | null

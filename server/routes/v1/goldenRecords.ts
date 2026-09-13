@@ -27,11 +27,12 @@ async function proxyGoldenRecord(req: Request, res: Response, path: string, meth
         Authorization: req.headers.authorization as string,
         ...(method === 'POST' ? { 'Content-Type': 'application/json' } : {}),
       },
-      ...(method === 'POST' ? { body: JSON.stringify(req.body ?? {}) } : { redirect: 'error' as const }),
+      ...(method === 'POST' ? { body: JSON.stringify(req.body ?? {}) } : {}),
+      redirect: 'error',
       signal: AbortSignal.timeout(35_000),
     })
     const body = await upstream.text()
-    if (method === 'GET' && upstream.status >= 500) {
+    if (upstream.status >= 500) {
       res.status(503).json(DEEDLY_UNAVAILABLE)
       return
     }

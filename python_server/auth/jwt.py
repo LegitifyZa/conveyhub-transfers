@@ -1,9 +1,10 @@
+import re
 import uuid
 from typing import List, Optional
 
 import jwt
 
-from .current_user import CurrentUser
+from .current_user import CurrentUser, is_positive_integer
 
 
 class JWTVerificationError(Exception):
@@ -27,7 +28,7 @@ def verify_jwt(token: str, jwt_secret: Optional[str]) -> CurrentUser:
         )
     except jwt.ExpiredSignatureError as exc:
         raise JWTVerificationError("JWT has expired") from exc
-    except jwt.PyJWTError as exc:
+    except (jwt.PyJWTError, TypeError, ValueError, OverflowError) as exc:
         raise JWTVerificationError("Invalid JWT") from exc
 
     if not isinstance(payload, dict):
@@ -67,12 +68,16 @@ def _build_current_user(payload: dict) -> CurrentUser:
 
 
 def _to_int(value, name: str) -> int:
-    if isinstance(value, bool):
-        raise JWTVerificationError(f"Invalid {name} claim type")
     try:
-        return int(value)
-    except (TypeError, ValueError):
+        if isinstance(value, str) and re.fullmatch(r"[0-9]+", value):
+            value = int(value)
+        elif isinstance(value, float) and value.is_integer():
+            value = int(value)
+    except (ValueError, OverflowError):
+        raise JWTVerificationError(f"Invalid {name} claim type") from None
+    if not is_positive_integer(value):
         raise JWTVerificationError(f"Invalid {name} claim type")
+    return value
 
 
 def _to_abilities(value) -> List[str]:

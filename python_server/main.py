@@ -51,6 +51,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.middleware("http")
+async def protect_response_boundary(request: Request, call_next):
+    try:
+        response = await call_next(request)
+    except Exception as exc:
+        return await generic_exception_handler(request, exc)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 app.include_router(health.router, prefix="/api/health")
 app.include_router(transfers.router, prefix="/api/transfers")
 app.include_router(v1_transfers.router, prefix="/api/v1/transfers")
@@ -106,11 +117,10 @@ async def root():
 
 @app.exception_handler(StarletteHTTPException)
 async def http_exception_handler(request: Request, exc: StarletteHTTPException):
-    if exc.status_code == 404:
-        return JSONResponse(status_code=404, content={"success": False, "error": "Not found"})
     return JSONResponse(
         status_code=exc.status_code,
-        content={"success": False, "error": exc.detail},
+        content={"success": False, "error": "Not found" if exc.status_code == 404 else exc.detail},
+        headers={**(exc.headers or {}), "Cache-Control": "no-store"},
     )
 
 
@@ -124,16 +134,11 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 @app.exception_handler(Exception)
 async def generic_exception_handler(request: Request, exc: Exception):
-    import traceback
-    print("Unhandled error:", exc)
-    traceback.print_exc()
-    status_code = getattr(exc, "status_code", 500)
-    settings = getattr(request.app.state, "settings", None)
-    node_env = settings.node_env if settings is not None else "development"
-    message = "Internal server error" if node_env == "production" else str(exc)
+    print("API request failed")
     return JSONResponse(
-        status_code=status_code,
-        content={"success": False, "error": message},
+        status_code=500,
+        content={"success": False, "error": "Internal server error"},
+        headers={"Cache-Control": "no-store"},
     )
 
 

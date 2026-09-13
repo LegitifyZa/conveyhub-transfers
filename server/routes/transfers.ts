@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express'
+import { quarantineLegacyRoute } from '../auth/requireJwt'
 import { query, withTransaction } from '../db'
 import { asyncHandler } from '../utils/asyncHandler'
 import { isNonEmptyString, isSaPostalCode, isValidTransferStatus, toNumber } from '../utils/validate'
@@ -11,6 +12,7 @@ const __dirname = path.dirname(__filename)
 const UPLOAD_DIR = path.resolve(__dirname, '..', '..', 'uploads')
 
 const router = Router()
+router.use(quarantineLegacyRoute)
 
 const DEFAULT_SORT_COLUMNS = ['created_at', 'updated_at', 'property_address', 'status', 'purchase_price']
 const isUuid = (value: unknown): value is string => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)

@@ -1,6 +1,10 @@
 import uuid
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, TypeGuard
+
+
+def is_positive_integer(value: object) -> TypeGuard[int]:
+    return type(value) is int and 0 < value < 2**53
 
 
 @dataclass(frozen=True)

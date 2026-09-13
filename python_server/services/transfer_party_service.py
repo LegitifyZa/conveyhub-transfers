@@ -15,6 +15,7 @@ from typing import Any, Optional, Union
 from uuid import UUID
 
 import db
+from auth.current_user import is_positive_integer
 from clients.entities import EntitiesClient
 from repositories.transfer_parties import (
     insert_transfer_party,
@@ -35,13 +36,17 @@ async def _get_parent_accountable_institution_id(
 ) -> int:
     """Return the accountable_institution_id from the already-authorised transfer."""
     result = await db.query(
-        "SELECT accountable_institution_id FROM transfers WHERE id = $1",
+        "SELECT accountable_institution_id FROM transfers WHERE id = $1"
+        + (" FOR UPDATE" if connection is not None else ""),
         [transfer_id],
         connection=connection,
     )
     if not result.rows:
         raise TransferPartyServiceError("Parent transfer not found")
-    return result.rows[0]["accountable_institution_id"]
+    ai = result.rows[0]["accountable_institution_id"]
+    if not is_positive_integer(ai):
+        raise TransferPartyServiceError("Parent transfer has no authorised institution")
+    return ai
 
 
 async def _persist_party(
@@ -156,6 +161,26 @@ async def attach_party_to_transfer(
     )
 
 
+async def _get_party_context(transfer_party_id: UUID, *, connection: Optional[Any] = None) -> dict:
+    result = await db.query(
+        """
+        SELECT tp.transfer_id, tp.golden_record_id, tp.entity_type, tp.accountable_institution_id
+        FROM transfer_parties tp
+        JOIN transfers t ON t.id = tp.transfer_id
+          AND t.accountable_institution_id = tp.accountable_institution_id
+        WHERE tp.id = $1
+        """ + (" FOR UPDATE OF t, tp" if connection is not None else ""),
+        [transfer_party_id],
+        connection=connection,
+    )
+    if not result.rows:
+        raise TransferPartyServiceError("Transfer party not found")
+    row = dict(result.rows[0])
+    if not is_positive_integer(row["accountable_institution_id"]):
+        raise TransferPartyServiceError("Transfer party has no authorised institution")
+    return row
+
+
 async def refresh_party_cache_from_golden_record(
     transfer_party_id: UUID,
     *,
@@ -168,17 +193,7 @@ async def refresh_party_cache_from_golden_record(
     accountable_institution_id scopes the linkage check, and the fetch happens
     before the short update transaction.
     """
-    result = await db.query(
-        """
-        SELECT golden_record_id, entity_type, accountable_institution_id
-        FROM transfer_parties
-        WHERE id = $1
-        """,
-        [transfer_party_id],
-    )
-    if not result.rows:
-        raise TransferPartyServiceError("Transfer party not found")
-    row = result.rows[0]
+    row = await _get_party_context(transfer_party_id)
 
     visible = await resolve_visible_golden_record(
         entities_client,
@@ -188,13 +203,20 @@ async def refresh_party_cache_from_golden_record(
     )
     cache = visible.display_cache
 
-    return await refresh_cache_by_transfer_party_id(
-        transfer_party_id,
-        cached_name=cache.name,
-        cached_id_number=cache.id_number,
-        cached_email=cache.email,
-        synced_at=visible.synced_at,
-    )
+    async def _do_refresh(connection: Any) -> Any:
+        current = await _get_party_context(transfer_party_id, connection=connection)
+        if current != row:
+            raise TransferPartyServiceError("Transfer party context changed")
+        return await refresh_transfer_party_cache_by_id(
+            transfer_party_id,
+            cached_name=cache.name,
+            cached_id_number=cache.id_number,
+            cached_email=cache.email,
+            synced_at=visible.synced_at,
+            connection=connection,
+        )
+
+    return await db.with_transaction(_do_refresh)
 
 
 async def refresh_cache_by_transfer_party_id(

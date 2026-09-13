@@ -98,6 +98,28 @@ class RecordAccessTests(TestCase):
             AuthorizationDecision.CLIENT_PARTY_CHECK_REQUIRED,
         )
 
+    def test_client_party_identity_does_not_override_institution(self):
+        user = _user(4, 2, golden=uuid.uuid4())
+        self.assertEqual(authorize_record_access(user, 99), AuthorizationDecision.NOT_FOUND)
+        self.assertEqual(authorize_mutation(user, 99), AuthorizationDecision.NOT_FOUND)
+
+    def test_missing_or_invalid_institution_never_grants_access(self):
+        for role in (1, 3, 4, 6):
+            for ai in (None, False, 0, -1, 2.5, "2"):
+                with self.subTest(role=role, ai=ai):
+                    user = _user(role, ai, golden=uuid.uuid4())
+                    self.assertEqual(authorize_record_access(user, 2), AuthorizationDecision.NOT_FOUND)
+                    with self.assertRaises(TenantBoundaryError):
+                        resolve_effective_tenant_id(user)
+                    self.assertEqual(authorize_record_access(_user(role, 2), ai), AuthorizationDecision.NOT_FOUND)
+
+    def test_invalid_explicit_scope_never_becomes_an_unrestricted_lookup(self):
+        for role in (1, 3, 6):
+            for requested in (False, 0, -1, 2.5, "2"):
+                with self.subTest(role=role, requested=requested):
+                    with self.assertRaises(TenantBoundaryError):
+                        resolve_effective_tenant_id(_user(role, 2), requested)
+
     def test_client_without_golden_record_not_found(self):
         user = _user(4, 2, golden=None)
         self.assertEqual(

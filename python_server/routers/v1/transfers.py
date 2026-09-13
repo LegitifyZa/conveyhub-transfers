@@ -162,13 +162,14 @@ async def _authorize_transfer(user: CurrentUser, id: str):
         client_sql = f"""
             {SELECT_TRANSFER_COLUMNS}
             FROM transfers t
-            WHERE t.id = $1
+            WHERE t.id = $1 AND t.accountable_institution_id = $3
               AND EXISTS (
                 SELECT 1 FROM transfer_parties tp
                 WHERE tp.transfer_id = t.id AND tp.golden_record_id = $2::uuid
+                  AND tp.accountable_institution_id = $3
               )
         """
-        client_result = await query(client_sql, [id, user.golden_record_id])
+        client_result = await query(client_sql, [id, user.golden_record_id, user.accountable_institution_id])
         return client_result.rows[0] if client_result.rows else None
 
     cross_tenant = is_cross_tenant(user)
@@ -306,12 +307,13 @@ async def get_transfer_parties(
             FROM transfer_parties
             WHERE transfer_id = $1
               AND golden_record_id = $2::uuid
+              AND accountable_institution_id = $3
               AND accountable_institution_id = (
-                SELECT accountable_institution_id FROM transfers WHERE id = $1
+                SELECT accountable_institution_id FROM transfers WHERE id = $1 AND accountable_institution_id = $3
               )
             ORDER BY cached_name
         """
-        client_parties_result = await query(client_parties_sql, [id, user.golden_record_id])
+        client_parties_result = await query(client_parties_sql, [id, user.golden_record_id, user.accountable_institution_id])
         parties = [_map_client_transfer_party(row) for row in client_parties_result.rows]
         return {"message": "OK", "data": {"parties": parties}}
 

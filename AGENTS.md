@@ -117,3 +117,135 @@ Adapter/client checks use `tests/test_entity_submissions.py` and
 `tests/test_clients_entities.py`. Include `tests/test_landed_entities_search_contract.py`
 with `ENTITIES_SOURCE_ROOT` set for executable source-contract coverage. Its SQL
 fixtures are synthetic in-memory SQLite, not PostgreSQL migration certification.
+
+## AI/institution security boundaries and safe verification
+
+- Legacy transfer, milestone, document, document-template, local-profile and address
+  routers are quarantined in both servers. The Accounts router is quarantined under
+  both `/api/accounts` and `/api/v1/accounts`. Missing/invalid JWT context returns
+  401; verified callers receive 503 before any legacy handler, cache, DB or provider
+  operation. Restoring these paths requires an approved authenticated contract,
+  not simply removing the quarantine dependency/middleware.
+- Only roles 1 and 6 have the documented cross-institution matter-access exception;
+  institution ID 1 is not a privileged role. Other callers require their verified
+  institution, including clients who must additionally prove GR party membership.
+  Standalone GR discovery/retrieval keeps its existing linkage-scoped projection;
+  no charging trigger or new entitlement policy is enabled.
+- Accounts browser requests no longer use institution-unscoped memory/localStorage
+  fallbacks or claim offline saves succeeded. Existing legacy browser storage is
+  not automatically deleted; restoration/data recovery needs an approved decision.
+- `server/tests/aiTenantSecurity.test.ts` uses guarded DB mocks and loopback HTTP.
+  Do not run `server/tests/v1SpecialistRoutes.test.ts` against ordinary environment
+  configuration: it seeds/deletes rows and does not guard on `TEST_DATABASE_URL`.
+  It needs an explicitly approved isolated database.
+- The standard server type check retains the existing TS6059 shared-source
+  `rootDir` issue. A non-emitting check with `--rootDir .` covers those sources
+  without changing project configuration. Baseline `84c0269` also has 11 mypy
+  errors in `db.py` and `routers/v1/transfers.py`; distinguish these from the
+  independently checked auth, policy and internal-link modules.
+
+Focused security checks (repo root unless stated otherwise):
+
+```powershell
+npx tsx --test server/tests/aiTenantSecurity.test.ts server/tests/v1GoldenRecordSearch.test.ts
+npx tsx --test src/lib/api/accountsApi.test.ts src/components/GoldenRecordsSearch.test.tsx
+npx tsc --noEmit
+npx tsc -p server/tsconfig.tests.json --noEmit --rootDir .
+```
+
+From `python_server/`, without an upstream service or database:
+
+```powershell
+python -m pytest -q -rs -p no:cacheprovider tests/test_auth.py tests/test_policy.py tests/test_ai_tenant_security.py tests/test_transfer_parties.py
+python -m mypy --follow-imports=silent --ignore-missing-imports --no-incremental --cache-dir=nul auth/current_user.py auth/jwt.py auth/policy.py auth/dependencies.py services/transfer_party_service.py main.py
+```
+
+## P0 review handover: discovery, authority and restoration
+
+- **P0 discovery-contract blocker:** the available upstream snapshot's
+  `docs/deedly_external_integration.md` section 4 explicitly requires the clients
+  linkage check on each search candidate before exposing it. Current DEEDLY search
+  consequently does not expose records unlinked to the requesting AI, even as
+  limited results. Global S2S search capability is not evidence of an approved
+  end-user unlinked-discovery entitlement or field mask. Obtain that contract and
+  deployed evidence from Clive/Louis before changing this boundary; do not describe
+  unlinked discovery as implemented. Canonical retrieval stays linkage-gated.
+- Discovery creates no linkage and enables no charging trigger. The source search
+  path reads repositories/serializers; submit, resubmit and provider/profile runs
+  are separate. Deployed discovery/billing behaviour remains unverified.
+- **Documented role authority:** upstream
+  `docs/transfers_golden_record_providers_auth.md` sections 4.3 and 5.5 name role 1
+  (Super Admin) and role 6 (Admin Agent) as cross-institution by design; everyone
+  else is locked to their JWT AI, with additional GR membership for clients.
+  This exception does not bypass abilities or standalone GR linkage checks.
+  `test_policy.py`, `test_ai_tenant_security.py` and `aiTenantSecurity.test.ts`
+  cover privileged roles and ordinary/client users, including ID/scope tampering.
+- **P0 legacy restoration:** authenticated matter saving and durable GR attachment,
+  documents, profiles, templates, Accounts and address-provider controls remain
+  separate work. Do not restore handlers merely by removing quarantine.
+- **P0 infrastructure:** browser JWT integration, external-ingress/key-rotation
+  HOLD, verified DB TLS/CA configuration, isolated PostgreSQL verification and
+  deployment proxy/artifact/logging checks remain open. The current DB clients
+  still disable certificate verification; this branch does not change that config.
+- **P1 baseline typing debt:** the existing TS6059 server `rootDir` failure and 11
+  mypy errors in `db.py`/`routers/v1/transfers.py` are separate from introduced
+  issues. Do not relax checks or change security controls to hide them.
+- Parent Create remains **P0 blocked/incomplete pending D1–D6**. Louis's charging
+  decision, name/DOB decisions and matter/file-reference lookup are not implemented
+  by this security branch.
+
+### P1 UI readiness under P0 restoration
+
+Source-level audit of currently routed screens (not live browser certification):
+
+| Screen | Quarantine failure presentation |
+|---|---|
+| `/accounts`, `/calculators` | Explicit unavailable alert; no default figures/actions before settings load. |
+| Transfer milestones: Accounts tab | Explicit unavailable alert; stale request/statement state discarded. |
+| `/settings`: Firm Accounts tab | Not clear: `!settings` retains the loading spinner even after failure. |
+| `/settings`: Profile tab | Partial: raw API error is visible; form remains reachable. |
+| `/dashboard`, `/cases` | Not clear: transfer-load errors are not rendered; empty/zero views remain. |
+| `/transfers` | Partial: error banner plus zero statistics/"No transfers found" state. |
+| `/transfers/workflow` | Partial: load/save errors visible; document-catalogue failures only logged. |
+| Workflow: property/address lookup | Partial: search/retrieve errors visible; geocode failure only clears coordinates. |
+| `/transfers/:transferId/milestones` | Partial: aggregate load error visible; milestone/activity failures only logged. |
+| Transfer milestones: Documents tab | Not clear internally: load failure becomes an empty document/catalogue view. |
+| `/documents` | Not clear: load failure becomes "No documents found". |
+| `/document-catalogue`, `/data-dictionary`, `/template-engine`, `/clause-library` | Partial: error shown alongside bundled fallback/seed content. |
+| `/document-generator` | Partial: clause/sync errors shown, history failure becomes empty, local generation can continue. |
+| `/transfers/new` | GR APIs are not quarantined; browser JWT integration blocks live use and downstream saving is quarantined. |
+
+`/bonds` and `/cancellations` are currently placeholders with no affected API calls.
+Clear unavailable states, demo/fallback labeling and stale-state handling are P1
+items within P0 restoration, not evidence that the quarantined workflows work.
+
+### P0 PostgreSQL verification prerequisite
+
+`python_server/tests/test_transfer_party_postgres.py` prepares 12 PostgreSQL cases
+plus two no-DB guard tests. The real-DB cases require both `TEST_DATABASE_URL` and
+`RUN_ISOLATED_SECURITY_DB_TESTS=1`; neither the flag nor a DSN alone proves approval
+or isolation. They must not run without explicit approval of an isolated database
+and the following test-owned lifecycle:
+
+- PostgreSQL 13+; CREATE/DROP permissions for random
+  `deedly_security_test_<uuid>` schemas, with synthetic data only.
+- Separate sessions exercise the production query/repository/transaction code;
+  barriers and `pg_blocking_pids` verify blocking rather than relying on sleeps.
+- Covers link idempotency/rollback, tenant changes during visibility, parent locks
+  held until insert commit, cache-only refresh, concurrent GR/type/parent/AI
+  changes, and parent/party locks held until cache update commit.
+- Uses minimal transfer/party tables in its own search path; it does not apply or
+  certify production migrations, full constraints or upstream entitlements.
+- Visibility/Entities calls are mocked. Only the operator-approved isolated DSN
+  is used; application DSNs are never a fallback. Cleanup drops only the freshly
+  created scratch schema, after cancelling tasks and releasing connections.
+
+This review found `TEST_DATABASE_URL` unset: no PostgreSQL connection or DDL was
+attempted. To collect/run the guards safely without opting in, from `python_server/`:
+
+```powershell
+python -m pytest -q -rs -p no:cacheprovider tests/test_transfer_party_postgres.py
+```
+
+Configure the isolated DSN securely and set the opt-in flag only after the above
+specific approval. Skipped PostgreSQL cases are a P0 prerequisite, not certification.

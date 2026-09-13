@@ -1,6 +1,6 @@
 from typing import Optional
 
-from fastapi import Depends, Header, Request
+from fastapi import Depends, Header, HTTPException, Request
 
 from .current_user import CurrentUser
 from .exceptions import FORBIDDEN, UNAUTHORIZED
@@ -65,6 +65,14 @@ async def require_jwt(
         return verify_jwt(token, settings.jwt_secret)
     except JWTVerificationError:
         raise UNAUTHORIZED
+
+
+async def quarantine_legacy_route(user: CurrentUser = Depends(require_jwt)) -> None:
+    raise HTTPException(
+        status_code=503,
+        detail="Legacy endpoint unavailable",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 def require_ability(ability: str):

@@ -1,13 +1,14 @@
 import json
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
+from auth.dependencies import quarantine_legacy_route
 from db import query, with_transaction
 from utils.validate import is_non_empty_string, is_uuid
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(quarantine_legacy_route)])
 
 
 def map_generated_document_list(row):

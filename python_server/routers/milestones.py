@@ -1,10 +1,11 @@
-from fastapi import APIRouter, Body
+from fastapi import APIRouter, Body, Depends
 from fastapi.responses import JSONResponse
 
+from auth.dependencies import quarantine_legacy_route
 from db import query, with_transaction
 from utils.validate import is_non_empty_string, to_date_string
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(quarantine_legacy_route)])
 
 VALID_MILESTONE_STATUSES = ["not_started", "in_progress", "completed", "overdue", "not_required"]
 

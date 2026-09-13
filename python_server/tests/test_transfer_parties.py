@@ -263,7 +263,7 @@ class TransferPartyServiceTests(unittest.IsolatedAsyncioTestCase):
         first, second = mock_db_query.await_args_list
         self.assertEqual(first.args, (_PARENT_AI_SQL, [_TRANSFER_ID]))
         self.assertIsNone(first.kwargs.get("connection"))
-        self.assertEqual(second.args, (_PARENT_AI_SQL, [_TRANSFER_ID]))
+        self.assertEqual(second.args, (_PARENT_AI_SQL + " FOR UPDATE", [_TRANSFER_ID]))
         self.assertIs(second.kwargs["connection"], connection)
         mock_insert.assert_awaited_once()
         call_kwargs = mock_insert.await_args.kwargs
@@ -509,6 +509,24 @@ class LinkPartyToTransferTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(mock_resolve.await_args.kwargs["accountable_institution_id"], 5)
         mock_insert.assert_not_awaited()
 
+    @patch("services.transfer_party_service.insert_transfer_party")
+    @patch("services.transfer_party_service.resolve_visible_golden_record")
+    @patch("services.transfer_party_service.db.with_transaction")
+    @patch("services.transfer_party_service.db.query")
+    async def test_invalid_parent_institution_never_calls_upstream(
+        self, mock_db_query, mock_tx, mock_resolve, mock_insert
+    ):
+        for ai in (None, False, 0, -1, "5"):
+            with self.subTest(ai=ai):
+                mock_db_query.return_value = _parent_row(ai)
+                with self.assertRaises(TransferPartyServiceError):
+                    await link_party_to_transfer(
+                        _TRANSFER_ID, _GOLDEN_RECORD_ID, "person", "transferee", entities_client=AsyncMock()
+                    )
+        mock_resolve.assert_not_awaited()
+        mock_tx.assert_not_awaited()
+        mock_insert.assert_not_awaited()
+
     async def test_repository_has_no_upstream_dependency(self):
         import repositories.transfer_parties as repo_module
 
@@ -554,9 +572,13 @@ class RefreshPartyCacheFromGoldenRecordTests(unittest.IsolatedAsyncioTestCase):
         await refresh_party_cache_from_golden_record(party_id, entities_client=entities_client)
 
         self.assertEqual(events, ["visibility", "tx_open"])
-        mock_db_query.assert_awaited_once()
-        self.assertEqual(mock_db_query.await_args.args[1], [party_id])
-        self.assertIn("FROM transfer_parties", mock_db_query.await_args.args[0])
+        self.assertEqual(mock_db_query.await_count, 2)
+        first, locked = mock_db_query.await_args_list
+        self.assertIsNone(first.kwargs["connection"])
+        self.assertIsNotNone(locked.kwargs["connection"])
+        self.assertEqual(locked.args[1], [party_id])
+        self.assertIn("JOIN transfers", first.args[0])
+        self.assertIn("FOR UPDATE OF t, tp", locked.args[0])
         mock_resolve.assert_awaited_once()
         self.assertIs(mock_resolve.await_args.args[0], entities_client)
         self.assertEqual(
@@ -574,6 +596,38 @@ class RefreshPartyCacheFromGoldenRecordTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(refresh_kwargs["cached_id_number"], "9001010001081")
         self.assertEqual(refresh_kwargs["cached_email"], "dean@example.com")
         self.assertIsNotNone(refresh_kwargs["synced_at"])
+
+    @patch("services.transfer_party_service.refresh_transfer_party_cache_by_id")
+    @patch("services.transfer_party_service.resolve_visible_golden_record")
+    @patch("services.transfer_party_service.db.with_transaction")
+    @patch("services.transfer_party_service.db.query")
+    async def test_refresh_rejects_context_changes_after_visibility(
+        self, mock_db_query, mock_tx, mock_resolve, mock_refresh
+    ):
+        original = {
+            "transfer_id": _TRANSFER_ID, "golden_record_id": _GOLDEN_RECORD_ID,
+            "entity_type": "person", "accountable_institution_id": 5,
+        }
+
+        async def transaction(callback):
+            return await callback(AsyncMock())
+
+        mock_tx.side_effect = transaction
+        mock_resolve.return_value = _visible()
+        for field, value in (
+            ("transfer_id", uuid4()), ("golden_record_id", _OTHER_GOLDEN_RECORD_ID),
+            ("entity_type", "company"), ("accountable_institution_id", 7),
+        ):
+            with self.subTest(field=field):
+                mock_refresh.reset_mock()
+                mock_db_query.side_effect = [
+                    QueryResult(rows=[original], row_count=1),
+                    QueryResult(rows=[{**original, field: value}], row_count=1),
+                ]
+                with self.assertRaises(TransferPartyServiceError):
+                    await refresh_party_cache_from_golden_record(uuid4(), entities_client=AsyncMock())
+                mock_refresh.assert_not_awaited()
+                self.assertIn("FOR UPDATE OF t, tp", mock_db_query.await_args.args[0])
 
     @patch("services.transfer_party_service.refresh_transfer_party_cache_by_id")
     @patch("services.transfer_party_service.resolve_visible_golden_record")

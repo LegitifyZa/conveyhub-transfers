@@ -158,13 +158,14 @@ async function authorizeTransfer(user: CurrentUser, id: string): Promise<any | n
 
     const clientQuery = `${SELECT_TRANSFER_COLUMNS}
       FROM transfers t
-      WHERE t.id = $1
+      WHERE t.id = $1 AND t.accountable_institution_id = $3
         AND EXISTS (
           SELECT 1 FROM transfer_parties tp
           WHERE tp.transfer_id = t.id AND tp.golden_record_id = $2::uuid
+            AND tp.accountable_institution_id = $3
         )
     `
-    const clientResult = await query(clientQuery, [id, user.golden_record_id])
+    const clientResult = await query(clientQuery, [id, user.golden_record_id, user.accountable_institution_id])
     return clientResult.rows[0] || null
   }
 
@@ -279,11 +280,12 @@ router.get(
         FROM transfer_parties
         WHERE transfer_id = $1
           AND golden_record_id = $2::uuid
+          AND accountable_institution_id = $3
           AND accountable_institution_id = (
-            SELECT accountable_institution_id FROM transfers WHERE id = $1
+            SELECT accountable_institution_id FROM transfers WHERE id = $1 AND accountable_institution_id = $3
           )
       `
-      const clientPartiesResult = await query(clientPartiesQuery, [id, user.golden_record_id])
+      const clientPartiesResult = await query(clientPartiesQuery, [id, user.golden_record_id, user.accountable_institution_id])
       res.json({
         message: 'OK',
         data: {

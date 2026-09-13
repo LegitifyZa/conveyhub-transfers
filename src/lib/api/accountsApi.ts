@@ -1,46 +1,19 @@
-import { 
-  FirmAccountSettings, 
-  DEFAULT_FIRM_SETTINGS, 
-  TariffSchedule, 
-  ALL_PRESET_TARIFFS, 
-  LSSA_TARIFF_2026_2027, 
-  ProformaStatementData, 
-  generateProformaStatement
+import {
+  FirmAccountSettings,
+  TariffSchedule,
+  LSSA_TARIFF_2026_2027,
+  ProformaStatementData,
 } from '@/utils/conveyancingAccounts'
-import { apiRequest } from './http'
+import { apiRequest, ApiRequestError, type ApiRequestOptions } from './http'
 import type { ApiResponse } from '../types'
 
-const SETTINGS_STORAGE_KEY = 'conveyhub_firm_account_settings'
-const TARIFFS_STORAGE_KEY = 'conveyhub_tariff_schedules'
-const STATEMENTS_STORAGE_KEY = 'conveyhub_proforma_statements'
-
-// Local cache for speed and offline resiliency
-let localSettingsCache: FirmAccountSettings | null = null
-let localTariffsCache: TariffSchedule[] | null = null
-const localStatementsCache: Record<string, ProformaStatementData> = {}
-
-function getLocalSettings(): FirmAccountSettings {
-  if (localSettingsCache) return localSettingsCache
-  try {
-    const raw = localStorage.getItem(SETTINGS_STORAGE_KEY)
-    if (raw) {
-      localSettingsCache = JSON.parse(raw)
-      return localSettingsCache!
-    }
-  } catch (e) {
-    console.warn('Could not read settings from localStorage:', e)
+// Account data requires a fresh authorised response, not an offline cache.
+async function requestAccountData<T>(path: string, options: ApiRequestOptions = {}): Promise<T> {
+  const response = await apiRequest<ApiResponse<T>>(path, { ...options, cache: 'no-store' })
+  if (!response?.success || response.data == null) {
+    throw new ApiRequestError(503, 'Accounts service unavailable')
   }
-  localSettingsCache = { ...DEFAULT_FIRM_SETTINGS }
-  return localSettingsCache
-}
-
-function saveLocalSettings(settings: FirmAccountSettings) {
-  localSettingsCache = settings
-  try {
-    localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings))
-  } catch (e) {
-    console.warn('Could not persist settings to localStorage:', e)
-  }
+  return response.data
 }
 
 export class AccountsApi {
@@ -48,119 +21,28 @@ export class AccountsApi {
    * Get current firm settings (VAT status, VAT number, disbursements, active tariff, trust banking)
    */
   static async getFirmSettings(): Promise<FirmAccountSettings> {
-    try {
-      const response = await apiRequest<ApiResponse<FirmAccountSettings>>('/api/accounts/settings')
-      if (response && response.success && response.data) {
-        saveLocalSettings(response.data)
-        return response.data
-      }
-    } catch (e) {
-      console.warn('API error on getFirmSettings, falling back to local cache:', e)
-    }
-    return getLocalSettings()
+    return requestAccountData('/api/accounts/settings')
   }
 
   /**
    * Update firm settings
    */
   static async updateFirmSettings(settings: Partial<FirmAccountSettings>): Promise<FirmAccountSettings> {
-    try {
-      const response = await apiRequest<ApiResponse<FirmAccountSettings>>(
-        '/api/accounts/settings',
-        {
-          method: 'PUT',
-          body: settings
-        }
-      )
-      if (response && response.success && response.data) {
-        saveLocalSettings(response.data)
-        return response.data
-      }
-    } catch (e) {
-      console.warn('API error on updateFirmSettings, saving to local cache:', e)
-    }
-
-    const current = getLocalSettings()
-    const updated: FirmAccountSettings = {
-      ...current,
-      ...settings,
-      trustAccount: {
-        ...current.trustAccount,
-        ...(settings.trustAccount || {})
-      }
-    }
-    saveLocalSettings(updated)
-    return updated
+    return requestAccountData('/api/accounts/settings', { method: 'PUT', body: settings })
   }
 
   /**
    * Get all tariff schedules (both built-in and user-customized)
    */
   static async getTariffSchedules(): Promise<TariffSchedule[]> {
-    try {
-      const response = await apiRequest<ApiResponse<TariffSchedule[]>>('/api/accounts/tariffs')
-      if (response && response.success && Array.isArray(response.data)) {
-        localTariffsCache = response.data
-        try {
-          localStorage.setItem(TARIFFS_STORAGE_KEY, JSON.stringify(response.data))
-        } catch (e) {
-          console.warn('Could not save tariffs to localStorage:', e)
-        }
-        return response.data
-      }
-    } catch (e) {
-      console.warn('API error on getTariffSchedules, falling back to local cache:', e)
-    }
-
-    if (localTariffsCache && localTariffsCache.length > 0) return localTariffsCache
-    try {
-      const raw = localStorage.getItem(TARIFFS_STORAGE_KEY)
-      if (raw) {
-        localTariffsCache = JSON.parse(raw)
-        return localTariffsCache!
-      }
-    } catch (e) {
-      console.warn('Could not read tariffs from localStorage:', e)
-    }
-    localTariffsCache = [...ALL_PRESET_TARIFFS]
-    return localTariffsCache
+    return requestAccountData('/api/accounts/tariffs')
   }
 
   /**
    * Save or update a tariff schedule
    */
   static async saveTariffSchedule(schedule: TariffSchedule): Promise<TariffSchedule> {
-    try {
-      const response = await apiRequest<ApiResponse<TariffSchedule>>(
-        '/api/accounts/tariffs',
-        {
-          method: 'POST',
-          body: schedule
-        }
-      )
-      if (response && response.success && response.data) {
-        const tariffs = await this.getTariffSchedules()
-        const idx = tariffs.findIndex(t => t.id === schedule.id)
-        if (idx >= 0) tariffs[idx] = response.data
-        else tariffs.push(response.data)
-        localTariffsCache = tariffs
-        return response.data
-      }
-    } catch (e) {
-      console.warn('API error on saveTariffSchedule, persisting locally:', e)
-    }
-
-    const tariffs = await this.getTariffSchedules()
-    const index = tariffs.findIndex(t => t.id === schedule.id)
-    if (index >= 0) tariffs[index] = schedule
-    else tariffs.push(schedule)
-    localTariffsCache = tariffs
-    try {
-      localStorage.setItem(TARIFFS_STORAGE_KEY, JSON.stringify(tariffs))
-    } catch (e) {
-      console.warn('Could not save tariffs to localStorage:', e)
-    }
-    return schedule
+    return requestAccountData('/api/accounts/tariffs', { method: 'POST', body: schedule })
   }
 
   /**
@@ -178,7 +60,7 @@ export class AccountsApi {
    */
   static async getProformaStatementForTransfer(
     transferId: string,
-    fallbackParams?: {
+    _fallbackParams?: {
       propertyAddress: string
       purchasePrice: number
       depositAmount?: number
@@ -186,89 +68,17 @@ export class AccountsApi {
       erfNumber?: string
     }
   ): Promise<ProformaStatementData> {
-    const params = new URLSearchParams()
-    if (fallbackParams?.propertyAddress) params.set('propertyAddress', fallbackParams.propertyAddress)
-    if (fallbackParams?.purchasePrice) params.set('purchasePrice', String(fallbackParams.purchasePrice))
-    if (fallbackParams?.depositAmount) params.set('depositAmount', String(fallbackParams.depositAmount))
-    if (fallbackParams?.loanAmount) params.set('loanAmount', String(fallbackParams.loanAmount))
-    if (fallbackParams?.erfNumber) params.set('erfNumber', fallbackParams.erfNumber)
-
-    try {
-      const url = `/api/accounts/transfers/${encodeURIComponent(transferId)}/proforma?${params.toString()}`
-      const response = await apiRequest<ApiResponse<ProformaStatementData>>(url)
-      if (response && response.success && response.data) {
-        localStatementsCache[transferId] = response.data
-        return response.data
-      }
-    } catch (e) {
-      console.warn('API error on getProformaStatementForTransfer, falling back to local generator:', e)
-    }
-
-    if (localStatementsCache[transferId]) {
-      return localStatementsCache[transferId]
-    }
-
-    try {
-      const raw = localStorage.getItem(STATEMENTS_STORAGE_KEY)
-      if (raw) {
-        const parsed = JSON.parse(raw)
-        if (parsed[transferId]) {
-          localStatementsCache[transferId] = parsed[transferId]
-          return parsed[transferId]
-        }
-      }
-    } catch (e) {
-      console.warn('Could not read statement from localStorage:', e)
-    }
-
-    const firmSettings = await this.getFirmSettings()
-    const activeTariff = await this.getActiveTariffSchedule()
-    const newStatement = generateProformaStatement({
-      transferId,
-      propertyAddress: fallbackParams?.propertyAddress || '123 Ocean View Drive, Cape Town',
-      erfNumber: fallbackParams?.erfNumber || 'Erf 4521',
-      purchasePrice: fallbackParams?.purchasePrice || 2500000,
-      depositAmount: fallbackParams?.depositAmount || 250000,
-      loanAmount: fallbackParams?.loanAmount || 2250000,
-      firmSettings,
-      tariffSchedule: activeTariff
-    })
-
-    localStatementsCache[transferId] = newStatement
-    return newStatement
+    return requestAccountData(`/api/accounts/transfers/${encodeURIComponent(transferId)}/proforma`)
   }
 
   /**
    * Save a Proforma Statement
    */
   static async saveProformaStatement(statement: ProformaStatementData): Promise<ProformaStatementData> {
-    const id = statement.transferId || statement.id || `PF-${Date.now()}`
-    try {
-      const response = await apiRequest<ApiResponse<ProformaStatementData>>(
-        `/api/accounts/transfers/${encodeURIComponent(id)}/proforma`,
-        {
-          method: 'PUT',
-          body: statement
-        }
-      )
-      if (response && response.success && response.data) {
-        localStatementsCache[id] = response.data
-        return response.data
-      }
-    } catch (e) {
-      console.warn('API error on saveProformaStatement, persisting locally:', e)
-    }
-
-    localStatementsCache[id] = statement
-    try {
-      const raw = localStorage.getItem(STATEMENTS_STORAGE_KEY)
-      const parsed = raw ? JSON.parse(raw) : {}
-      parsed[id] = statement
-      localStorage.setItem(STATEMENTS_STORAGE_KEY, JSON.stringify(parsed))
-    } catch (e) {
-      console.warn('Could not save proforma to localStorage:', e)
-    }
-    return statement
+    if (!statement.transferId) throw new ApiRequestError(422, 'Transfer reference is required')
+    return requestAccountData(`/api/accounts/transfers/${encodeURIComponent(statement.transferId)}/proforma`, {
+      method: 'PUT', body: statement,
+    })
   }
 
   /**
@@ -289,8 +99,7 @@ export class AccountsApi {
         firmSettings: FirmAccountSettings
       }
     }>('/api/accounts/calculate', {
-      method: 'POST',
-      body: payload
+      method: 'POST', body: payload, cache: 'no-store',
     })
   }
 
@@ -298,20 +107,6 @@ export class AccountsApi {
    * Reset default settings and tariffs to official LSSA benchmarks
    */
   static async resetToDefaults(): Promise<FirmAccountSettings> {
-    try {
-      await apiRequest('/api/accounts/reset', { method: 'POST' })
-    } catch (e) {
-      console.warn('API error on resetToDefaults:', e)
-    }
-    localSettingsCache = { ...DEFAULT_FIRM_SETTINGS }
-    localTariffsCache = [...ALL_PRESET_TARIFFS]
-    try {
-      localStorage.removeItem(SETTINGS_STORAGE_KEY)
-      localStorage.removeItem(TARIFFS_STORAGE_KEY)
-      localStorage.removeItem(STATEMENTS_STORAGE_KEY)
-    } catch (e) {
-      console.warn('Could not clear local storage:', e)
-    }
-    return localSettingsCache
+    return requestAccountData('/api/accounts/reset', { method: 'POST' })
   }
 }

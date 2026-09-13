@@ -113,10 +113,10 @@ async def query(text: str, params: Optional[List[Any]] = None, *, connection: Op
         duration = (time.time() - start) * 1000
         node_env = _settings.node_env if _settings is not None else "development"
         if node_env != "production":
-            print("Executed query", {"text": text[:200], "duration": round(duration), "rows": result.row_count})
+            print("Executed query", {"duration": round(duration), "rows": result.row_count})
         return result
-    except Exception as error:
-        print("Query error:", {"text": text, "params": params, "error": error})
+    except Exception:
+        print("Database query failed")
         raise
 
 
@@ -136,7 +136,7 @@ async def check_database_health() -> dict:
         return {
             "healthy": False,
             "latency_ms": round((time.time() - start) * 1000),
-            "error": str(error),
+            "error": "Database unavailable",
         }
 
 

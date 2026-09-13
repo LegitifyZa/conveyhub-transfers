@@ -42,8 +42,8 @@ pool.on('connect', (client) => {
   client.query(`SET search_path = ${schema}, public`)
 })
 
-pool.on('error', (err) => {
-  console.error('Unexpected error on idle client', err)
+pool.on('error', () => {
+  console.error('Unexpected error on idle database client')
 })
 
 export interface QueryLog {
@@ -58,11 +58,11 @@ export async function query<T extends QueryResultRow = any>(text: string, params
     const result = await pool.query<T>(text, params)
     const duration = Date.now() - start
     if (process.env.NODE_ENV !== 'production') {
-      console.log('Executed query', { text: text.slice(0, 200), duration, rows: result.rowCount })
+      console.log('Executed query', { duration, rows: result.rowCount })
     }
     return result
   } catch (error) {
-    console.error('Query error:', { text, params, error })
+    console.error('Database query failed')
     throw error
   }
 }
@@ -91,7 +91,7 @@ export async function checkDatabaseHealth(): Promise<{ healthy: boolean; latency
     return {
       healthy: false,
       latencyMs: Date.now() - start,
-      error: error instanceof Error ? error.message : String(error),
+      error: 'Database unavailable',
     }
   }
 }

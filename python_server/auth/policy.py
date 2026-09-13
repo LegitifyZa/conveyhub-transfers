@@ -2,7 +2,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Optional
 
-from .current_user import CurrentUser
+from .current_user import CurrentUser, is_positive_integer
 
 
 class AuthorizationDecision:
@@ -28,7 +28,11 @@ def is_cross_tenant(user: CurrentUser) -> bool:
     Handover §4.3 and §5.5: user_roles_id ∈ (1, 6) (Super Admin, Admin Agent)
     are cross-tenant by design.
     """
-    return user.user_roles_id in CROSS_TENANT_ROLES
+    return (
+        is_positive_integer(user.accountable_institution_id)
+        and is_positive_integer(user.user_roles_id)
+        and user.user_roles_id in CROSS_TENANT_ROLES
+    )
 
 
 def resolve_effective_tenant_id(
@@ -41,6 +45,10 @@ def resolve_effective_tenant_id(
     - Normal staff are always locked to their own AI.
     - A mismatch for a non-cross-tenant user is a tenant boundary violation.
     """
+    if not is_positive_integer(user.accountable_institution_id) or (
+        requested_ai is not None and not is_positive_integer(requested_ai)
+    ):
+        raise TenantBoundaryError("Invalid institution context")
     if is_cross_tenant(user):
         if requested_ai is not None:
             return requested_ai
@@ -64,13 +72,15 @@ def authorize_record_access(
     Clients (role 4) require a party check. Until that check is implemented,
     fail closed: CLIENT_PARTY_CHECK_REQUIRED.
     """
+    if not is_positive_integer(user.accountable_institution_id) or not is_positive_integer(record_accountable_institution_id):
+        return AuthorizationDecision.NOT_FOUND
     if is_cross_tenant(user):
         return AuthorizationDecision.ALLOWED
 
     if user.is_client:
         # Handover §5.5: client may only see matters where their
         # golden_record_id is a party. Without that proof, fail closed.
-        if user.golden_record_id is None:
+        if user.accountable_institution_id != record_accountable_institution_id or user.golden_record_id is None:
             return AuthorizationDecision.NOT_FOUND
         return AuthorizationDecision.CLIENT_PARTY_CHECK_REQUIRED
 

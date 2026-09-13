@@ -172,11 +172,10 @@ class V1TransfersAuthTests(unittest.TestCase):
         data = r.json()["data"]
         self.assertEqual(data["pagination"]["total"], 0)
 
-    def test_legacy_api_transfers_unchanged(self):
+    def test_legacy_api_transfers_fail_closed(self):
         r = self.client.get("/api/transfers/")
-        self.assertEqual(r.status_code, 200)
-        self.assertIn("success", r.json())
-        self.assertEqual(r.json()["pagination"]["total"], 8)
+        self.assertEqual(r.status_code, 401)
+        self.assertEqual(r.json(), {"success": False, "error": "Authentication required"})
 
     def test_response_uses_platform_envelope(self):
         r = self.client.get("/api/v1/transfers/", headers=_auth_header(3, 5))

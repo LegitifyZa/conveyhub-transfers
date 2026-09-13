@@ -2,10 +2,12 @@ import os
 import urllib.parse
 
 import httpx
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
-router = APIRouter()
+from auth.dependencies import quarantine_legacy_route
+
+router = APIRouter(dependencies=[Depends(quarantine_legacy_route)])
 
 LOQATE_API_KEY = os.getenv("LOQATE_API_KEY")
 LOQATE_FIND_URL = "https://api.addressy.com/Capture/Interactive/Find/v1.00/json3.ws"

@@ -6,15 +6,16 @@ import re
 import string
 import time
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 
+from auth.dependencies import quarantine_legacy_route
 from config import load_settings
 from db import query, with_transaction
 from utils.validate import is_non_empty_string, is_sa_postal_code, is_uuid, is_valid_transfer_status, to_number
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(quarantine_legacy_route)])
 
 UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "uploads")
 
