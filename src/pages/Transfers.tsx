@@ -16,7 +16,7 @@ import { TransferNavigation } from '@/components/transfers/TransferNavigation'
 import { UnavailableNotice } from '@/components/ui'
 import { useTransfers, TransferAggregate } from '@/hooks/useTransfers'
 import { TransferApi } from '@/lib/api/transferApi'
-import { serviceUnavailableMessage } from '@/lib/api/serviceStatus'
+import { isPersistenceDisabled, isPersistenceUnavailable, probeMatterPersistence, serviceUnavailableMessage } from '@/lib/api/serviceStatus'
 
 const Transfers: React.FC = () => {
   return (
@@ -39,7 +39,7 @@ const TransferWorkflow: React.FC = () => {
   const { currentStep } = state
   const transferId = (location.state as { transferId?: string } | null)?.transferId || new URLSearchParams(location.search).get('id') || undefined
 
-  const { fetchTransfer, createTransfer, updateTransfer, error, isLoading } = useTransfers()
+  const { fetchTransfer, error, isLoading } = useTransfers()
   const [isSaving, setIsSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
   const [persistenceError, setPersistenceError] = useState<Error | null>(null)
@@ -47,13 +47,12 @@ const TransferWorkflow: React.FC = () => {
 
   // Probe the matter-persistence lane once so Save/Submit are disabled up front
   // while the legacy transfers API is unavailable, instead of failing on click.
+  // A null result only means the lane is not known to be down — it does not
+  // prove write permission; actual saves still surface their own failures.
   useEffect(() => {
     let cancelled = false
-    TransferApi.getTransfers({ limit: 1 })
-      .then((response) => {
-        if (!cancelled && !response.success) setPersistenceError(new Error(response.error || 'unavailable'))
-      })
-      .catch((err) => { if (!cancelled) setPersistenceError(err instanceof Error ? err : new Error('Matter persistence unavailable')) })
+    probeMatterPersistence()
+      .then((failure) => { if (!cancelled && failure) setPersistenceError(failure) })
       .finally(() => { if (!cancelled) setPersistenceChecked(true) })
     return () => { cancelled = true }
   }, [])
@@ -81,25 +80,33 @@ const TransferWorkflow: React.FC = () => {
     dispatch({ type: 'SET_CURRENT_STEP', payload: Math.min(5, currentStep + 1) })
   }
 
-  const persistAggregate = async (status?: TransferState['status']) => {
-    if (persistenceError) return null
-    setIsSaving(true)
+  // Returns the saved aggregate on success, or null when nothing was saved.
+  // Callers must treat null strictly as "not saved" — no success messaging or
+  // navigation may follow it. Entered form state is left untouched on failure.
+  const persistAggregate = async (status?: TransferState['status']): Promise<TransferAggregate | null> => {
     setSaveError(null)
+    if (isPersistenceDisabled(persistenceChecked, persistenceError)) return null
+    setIsSaving(true)
     try {
       const aggregate = buildAggregate(state, status)
       const existingId = state.id || state.transfer_id || transferId
-      let result: TransferAggregate | null
-      if (existingId) {
-        result = await updateTransfer(existingId, aggregate)
-      } else {
-        result = await createTransfer(aggregate)
-      }
-      if (result) {
+      const response = existingId
+        ? await TransferApi.updateTransfer(existingId, aggregate)
+        : await TransferApi.createTransfer(aggregate)
+      if (response.success && response.data) {
         dispatch({
           type: 'SET_TRANSFER_ID',
-          payload: { id: result.id, transfer_id: result.transfer_id }
+          payload: { id: response.data.id, transfer_id: response.data.transfer_id }
         })
-        return result
+        return response.data
+      }
+      setSaveError(response.error || 'The transfer could not be saved. Your entries remain on this page.')
+      return null
+    } catch (err) {
+      const failure = err instanceof Error ? err : new Error('The transfer could not be saved')
+      setSaveError(`${serviceUnavailableMessage('Matter saving', failure)} Your entries remain on this page.`)
+      if (isPersistenceUnavailable(failure)) {
+        setPersistenceError(failure)
       }
       return null
     } finally {
@@ -110,14 +117,14 @@ const TransferWorkflow: React.FC = () => {
   const handleSaveDraft = async () => {
     const result = await persistAggregate('draft')
     if (!result) {
-      setSaveError(error || 'Failed to save draft. Please try again.')
+      setSaveError(current => current ?? 'The draft could not be saved. Your entries remain on this page.')
     }
   }
 
   const handleSubmit = async () => {
     const result = await persistAggregate('in_progress')
     if (!result) {
-      setSaveError(error || 'Failed to submit transfer. Please try again.')
+      setSaveError(current => current ?? 'The transfer could not be submitted. Your entries remain on this page.')
       return
     }
     const id = result.id || result.transfer_id
@@ -189,7 +196,7 @@ const TransferWorkflow: React.FC = () => {
               onSave={handleSaveDraft}
               onSubmit={handleSubmit}
               isSaving={isSaving}
-              persistenceDisabled={!persistenceChecked || persistenceError !== null}
+              persistenceDisabled={isPersistenceDisabled(persistenceChecked, persistenceError)}
             />
           </div>
 
