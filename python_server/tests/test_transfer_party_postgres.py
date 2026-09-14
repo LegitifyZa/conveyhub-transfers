@@ -28,6 +28,63 @@ def isolated_database_url() -> str:
     return url
 
 
+class _SchemaBoundPool:
+    """Pool wrapper that applies the scratch-schema search_path per acquire.
+
+    asyncpg resets pooled connections on release (DISCARD/RESET clears a
+    session SET), and server_settings search_path is not reliably applied on
+    this stack, so the schema must be reselected every time a connection is
+    checked out.
+    """
+
+    def __init__(self, pool: Any, schema: str) -> None:
+        self._inner = pool
+        self._schema = schema
+
+    async def _apply(self, conn: Any) -> None:
+        await conn.execute(f'SET search_path TO "{self._schema}", pg_catalog')
+
+    def acquire(self, **kwargs: Any) -> Any:
+        inner, apply_ = self._inner, self._apply
+
+        class _Acquire:
+            def __init__(self) -> None:
+                self._ctx = inner.acquire(**kwargs)
+                self.conn: Any = None
+
+            async def __aenter__(self) -> Any:
+                self.conn = await self._ctx.__aenter__()
+                await apply_(self.conn)
+                return self.conn
+
+            async def __aexit__(self, *exc: Any) -> Any:
+                return await self._ctx.__aexit__(*exc)
+
+        return _Acquire()
+
+    async def fetch(self, *args: Any, **kwargs: Any) -> Any:
+        async with self.acquire() as conn:
+            return await conn.fetch(*args, **kwargs)
+
+    async def fetchrow(self, *args: Any, **kwargs: Any) -> Any:
+        async with self.acquire() as conn:
+            return await conn.fetchrow(*args, **kwargs)
+
+    async def fetchval(self, *args: Any, **kwargs: Any) -> Any:
+        async with self.acquire() as conn:
+            return await conn.fetchval(*args, **kwargs)
+
+    async def execute(self, *args: Any, **kwargs: Any) -> Any:
+        async with self.acquire() as conn:
+            return await conn.execute(*args, **kwargs)
+
+    async def close(self) -> None:
+        await self._inner.close()
+
+    def terminate(self) -> None:
+        self._inner.terminate()
+
+
 class PostgresSecurityGuardTests(unittest.TestCase):
     def test_database_configuration_without_explicit_opt_in_cannot_run(self):
         with patch.dict(os.environ, {"TEST_DATABASE_URL": "postgres://unused/test_only"}, clear=True):
@@ -72,7 +129,7 @@ class TransferPartyPostgresTests(unittest.IsolatedAsyncioTestCase):
             CREATE TABLE transfer_parties (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 transfer_id UUID NOT NULL REFERENCES transfers(id) ON DELETE CASCADE,
-                golden_record_id UUID NOT NULL,
+                golden_record_id UUID,
                 entity_type TEXT NOT NULL,
                 role TEXT NOT NULL,
                 accountable_institution_id INTEGER NOT NULL,
@@ -80,14 +137,38 @@ class TransferPartyPostgresTests(unittest.IsolatedAsyncioTestCase):
                 cached_id_number TEXT,
                 cached_email TEXT,
                 synced_at TIMESTAMPTZ,
+                party_source TEXT NOT NULL DEFAULT 'golden_record',
+                manual_name TEXT,
+                manual_id_number TEXT,
+                manual_id_type TEXT,
+                manual_passport_country TEXT,
+                manual_email TEXT,
+                manual_phone TEXT,
+                manual_address TEXT,
+                is_primary_contact BOOLEAN NOT NULL DEFAULT FALSE,
+                client_request_id UUID,
+                request_fingerprint TEXT,
+                acknowledged_duplicate BOOLEAN NOT NULL DEFAULT FALSE,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 UNIQUE (transfer_id, golden_record_id, role)
             );
+            CREATE UNIQUE INDEX idx_one_primary_per_role
+                ON transfer_parties (transfer_id, role)
+                WHERE is_primary_contact = TRUE;
+            CREATE UNIQUE INDEX uq_tp_client_request
+                ON transfer_parties (accountable_institution_id, client_request_id)
+                WHERE client_request_id IS NOT NULL;
         """)
-        self.pool = await asyncpg.create_pool(
-            dsn=url, min_size=1, max_size=4, command_timeout=10,
-            server_settings={**settings, "search_path": f'"{self.schema}", pg_catalog'},
+
+        # asyncpg resets pooled connections on release, so search_path must be
+        # re-applied on every acquire; see _SchemaBoundPool.
+        self.pool = _SchemaBoundPool(
+            await asyncpg.create_pool(
+                dsn=url, min_size=1, max_size=4, command_timeout=10,
+                server_settings=settings,
+            ),
+            self.schema,
         )
         self.stack.enter_context(patch.object(db, "_pool", self.pool))
         self.stack.enter_context(patch.object(db, "_settings", SimpleNamespace(node_env="test")))
