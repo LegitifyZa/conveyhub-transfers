@@ -184,11 +184,24 @@ class InstitutionBoundaryRouteTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(foreign.status_code, 404)
             self.assertNotIn("Client of 7", foreign.text)
 
-    async def test_documented_cross_institution_roles_remain_supported(self):
+    async def test_no_cross_institution_read_or_list_exception(self):
+        # Approved policy: same-institution isolation applies to every caller,
+        # including platform roles 1/6 — foreign detail is NOT_FOUND and the
+        # list only returns own-institution rows.
         for role in (1, 6):
-            response = await self.client.get(f"/api/v1/transfers/{FOREIGN}", headers=headers(role=role))
-            self.assertEqual(response.status_code, 200)
-            self.assertEqual(response.json()["data"]["id"], FOREIGN)
+            with self.subTest(role=role):
+                detail = await self.client.get(f"/api/v1/transfers/{FOREIGN}", headers=headers(role=role))
+                self.assertEqual(detail.status_code, 404)
+                listing = await self.client.get("/api/v1/transfers/", headers=headers(role=role))
+                self.assertEqual(listing.status_code, 200)
+                self.assertEqual(
+                    [row["id"] for row in listing.json()["data"]["transfers"]], [OWN]
+                )
+                for nested in ("parties", "milestones", "documents", "financials", "estate-contexts"):
+                    response = await self.client.get(
+                        f"/api/v1/transfers/{FOREIGN}/{nested}", headers=headers(role=role),
+                    )
+                    self.assertEqual(response.status_code, 404, nested)
 
     async def test_institution_one_is_not_a_privileged_role(self):
         response = await self.client.get(f"/api/v1/transfers/{OWN}", headers=headers(ai=1))

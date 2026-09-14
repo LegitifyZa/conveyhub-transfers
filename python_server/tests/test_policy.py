@@ -7,7 +7,6 @@ from auth.policy import (
     TenantBoundaryError,
     authorize_mutation,
     authorize_record_access,
-    is_cross_tenant,
     resolve_effective_tenant_id,
     resolve_write_tenant_id,
 )
@@ -24,34 +23,43 @@ def _user(role, ai, golden=None):
     )
 
 
-class CrossTenantRoleTests(TestCase):
-    def test_role_1_is_cross_tenant(self):
-        self.assertTrue(is_cross_tenant(_user(1, 2)))
+class TenantIsolationTests(TestCase):
+    """Approved policy: same-institution isolation for every caller.
 
-    def test_role_6_is_cross_tenant(self):
-        self.assertTrue(is_cross_tenant(_user(6, 2)))
+    Institution scoping is independent of user_roles_id — no role,
+    including platform roles 1/6 (or any future privileged role), may
+    read, list or mutate another accountable institution's records.
+    """
 
-    def test_role_2_is_not_cross_tenant(self):
-        self.assertFalse(is_cross_tenant(_user(2, 2)))
-
-    def test_role_3_is_not_cross_tenant(self):
-        self.assertFalse(is_cross_tenant(_user(3, 2)))
-
-    def test_role_4_is_not_cross_tenant(self):
-        self.assertFalse(is_cross_tenant(_user(4, 2)))
-
-    def test_role_5_is_not_cross_tenant(self):
-        self.assertFalse(is_cross_tenant(_user(5, 2)))
+    def test_no_role_has_a_cross_institution_exception(self):
+        for role in (1, 2, 3, 5, 6):
+            with self.subTest(role=role):
+                user = _user(role, 2)
+                self.assertEqual(
+                    authorize_record_access(user, 99), AuthorizationDecision.NOT_FOUND
+                )
+                self.assertEqual(
+                    authorize_record_access(user, 2), AuthorizationDecision.ALLOWED
+                )
+                self.assertEqual(
+                    authorize_mutation(user, 99), AuthorizationDecision.NOT_FOUND
+                )
+                self.assertEqual(
+                    authorize_mutation(user, 2), AuthorizationDecision.ALLOWED
+                )
 
 
 class TenantResolutionTests(TestCase):
-    def test_cross_tenant_may_select_other_ai(self):
-        user = _user(1, 2)
-        self.assertEqual(resolve_effective_tenant_id(user, 99), 99)
+    def test_privileged_roles_cannot_select_another_ai(self):
+        for role in (1, 6):
+            with self.subTest(role=role):
+                with self.assertRaises(TenantBoundaryError):
+                    resolve_effective_tenant_id(_user(role, 2), 99)
 
-    def test_cross_tenant_defaults_to_own_ai(self):
-        user = _user(6, 2)
-        self.assertEqual(resolve_effective_tenant_id(user), 2)
+    def test_privileged_roles_default_to_own_ai(self):
+        for role in (1, 6):
+            with self.subTest(role=role):
+                self.assertEqual(resolve_effective_tenant_id(_user(role, 2)), 2)
 
     def test_staff_locked_to_own_ai(self):
         user = _user(3, 2)
@@ -68,17 +76,16 @@ class TenantResolutionTests(TestCase):
 
 
 class RecordAccessTests(TestCase):
-    def test_super_admin_allowed_any_tenant(self):
-        user = _user(1, 2)
-        self.assertEqual(
-            authorize_record_access(user, 99), AuthorizationDecision.ALLOWED
-        )
-
-    def test_admin_agent_allowed_any_tenant(self):
-        user = _user(6, 2)
-        self.assertEqual(
-            authorize_record_access(user, 99), AuthorizationDecision.ALLOWED
-        )
+    def test_privileged_roles_foreign_tenant_not_found(self):
+        for role in (1, 6):
+            with self.subTest(role=role):
+                user = _user(role, 2)
+                self.assertEqual(
+                    authorize_record_access(user, 99), AuthorizationDecision.NOT_FOUND
+                )
+                self.assertEqual(
+                    authorize_mutation(user, 99), AuthorizationDecision.NOT_FOUND
+                )
 
     def test_staff_same_tenant_allowed(self):
         user = _user(3, 2)
@@ -134,8 +141,6 @@ class RecordAccessTests(TestCase):
         )
 
     def test_cross_tenant_roles_cannot_mutate_foreign_tenant(self):
-        # Approved policy: roles 1/6 keep no write exception — reads remain
-        # cross-tenant (see test_super_admin_allowed_any_tenant above).
         for role in (1, 6):
             with self.subTest(role=role):
                 user = _user(role, 2)
@@ -177,18 +182,6 @@ class WriteTenantResolutionTests(TestCase):
                 with self.subTest(role=role, ai=ai):
                     with self.assertRaises(TenantBoundaryError):
                         resolve_write_tenant_id(_user(role, ai))
-
-    def test_no_undocumented_role_cross_tenant(self):
-        for role in (2, 3, 4, 5):
-            with self.subTest(role=role):
-                user = _user(role, 2)
-                # Only roles 1 and 6 reach the same-tenant path if AI differs;
-                # for roles 2/3/5, foreign tenant must be NOT_FOUND.
-                self.assertEqual(
-                    authorize_record_access(user, 99),
-                    AuthorizationDecision.NOT_FOUND,
-                )
-
 
 class ServiceCallerTests(TestCase):
     def test_service_caller_is_not_treated_as_user(self):

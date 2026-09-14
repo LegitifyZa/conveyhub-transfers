@@ -2,7 +2,6 @@ import { Router, Request, Response } from 'express'
 import { query, withTransaction } from '../../db'
 import { requireJwt } from '../../auth/requireJwt'
 import { asyncHandler } from '../../utils/asyncHandler'
-import { isCrossTenant } from '../../auth/policy'
 import { CurrentUser } from '../../auth/currentUser'
 
 const router = Router()
@@ -146,10 +145,9 @@ const SELECT_TRANSFER_COLUMNS = `
          t.current_step, t.total_steps, t.progress, t.created_at, t.updated_at
 `
 
-// forWrite=true scopes the lookup to the caller's verified institution for
-// every role: the documented cross-institution read exception for roles 1/6
-// does not extend to mutations.
-async function authorizeTransfer(user: CurrentUser, id: string, forWrite = false): Promise<any | null> {
+// All callers are scoped to their verified institution — there is no
+// privileged-role exception for reads or writes.
+async function authorizeTransfer(user: CurrentUser, id: string): Promise<any | null> {
   if (!isUuid(id)) {
     return null
   }
@@ -173,13 +171,8 @@ async function authorizeTransfer(user: CurrentUser, id: string, forWrite = false
   }
 
   // Staff ability check is performed by the caller.
-  const crossTenant = isCrossTenant(user) && !forWrite
-  const detailQuery = crossTenant
-    ? `${SELECT_TRANSFER_COLUMNS} FROM transfers t WHERE t.id = $1`
-    : `${SELECT_TRANSFER_COLUMNS} FROM transfers t WHERE t.id = $1 AND t.accountable_institution_id = $2`
-
-  const detailParams = crossTenant ? [id] : [id, user.accountable_institution_id]
-  const detailResult = await query(detailQuery, detailParams)
+  const detailQuery = `${SELECT_TRANSFER_COLUMNS} FROM transfers t WHERE t.id = $1 AND t.accountable_institution_id = $2`
+  const detailResult = await query(detailQuery, [id, user.accountable_institution_id])
   return detailResult.rows[0] || null
 }
 
@@ -212,17 +205,15 @@ router.get(
     const sortColumn = DEFAULT_SORT_COLUMNS.includes(filters.sortBy) ? filters.sortBy : 'created_at'
     const offset = (filters.page - 1) * filters.limit
 
-    const crossTenant = isCrossTenant(user)
-    const tenantPredicate = crossTenant ? '' : 'WHERE t.accountable_institution_id = $1'
-    const tenantParams = crossTenant ? [] : [user.accountable_institution_id]
+    // Same-institution isolation applies to every caller — no privileged-role exception.
+    const tenantPredicate = 'WHERE t.accountable_institution_id = $1'
+    const tenantParams = [user.accountable_institution_id]
 
     const countQuery = `SELECT COUNT(*) FROM transfers t ${tenantPredicate}`
     const countResult = await query<{ count: string }>(countQuery, tenantParams)
     const total = parseInt(countResult.rows[0].count, 10)
 
-    const pageParams = crossTenant
-      ? [filters.limit, offset]
-      : [user.accountable_institution_id, filters.limit, offset]
+    const pageParams = [user.accountable_institution_id, filters.limit, offset]
 
     const dataQuery = `
       SELECT t.id, t.transfer_id, t.property_address, t.purchase_price, t.status,
@@ -230,7 +221,7 @@ router.get(
       FROM transfers t
       ${tenantPredicate}
       ORDER BY t.${sortColumn} ${filters.sortOrder.toUpperCase()}
-      LIMIT $${crossTenant ? 1 : 2} OFFSET $${crossTenant ? 2 : 3}
+      LIMIT $2 OFFSET $3
     `
 
     const dataResult = await query(dataQuery, pageParams)
@@ -271,8 +262,6 @@ router.get(
       return
     }
 
-    const crossTenant = isCrossTenant(user)
-
     // Clients are restricted to their own transfer_parties row.
     // The client projection is intentionally conservative: the handover does not
     // define which party fields/rows a client may view, so we return only the
@@ -298,26 +287,16 @@ router.get(
       return
     }
 
-    // Tenant-defence in depth: ordinary staff only see parties for their AI.
-    // Cross-tenant staff see all parties for the already-authorised transfer.
-    const partiesQuery = crossTenant
-      ? `
-        SELECT id, transfer_id, golden_record_id, entity_type, role,
-               accountable_institution_id, cached_name, cached_id_number, cached_email, synced_at
-        FROM transfer_parties
-        WHERE transfer_id = $1
-        ORDER BY cached_name
-      `
-      : `
-        SELECT id, transfer_id, golden_record_id, entity_type, role,
-               accountable_institution_id, cached_name, cached_id_number, cached_email, synced_at
-        FROM transfer_parties
-        WHERE transfer_id = $1 AND accountable_institution_id = $2
-        ORDER BY cached_name
-      `
+    // Tenant-defence in depth: all callers only see parties for their AI.
+    const partiesQuery = `
+      SELECT id, transfer_id, golden_record_id, entity_type, role,
+             accountable_institution_id, cached_name, cached_id_number, cached_email, synced_at
+      FROM transfer_parties
+      WHERE transfer_id = $1 AND accountable_institution_id = $2
+      ORDER BY cached_name
+    `
 
-    const partiesParams = crossTenant ? [id] : [id, user.accountable_institution_id]
-    const partiesResult = await query(partiesQuery, partiesParams)
+    const partiesResult = await query(partiesQuery, [id, user.accountable_institution_id])
 
     res.json({
       message: 'OK',
@@ -355,35 +334,21 @@ router.get(
 
     // The verified transfer-to-matter relationship is matters.source_record_id = transfers.id::text.
     // transfers.matter_id is not populated in the prototype dataset.
-    // matters.source_record_id has no DB UNIQUE constraint, so ordinary staff
-    // also anchor to m.accountable_institution_id as defence in depth.
-    const crossTenant = user.isSuperAdmin || user.user_roles_id === 6
-    const milestonesQuery = crossTenant
-      ? `
-        SELECT mm.id, mm.matter_id, mm.definition_id, md.code,
-               md.name AS definition_name, mm.name, mm.status_label, mm.status,
-               mm.sequence_number, mm.due_date, mm.completed_date, mm.notes,
-               mm.created_at, mm.updated_at
-        FROM matter_milestones mm
-        JOIN matters m ON m.id = mm.matter_id
-        LEFT JOIN milestone_definitions md ON md.id = mm.definition_id
-        WHERE m.source_record_id = $1
-        ORDER BY mm.sequence_number
-      `
-      : `
-        SELECT mm.id, mm.matter_id, mm.definition_id, md.code,
-               md.name AS definition_name, mm.name, mm.status_label, mm.status,
-               mm.sequence_number, mm.due_date, mm.completed_date, mm.notes,
-               mm.created_at, mm.updated_at
-        FROM matter_milestones mm
-        JOIN matters m ON m.id = mm.matter_id
-        LEFT JOIN milestone_definitions md ON md.id = mm.definition_id
-        WHERE m.source_record_id = $1
-          AND m.accountable_institution_id = $2
-        ORDER BY mm.sequence_number
-      `
-    const milestonesParams = crossTenant ? [id] : [id, user.accountable_institution_id]
-    const milestonesResult = await query(milestonesQuery, milestonesParams)
+    // matters.source_record_id has no DB UNIQUE constraint, so callers also
+    // anchor to m.accountable_institution_id as defence in depth.
+    const milestonesQuery = `
+      SELECT mm.id, mm.matter_id, mm.definition_id, md.code,
+             md.name AS definition_name, mm.name, mm.status_label, mm.status,
+             mm.sequence_number, mm.due_date, mm.completed_date, mm.notes,
+             mm.created_at, mm.updated_at
+      FROM matter_milestones mm
+      JOIN matters m ON m.id = mm.matter_id
+      LEFT JOIN milestone_definitions md ON md.id = mm.definition_id
+      WHERE m.source_record_id = $1
+        AND m.accountable_institution_id = $2
+      ORDER BY mm.sequence_number
+    `
+    const milestonesResult = await query(milestonesQuery, [id, user.accountable_institution_id])
 
     res.json({
       message: 'OK',
@@ -549,19 +514,16 @@ function mapRepresentativeAssignment(row: any) {
   }
 }
 
-// forWrite=true scopes to the caller's verified institution for every role;
-// the cross-institution read exception does not extend to mutations.
-async function authorizeTransferParty(user: CurrentUser, transferId: string, transferPartyId: string, forWrite = false): Promise<boolean> {
-  const crossTenant = isCrossTenant(user) && !forWrite
+// Scoped to the caller's verified institution for every role.
+async function authorizeTransferParty(user: CurrentUser, transferId: string, transferPartyId: string): Promise<boolean> {
   const sql = `
     SELECT 1
     FROM transfer_parties
     WHERE id = $1
       AND transfer_id = $2
-      ${crossTenant ? '' : 'AND accountable_institution_id = $3'}
+      AND accountable_institution_id = $3
   `
-  const params = crossTenant ? [transferPartyId, transferId] : [transferPartyId, transferId, user.accountable_institution_id]
-  const result = await query(sql, params)
+  const result = await query(sql, [transferPartyId, transferId, user.accountable_institution_id])
   return result.rows.length > 0
 }
 
@@ -588,19 +550,15 @@ router.get(
       return
     }
 
-    const crossTenant = isCrossTenant(user)
-    const tenantPredicate = crossTenant ? '' : 'AND accountable_institution_id = $2'
-    const tenantParams = crossTenant ? [id] : [id, user.accountable_institution_id]
-
     const listQuery = `
       SELECT id, transfer_id, deceased_golden_record_id, masters_estate_reference,
              created_at, updated_at
       FROM matter_estate_contexts
       WHERE transfer_id = $1
-      ${tenantPredicate}
+        AND accountable_institution_id = $2
       ORDER BY created_at
     `
-    const result = await query(listQuery, tenantParams)
+    const result = await query(listQuery, [id, user.accountable_institution_id])
 
     res.json({
       message: 'OK',
@@ -637,19 +595,15 @@ router.get(
       return
     }
 
-    const crossTenant = isCrossTenant(user)
-    const tenantPredicate = crossTenant ? '' : 'AND accountable_institution_id = $3'
-    const tenantParams = crossTenant ? [estate_context_id, id] : [estate_context_id, id, user.accountable_institution_id]
-
     const detailQuery = `
       SELECT id, transfer_id, deceased_golden_record_id, masters_estate_reference,
              created_at, updated_at
       FROM matter_estate_contexts
       WHERE id = $1
         AND transfer_id = $2
-      ${tenantPredicate}
+        AND accountable_institution_id = $3
     `
-    const result = await query(detailQuery, tenantParams)
+    const result = await query(detailQuery, [estate_context_id, id, user.accountable_institution_id])
 
     if (result.rows.length === 0) {
       res.status(404).json({ success: false, error: 'Not found' })
@@ -733,13 +687,13 @@ router.post(
       return
     }
 
-    const transfer = await authorizeTransfer(user, id, true)
+    const transfer = await authorizeTransfer(user, id)
     if (!transfer) {
       res.status(404).json({ success: false, error: 'Not found' })
       return
     }
 
-    const partyBelongs = await authorizeTransferParty(user, id, transfer_party_id, true)
+    const partyBelongs = await authorizeTransferParty(user, id, transfer_party_id)
     if (!partyBelongs) {
       res.status(404).json({ success: false, error: 'Not found' })
       return
@@ -814,20 +768,16 @@ router.get(
       return
     }
 
-    const crossTenant = isCrossTenant(user)
-    const tenantPredicate = crossTenant ? '' : 'AND accountable_institution_id = $2'
-    const tenantParams = crossTenant ? [id] : [id, user.accountable_institution_id]
-
     const listQuery = `
       SELECT id, transfer_id, person_golden_record_id, capacity,
              represented_transfer_party_id, represented_estate_context_id,
              created_at, updated_at
       FROM representative_assignments
       WHERE transfer_id = $1
-      ${tenantPredicate}
+        AND accountable_institution_id = $2
       ORDER BY created_at
     `
-    const result = await query(listQuery, tenantParams)
+    const result = await query(listQuery, [id, user.accountable_institution_id])
 
     res.json({
       message: 'OK',
@@ -864,10 +814,6 @@ router.get(
       return
     }
 
-    const crossTenant = isCrossTenant(user)
-    const tenantPredicate = crossTenant ? '' : 'AND accountable_institution_id = $3'
-    const tenantParams = crossTenant ? [assignment_id, id] : [assignment_id, id, user.accountable_institution_id]
-
     const detailQuery = `
       SELECT id, transfer_id, person_golden_record_id, capacity,
              represented_transfer_party_id, represented_estate_context_id,
@@ -875,9 +821,9 @@ router.get(
       FROM representative_assignments
       WHERE id = $1
         AND transfer_id = $2
-      ${tenantPredicate}
+        AND accountable_institution_id = $3
     `
-    const result = await query(detailQuery, tenantParams)
+    const result = await query(detailQuery, [assignment_id, id, user.accountable_institution_id])
 
     if (result.rows.length === 0) {
       res.status(404).json({ success: false, error: 'Not found' })

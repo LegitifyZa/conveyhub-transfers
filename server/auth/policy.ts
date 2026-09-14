@@ -9,8 +9,6 @@ export const AuthorizationDecision = {
 
 export type AuthorizationDecision = (typeof AuthorizationDecision)[keyof typeof AuthorizationDecision]
 
-export const CROSS_TENANT_ROLES = [1, 6]
-
 export class TenantBoundaryError extends Error {
   constructor(message: string) {
     super(message)
@@ -19,29 +17,15 @@ export class TenantBoundaryError extends Error {
 }
 
 /**
- * Return true for roles documented in the handover as cross-tenant.
- * Handover §4.3 and §5.5: user_roles_id ∈ (1, 6) (Super Admin, Admin Agent)
- * are cross-tenant by design.
+ * Resolve the caller's verified institution, rejecting any other.
+ * Approved policy: same-institution isolation applies to every caller —
+ * there is no privileged-role exception. Institution scoping is independent
+ * of user_roles_id.
  */
-export function isCrossTenant(user: CurrentUser): boolean {
-  return isPositiveInteger(user.accountable_institution_id)
-    && isPositiveInteger(user.user_roles_id) && CROSS_TENANT_ROLES.includes(user.user_roles_id)
-}
-
-/**
- * Return the accountable_institution_id a SQL query should scope to.
- * Cross-tenant users may explicitly select another AI; normal staff are locked.
- */
-export function resolveEffectiveTenantId(
-  user: CurrentUser,
-  requestedAi?: number
-): number {
+function resolveOwnTenantId(user: CurrentUser, requestedAi?: number): number {
   if (!isPositiveInteger(user.accountable_institution_id)
     || (requestedAi !== undefined && !isPositiveInteger(requestedAi))) {
     throw new TenantBoundaryError('Invalid institution context')
-  }
-  if (isCrossTenant(user)) {
-    return requestedAi ?? user.accountable_institution_id
   }
 
   if (requestedAi !== undefined && requestedAi !== user.accountable_institution_id) {
@@ -49,6 +33,17 @@ export function resolveEffectiveTenantId(
   }
 
   return user.accountable_institution_id
+}
+
+/**
+ * Return the accountable_institution_id a read query should scope to.
+ * All callers are locked to their verified institution.
+ */
+export function resolveEffectiveTenantId(
+  user: CurrentUser,
+  requestedAi?: number
+): number {
+  return resolveOwnTenantId(user, requestedAi)
 }
 
 /**
@@ -62,9 +57,6 @@ export function authorizeRecordAccess(
 ): AuthorizationDecision {
   if (!isPositiveInteger(user.accountable_institution_id) || !isPositiveInteger(recordAccountableInstitutionId)) {
     return AuthorizationDecision.NOT_FOUND
-  }
-  if (isCrossTenant(user)) {
-    return AuthorizationDecision.ALLOWED
   }
 
   if (user.isClient) {
@@ -87,31 +79,21 @@ export function authorizeRecordAccess(
 /**
  * Return the accountable_institution_id a mutation should be attributed to.
  * Approved policy: mutations always use the verified caller's institution —
- * cross-tenant roles (1, 6) retain no write exception. A requested AI that
- * differs from the caller's verified AI is a tenant boundary violation.
+ * no role holds a cross-tenant exception. A requested AI that differs from
+ * the caller's verified AI is a tenant boundary violation.
  */
 export function resolveWriteTenantId(
   user: CurrentUser,
   requestedAi?: number
 ): number {
-  if (!isPositiveInteger(user.accountable_institution_id)
-    || (requestedAi !== undefined && !isPositiveInteger(requestedAi))) {
-    throw new TenantBoundaryError('Invalid institution context')
-  }
-
-  if (requestedAi !== undefined && requestedAi !== user.accountable_institution_id) {
-    throw new TenantBoundaryError('Tenant scope mismatch')
-  }
-
-  return user.accountable_institution_id
+  return resolveOwnTenantId(user, requestedAi)
 }
 
 /**
  * Decide whether a user may mutate a record with the given tenant ID.
- * Approved policy: no caller — including platform roles 1/6 — may mutate
- * another accountable institution's records, so the cross-tenant read
- * exception does not apply here. Foreign-tenant mismatches return NOT_FOUND
- * so existence is not revealed.
+ * Approved policy: no caller may mutate another accountable institution's
+ * records — institution scoping is independent of user_roles_id.
+ * Foreign-tenant mismatches return NOT_FOUND so existence is not revealed.
  */
 export function authorizeMutation(
   user: CurrentUser,
