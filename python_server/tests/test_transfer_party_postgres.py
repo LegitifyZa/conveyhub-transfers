@@ -11,6 +11,7 @@ from uuid import UUID, uuid4
 import asyncpg
 
 import db
+from services import matter_service
 from services import transfer_party_service as service
 from services.golden_record_visibility import VisibleGoldenRecord
 from tests.db_test_utils import get_test_database_url
@@ -56,13 +57,18 @@ class _SchemaBoundPool:
             "  (SELECT n.nspname FROM pg_class c JOIN pg_namespace n "
             "   ON n.oid = c.relnamespace WHERE c.oid = to_regclass('transfers')) AS t, "
             "  (SELECT n.nspname FROM pg_class c JOIN pg_namespace n "
-            "   ON n.oid = c.relnamespace WHERE c.oid = to_regclass('transfer_parties')) AS tp"
+            "   ON n.oid = c.relnamespace WHERE c.oid = to_regclass('transfer_parties')) AS tp, "
+            "  (SELECT n.nspname FROM pg_class c JOIN pg_namespace n "
+            "   ON n.oid = c.relnamespace WHERE c.oid = to_regclass('matters')) AS m"
         )
-        if resolved["t"] != self._schema or resolved["tp"] != self._schema:
+        if (resolved["t"], resolved["tp"], resolved["m"]) != (
+            self._schema, self._schema, self._schema
+        ):
             raise AssertionError(
                 "Scratch schema is not bound to this connection: "
                 f"transfers resolves in {resolved['t']!r}, "
-                f"transfer_parties resolves in {resolved['tp']!r} "
+                f"transfer_parties resolves in {resolved['tp']!r}, "
+                f"matters resolves in {resolved['m']!r} "
                 f"(expected {self._schema!r})"
             )
 
@@ -158,9 +164,43 @@ class TransferPartyPostgresTests(unittest.IsolatedAsyncioTestCase):
         )
         await self.control.execute("""
             CREATE TABLE transfers (
-                id UUID PRIMARY KEY,
-                accountable_institution_id INTEGER NOT NULL
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                transfer_id TEXT,
+                property_address TEXT,
+                purchase_price NUMERIC,
+                status TEXT,
+                current_step INTEGER,
+                total_steps INTEGER,
+                progress INTEGER,
+                matter_id UUID,
+                accountable_institution_id INTEGER NOT NULL,
+                created_by_user_id INTEGER,
+                client_request_id UUID,
+                request_fingerprint TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
             );
+            CREATE UNIQUE INDEX uq_transfers_client_request
+                ON transfers (accountable_institution_id, client_request_id)
+                WHERE client_request_id IS NOT NULL;
+            CREATE TABLE matters (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                reference_number TEXT,
+                matter_type TEXT,
+                title TEXT,
+                status TEXT,
+                source_record_id TEXT,
+                accountable_institution_id INTEGER,
+                firm_reference TEXT,
+                classification_code TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            );
+            -- Scratch-local stand-in for the production generator (public is
+            -- intentionally out of the search_path): unique per call.
+            CREATE FUNCTION generate_transfer_id() RETURNS TEXT AS $$
+                SELECT 'TRF-TEST-' || replace(gen_random_uuid()::text, '-', '')
+            $$ LANGUAGE SQL;
             CREATE TABLE transfer_parties (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 transfer_id UUID NOT NULL REFERENCES transfers(id) ON DELETE CASCADE,
@@ -478,3 +518,158 @@ class TransferPartyPostgresTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row["golden_record_id"], self.golden_record_id)
         self.assertEqual(row["accountable_institution_id"], 5)
         self.assertEqual(row["cached_name"], "Canonical test name")
+
+    def _matter_kwargs(self, key: UUID, fingerprint: str, ai: int = 5) -> dict[str, Any]:
+        return dict(
+            property_address="1 Test Street",
+            purchase_price=1250000,
+            accountable_institution_id=ai,
+            actor_user_id=9,
+            firm_reference="FR-001",
+            client_request_id=key,
+            request_fingerprint=fingerprint,
+        )
+
+    async def test_matter_create_concurrent_identical_requests_resolve_to_one(self) -> None:
+        key = uuid4()
+        kwargs = self._matter_kwargs(key, "fp-same")
+        first, second = await asyncio.gather(
+            matter_service.create_transfer_matter(**kwargs),
+            matter_service.create_transfer_matter(**kwargs),
+        )
+        self.assertEqual(first[0]["id"], second[0]["id"])
+        # Exactly one caller is the creator; the other replays the same row.
+        self.assertEqual({first[1], second[1]}, {True, False})
+        self.assertEqual(await self.pool.fetchval(
+            "SELECT count(*) FROM transfers WHERE client_request_id = $1", key), 1)
+        self.assertEqual(await self.pool.fetchval("SELECT count(*) FROM matters"), 1)
+
+    async def test_matter_create_identical_replay_returns_existing(self) -> None:
+        key = uuid4()
+        first, created1 = await matter_service.create_transfer_matter(
+            **self._matter_kwargs(key, "fp-A"))
+        second, created2 = await matter_service.create_transfer_matter(
+            **self._matter_kwargs(key, "fp-A"))
+        self.assertTrue(created1)
+        self.assertFalse(created2)
+        self.assertEqual(first["id"], second["id"])
+        self.assertEqual(await self.pool.fetchval(
+            "SELECT count(*) FROM transfers WHERE client_request_id = $1", key), 1)
+        self.assertEqual(await self.pool.fetchval("SELECT count(*) FROM matters"), 1)
+
+    async def test_matter_create_conflicting_reuse_returns_conflict(self) -> None:
+        key = uuid4()
+        await matter_service.create_transfer_matter(**self._matter_kwargs(key, "fp-A"))
+        with self.assertRaises(matter_service.MatterIdempotencyConflictError):
+            await matter_service.create_transfer_matter(**self._matter_kwargs(key, "fp-B"))
+        self.assertEqual(await self.pool.fetchval(
+            "SELECT count(*) FROM transfers WHERE client_request_id = $1", key), 1)
+        self.assertEqual(await self.pool.fetchval("SELECT count(*) FROM matters"), 1)
+
+    async def test_matter_create_cross_institution_key_isolation(self) -> None:
+        key = uuid4()
+        first, created1 = await matter_service.create_transfer_matter(
+            **self._matter_kwargs(key, "fp", ai=5))
+        second, created2 = await matter_service.create_transfer_matter(
+            **self._matter_kwargs(key, "fp", ai=7))
+        self.assertTrue(created1)
+        self.assertTrue(created2)
+        self.assertNotEqual(first["id"], second["id"])
+        self.assertEqual(first["accountable_institution_id"], 5)
+        self.assertEqual(second["accountable_institution_id"], 7)
+        self.assertEqual(await self.pool.fetchval(
+            "SELECT count(*) FROM transfers WHERE client_request_id = $1", key), 2)
+
+    async def test_manual_attach_concurrent_identical_requests_resolve_to_one(self) -> None:
+        key = uuid4()
+        kwargs = dict(
+            entity_type="person", role="transferor", manual_name="Concurrent Person",
+            client_request_id=key, request_fingerprint="fp-same",
+        )
+        first, second = await asyncio.gather(
+            service.attach_manual_party_to_transfer(self.transfer_id, **kwargs),
+            service.attach_manual_party_to_transfer(self.transfer_id, **kwargs),
+        )
+        self.assertEqual(first["id"], second["id"])
+        self.assertEqual(await self.pool.fetchval(
+            "SELECT count(*) FROM transfer_parties WHERE client_request_id = $1", key), 1)
+        row = await self.pool.fetchrow(
+            "SELECT party_source, golden_record_id, manual_name FROM transfer_parties WHERE client_request_id = $1", key)
+        self.assertEqual(row["party_source"], "manual")
+        self.assertIsNone(row["golden_record_id"])
+
+    async def test_manual_attach_identical_replay_returns_existing_row(self) -> None:
+        key = uuid4()
+        kwargs = dict(
+            entity_type="person", role="transferee", manual_name="Replay Person",
+            manual_id_number="9001010000000", manual_id_type="sa_id",
+            client_request_id=key, request_fingerprint="fp-replay",
+        )
+        first = await service.attach_manual_party_to_transfer(self.transfer_id, **kwargs)
+        second = await service.attach_manual_party_to_transfer(self.transfer_id, **kwargs)
+        self.assertEqual(first["id"], second["id"])
+        self.assertEqual(await self.pool.fetchval(
+            "SELECT count(*) FROM transfer_parties WHERE client_request_id = $1", key), 1)
+
+    async def test_manual_attach_conflicting_reuse_returns_conflict(self) -> None:
+        key = uuid4()
+        await service.attach_manual_party_to_transfer(
+            self.transfer_id, entity_type="person", role="transferor",
+            manual_name="First Person", client_request_id=key, request_fingerprint="fp-A")
+        with self.assertRaises(service.IdempotencyConflictError):
+            await service.attach_manual_party_to_transfer(
+                self.transfer_id, entity_type="person", role="transferee",
+                manual_name="Different Person", client_request_id=key,
+                request_fingerprint="fp-B")
+        self.assertEqual(await self.pool.fetchval(
+            "SELECT count(*) FROM transfer_parties WHERE client_request_id = $1", key), 1)
+
+    async def test_manual_attach_cross_institution_key_isolation(self) -> None:
+        key = uuid4()
+        await self.pool.execute(
+            "UPDATE transfers SET accountable_institution_id = 7 WHERE id = $1",
+            self.other_transfer_id)
+        kwargs = dict(
+            entity_type="person", role="transferor", manual_name="Tenant Person",
+            client_request_id=key, request_fingerprint="fp",
+        )
+        first = await service.attach_manual_party_to_transfer(self.transfer_id, **kwargs)
+        second = await service.attach_manual_party_to_transfer(self.other_transfer_id, **kwargs)
+        # A foreign institution's identical key is an independent request: no
+        # replay of the first institution's row, no cross-tenant disclosure.
+        self.assertNotEqual(first["id"], second["id"])
+        self.assertEqual(first["accountable_institution_id"], 5)
+        self.assertEqual(second["accountable_institution_id"], 7)
+        self.assertEqual(await self.pool.fetchval(
+            "SELECT count(*) FROM transfer_parties WHERE client_request_id = $1", key), 2)
+
+    async def test_partial_save_retry_reuses_matter_and_retries_only_failed_party(self) -> None:
+        matter_key, party_key = uuid4(), uuid4()
+        matter, created = await matter_service.create_transfer_matter(
+            **self._matter_kwargs(matter_key, "fp-matter"))
+        self.assertTrue(created)
+
+        # First attach attempt fails validation; nothing is persisted.
+        with self.assertRaises(service.PartyValidationError):
+            await service.attach_manual_party_to_transfer(
+                matter["id"], entity_type="company", role="transferor",
+                manual_name="Rejected company", client_request_id=party_key,
+                request_fingerprint="fp-party")
+        self.assertEqual(await self.pool.fetchval("SELECT count(*) FROM transfer_parties"), 0)
+
+        # Retry: the same matter key replays the existing matter instead of
+        # creating a second one; only the failed party attach is retried.
+        matter2, created2 = await matter_service.create_transfer_matter(
+            **self._matter_kwargs(matter_key, "fp-matter"))
+        self.assertFalse(created2)
+        self.assertEqual(matter["id"], matter2["id"])
+
+        party = await service.attach_manual_party_to_transfer(
+            matter["id"], entity_type="person", role="transferor",
+            manual_name="Retried Person", client_request_id=party_key,
+            request_fingerprint="fp-party")
+        self.assertIsNotNone(party)
+        self.assertEqual(await self.pool.fetchval(
+            "SELECT count(*) FROM transfers WHERE client_request_id = $1", matter_key), 1)
+        self.assertEqual(await self.pool.fetchval("SELECT count(*) FROM matters"), 1)
+        self.assertEqual(await self.pool.fetchval("SELECT count(*) FROM transfer_parties"), 1)

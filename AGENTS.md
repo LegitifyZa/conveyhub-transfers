@@ -84,17 +84,18 @@ register clients in Legitify. DEEDLY supports only (a) searching/retrieving
 and linking existing institution-authorised Golden Records and (b) capturing
 firm-private manual parties with no Golden Record link. Central Create Golden
 Record is cancelled/superseded — it is not blocked awaiting implementation.
-The adapter foundation below is completed historical work that remains in the
-tree but is unused by the product flow; it is intentionally retained, and any
-removal is a separately flagged cleanup decision.
+The adapter foundation below is completed historical work: the
+`entity_submissions.py` adapters are unused by the product flow, while
+`clients/entity_protocol.py` remains in live use by the runtime client through
+the prior extraction — it is not unused and must not be removed.
 
 - `python_server/clients/entity_submissions.py` contains typed, side-effect-free
   request adapters and a response-reference parser. They are not wired into
   `EntitiesClient.submit_person`, a route, or the UI, and no wiring is planned
   under the cancelled create scope. Runtime submit payloads,
   returns, timeouts and retries remain unchanged.
-- Shared definitions/decoding live in configuration-free `clients.entity_protocol`.
-  Adapters do not import the runtime client or configuration. The client re-exports
+- Shared definitions/decoding live in configuration-free `clients.entity_protocol`,
+  which the runtime client actively uses: it re-exports
   the same exception/type objects and delegates decoding, retaining its existing
   configuration bootstrap. Fresh-process tests install import/dotenv/HTTP-client
   guards before importing adapters; call-time no-I/O guards remain in place.
@@ -111,16 +112,24 @@ removal is a separately flagged cleanup decision.
   test harness using `ENTITIES_SOURCE_ROOT`. No upstream service is called.
   This snapshot has no Git metadata and is not deployed-contract evidence.
 - Parent Create Golden Record is closed by the product decision above, not by
-  resolution of its blockers. D1–D6 reassessed individually:
-  D1 registration/relationship eligibility — superseded, no DEEDLY-initiated
-  registration exists; D2 AI-to-tenant resolution and write authorization —
-  superseded for create (verified-AI resolution remains implemented for the
-  search/retrieve/link lanes); D3 non-prod ingress/credentials/deployed
-  evidence for submit — superseded (the general external-ingress/key-rotation
-  HOLD below stays open for the live S2S lanes); D4 passport uniqueness —
-  superseded; D5 deadlines/recovery/verification/billing for create —
-  superseded (Louis's charging decision remains open for existing lanes);
-  D6 approved P0 fields/types for create — superseded.
+  resolution of its blockers. Each D-item's create-specific half is superseded;
+  its surviving concerns are renamed as follow-ups so nothing is lost:
+  - D1 → **Relationship eligibility** — registration orchestration is
+    superseded; eligibility of existing firm/client relationships still
+    governs Search/Retrieve/Link.
+  - D2 → **Institution context** — create-specific context is superseded;
+    trusted institution context and read/write authorization remain.
+  - D3 → **Live read/link ingress** — submit-specific access is superseded;
+    live read/link ingress, credentials and deployed evidence remain (the
+    external-ingress/key-rotation HOLD below).
+  - D4 → **Passport search concerns** — new-record uniqueness is superseded;
+    passport ambiguity, country and changed-number search concerns remain
+    tracked.
+  - D5 → **Existing-record entitlement** — create-specific submission/recovery
+    is superseded; existing-record entitlement, charging and
+    verification-display questions remain.
+  - D6 → **Manual-party fields** — central-create fields are superseded;
+    manual-party field requirements continue in their own workstream.
   Durable matter attachment and authenticated matter saving remain separate P0 work.
 
 Focused Python type checks from `python_server/` (Windows; `nul` disables cache):
@@ -208,8 +217,9 @@ python -m mypy --follow-imports=silent --ignore-missing-imports --no-incremental
   mypy errors in `db.py`/`routers/v1/transfers.py` are separate from introduced
   issues. Do not relax checks or change security controls to hide them.
 - Parent Create Golden Record is **cancelled by product decision** (DEEDLY does
-  not create Golden Records or register clients); D1–D6 are superseded per the
-  reassessment above, not resolved. Louis's charging decision, name/DOB
+  not create Golden Records or register clients); D1–D6 are closed as
+  superseded, with their surviving concerns carried forward as the named
+  follow-ups in the reassessment above. Louis's charging decision, name/DOB
   decisions and matter/file-reference lookup remain open and are not
   implemented by this security branch.
 

@@ -391,9 +391,10 @@ cancelled — it is not blocked awaiting implementation.
 
 Search and Retrieve remain completed on `main` at checkpoint
 `7d8101c4928238d555b9c958241adbac6a6c3b24`. The material below describes the
-completed source-contract adapter foundation, which is retained but **unused by
-the product flow**; removing it is a separately flagged cleanup decision, not
-part of this review.
+completed source-contract adapter foundation: the `entity_submissions.py`
+adapters are unused by the product flow, while `entity_protocol.py` remains in
+live use by the runtime client through the prior extraction and must not be
+removed.
 
 **Evidence:** the Entities snapshot selected by `ENTITIES_SOURCE_ROOT`, specifically
 `services/entities/src/api/v1/schemas.py::SubmitClientRequest`, the `/submit` route,
@@ -453,16 +454,25 @@ and passport limitations (number-only identity and skipped SA-keyed orchestratio
 Its repositories/providers are synthetic or mocked and its SQL fixtures use in-memory
 SQLite; this is not deployed PostgreSQL, registration, billing or live S2S certification.
 
-With create cancelled, the D-series decisions are reassessed individually and
-closed as superseded rather than resolved: **D1** registration/relationship
-eligibility — superseded, no DEEDLY-initiated registration exists; **D2**
-trusted AI-to-tenant resolution and write authorization — superseded for
-create (verified-AI resolution stays implemented for the search/retrieve/link
-lanes); **D3** ingress, credentials and deployed evidence for submit —
-superseded (the general external-ingress/key-rotation HOLD remains open for
-the live S2S lanes); **D4** passport identity uniqueness for created records —
-superseded; **D5** deadlines, uncertain outcomes, verification and billing for
-create — superseded (charging for existing lanes stays open); **D6** approved
-P0 fields/types for create — superseded.
+With create cancelled, each D-item's create-specific half is closed as
+superseded; its surviving concerns are renamed as follow-ups so nothing is
+lost:
+
+- **D1 → Relationship eligibility** — registration orchestration is superseded;
+  eligibility of existing firm/client relationships still governs
+  Search/Retrieve/Link.
+- **D2 → Institution context** — create-specific context is superseded; trusted
+  institution context and read/write authorization remain.
+- **D3 → Live read/link ingress** — submit-specific access is superseded; live
+  read/link ingress, credentials and deployed evidence remain open.
+- **D4 → Passport search concerns** — new-record uniqueness is superseded;
+  passport ambiguity, country and changed-number search concerns remain
+  tracked.
+- **D5 → Existing-record entitlement** — create-specific submission/recovery is
+  superseded; existing-record entitlement, charging and verification-display
+  questions remain.
+- **D6 → Manual-party fields** — central-create fields are superseded;
+  manual-party field requirements continue in their own workstream.
+
 Durable matter attachment and authenticated new-matter persistence remain
 separate P0 dependencies; the legacy save path is not a fallback.
