@@ -77,11 +77,21 @@ unittest discovery, pytest executes the function-based landed-source contracts.
 DB-dependent tests require `TEST_DATABASE_URL`; an unset value means skipped
 DB integration coverage, not a successful database certification.
 
-## Create Golden Record foundation — slices A/B only
+## Create Golden Record foundation — superseded by product decision
+
+**Product decision:** DEEDLY does not create Golden Records and does not
+register clients in Legitify. DEEDLY supports only (a) searching/retrieving
+and linking existing institution-authorised Golden Records and (b) capturing
+firm-private manual parties with no Golden Record link. Central Create Golden
+Record is cancelled/superseded — it is not blocked awaiting implementation.
+The adapter foundation below is completed historical work that remains in the
+tree but is unused by the product flow; it is intentionally retained, and any
+removal is a separately flagged cleanup decision.
 
 - `python_server/clients/entity_submissions.py` contains typed, side-effect-free
   request adapters and a response-reference parser. They are not wired into
-  `EntitiesClient.submit_person`, a route, or the UI. Runtime submit payloads,
+  `EntitiesClient.submit_person`, a route, or the UI, and no wiring is planned
+  under the cancelled create scope. Runtime submit payloads,
   returns, timeouts and retries remain unchanged.
 - Shared definitions/decoding live in configuration-free `clients.entity_protocol`.
   Adapters do not import the runtime client or configuration. The client re-exports
@@ -100,10 +110,17 @@ DB integration coverage, not a successful database certification.
   and passport limitations are exercised through the existing landed-source
   test harness using `ENTITIES_SOURCE_ROOT`. No upstream service is called.
   This snapshot has no Git metadata and is not deployed-contract evidence.
-- Parent Create Golden Record remains blocked/incomplete: D1 registration and
-  relationship eligibility; D2 AI-to-tenant resolution and write authorization;
-  D3 non-prod ingress/credentials/deployed evidence; D4 passport uniqueness;
-  D5 deadlines/recovery/verification/billing; D6 approved P0 fields and types.
+- Parent Create Golden Record is closed by the product decision above, not by
+  resolution of its blockers. D1–D6 reassessed individually:
+  D1 registration/relationship eligibility — superseded, no DEEDLY-initiated
+  registration exists; D2 AI-to-tenant resolution and write authorization —
+  superseded for create (verified-AI resolution remains implemented for the
+  search/retrieve/link lanes); D3 non-prod ingress/credentials/deployed
+  evidence for submit — superseded (the general external-ingress/key-rotation
+  HOLD below stays open for the live S2S lanes); D4 passport uniqueness —
+  superseded; D5 deadlines/recovery/verification/billing for create —
+  superseded (Louis's charging decision remains open for existing lanes);
+  D6 approved P0 fields/types for create — superseded.
   Durable matter attachment and authenticated matter saving remain separate P0 work.
 
 Focused Python type checks from `python_server/` (Windows; `nul` disables cache):
@@ -190,9 +207,11 @@ python -m mypy --follow-imports=silent --ignore-missing-imports --no-incremental
 - **P1 baseline typing debt:** the existing TS6059 server `rootDir` failure and 11
   mypy errors in `db.py`/`routers/v1/transfers.py` are separate from introduced
   issues. Do not relax checks or change security controls to hide them.
-- Parent Create remains **P0 blocked/incomplete pending D1–D6**. Louis's charging
-  decision, name/DOB decisions and matter/file-reference lookup are not implemented
-  by this security branch.
+- Parent Create Golden Record is **cancelled by product decision** (DEEDLY does
+  not create Golden Records or register clients); D1–D6 are superseded per the
+  reassessment above, not resolved. Louis's charging decision, name/DOB
+  decisions and matter/file-reference lookup remain open and are not
+  implemented by this security branch.
 
 ### Quarantine UI handling — P0 functional states applied
 
