@@ -204,8 +204,18 @@ class Migration023DbIntegrationTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def _seed_pre023_gr_party(self):
-        """Insert a GR-linked party under the pre-023 shape."""
-        tid = await self._insert_transfer()
+        """Insert a GR-linked party under the pre-023 shape (no idempotency
+        columns exist on transfers yet)."""
+        tid = await self.conn.fetchval(
+            """
+            INSERT INTO transfers.transfers
+              (transfer_id, property_address, purchase_price, status,
+               accountable_institution_id)
+            VALUES ($1, '1 Chain St', 500000, 'in_progress', 5)
+            RETURNING id
+            """,
+            f"TRF-{uuid4().hex[:8]}",
+        )
         return await self.conn.fetchval(
             """
             INSERT INTO transfers.transfer_parties
@@ -299,6 +309,7 @@ class Migration023DbIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(other)
 
         # Same scope on transfers itself.
+        await self._insert_transfer(ai=5, key=key)
         with self.assertRaises(self._asyncpg.UniqueViolationError):
             await self._insert_transfer(ai=5, key=key)
         self.assertIsNotNone(await self._insert_transfer(ai=7, key=key))
