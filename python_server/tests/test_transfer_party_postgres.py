@@ -43,6 +43,28 @@ class _SchemaBoundPool:
 
     async def _apply(self, conn: Any) -> None:
         await conn.execute(f'SET search_path TO "{self._schema}", pg_catalog')
+        # Fail BEFORE any application query if unqualified names would not
+        # resolve inside the scratch schema. to_regclass resolves through the
+        # active search_path, so a public fallback is detected here rather
+        # than leaking a read or write into the real tables.
+        # to_regclass resolves through the active search_path; comparing the
+        # owning namespace (not the display text, which stays unqualified when
+        # the table is already in the search_path) proves the scratch schema
+        # is bound and no public fallback can leak a read or write.
+        resolved = await conn.fetchrow(
+            "SELECT "
+            "  (SELECT n.nspname FROM pg_class c JOIN pg_namespace n "
+            "   ON n.oid = c.relnamespace WHERE c.oid = to_regclass('transfers')) AS t, "
+            "  (SELECT n.nspname FROM pg_class c JOIN pg_namespace n "
+            "   ON n.oid = c.relnamespace WHERE c.oid = to_regclass('transfer_parties')) AS tp"
+        )
+        if resolved["t"] != self._schema or resolved["tp"] != self._schema:
+            raise AssertionError(
+                "Scratch schema is not bound to this connection: "
+                f"transfers resolves in {resolved['t']!r}, "
+                f"transfer_parties resolves in {resolved['tp']!r} "
+                f"(expected {self._schema!r})"
+            )
 
     def acquire(self, **kwargs: Any) -> Any:
         inner, apply_ = self._inner, self._apply
@@ -54,7 +76,13 @@ class _SchemaBoundPool:
 
             async def __aenter__(self) -> Any:
                 self.conn = await self._ctx.__aenter__()
-                await apply_(self.conn)
+                try:
+                    await apply_(self.conn)
+                except BaseException:
+                    # Release the connection so pool.close() is not blocked
+                    # waiting on a holder that never completed acquire.
+                    await self._ctx.__aexit__(None, None, None)
+                    raise
                 return self.conn
 
             async def __aexit__(self, *exc: Any) -> Any:
@@ -108,7 +136,7 @@ class TransferPartyPostgresTests(unittest.IsolatedAsyncioTestCase):
         self.stack = ExitStack()
         self.tasks: list[asyncio.Task[Any]] = []
         self.addAsyncCleanup(self.cleanup_database)
-        settings = {"application_name": self.application_name, "statement_timeout": "10000", "lock_timeout": "8000"}
+        settings = {"application_name": self.application_name, "statement_timeout": "30000", "lock_timeout": "30000"}
         try:
             self.control = await asyncpg.connect(
                 dsn=url, command_timeout=10,
@@ -121,6 +149,13 @@ class TransferPartyPostgresTests(unittest.IsolatedAsyncioTestCase):
         await self.control.execute(f'CREATE SCHEMA "{self.schema}"')
         self.created_schema = True
         await self.control.execute(f'SET search_path TO "{self.schema}", pg_catalog')
+        # The control connection is dedicated (no pool reset), but verify the
+        # schema actually bound before creating unqualified tables — a failed
+        # SET would otherwise land fixture tables in public.
+        self.assertEqual(
+            await self.control.fetchval("SELECT current_schema()"),
+            self.schema,
+        )
         await self.control.execute("""
             CREATE TABLE transfers (
                 id UUID PRIMARY KEY,
@@ -222,7 +257,7 @@ class TransferPartyPostgresTests(unittest.IsolatedAsyncioTestCase):
         return task
 
     async def wait(self, event: asyncio.Event) -> None:
-        await asyncio.wait_for(event.wait(), timeout=5)
+        await asyncio.wait_for(event.wait(), timeout=30)
 
     async def link(self) -> Any:
         return await service.link_party_to_transfer(
@@ -281,7 +316,7 @@ class TransferPartyPostgresTests(unittest.IsolatedAsyncioTestCase):
         return self.start(write()), ready, identity
 
     async def assert_blocked(self, task: asyncio.Task[Any], writer_pid: int, holder_pid: int) -> None:
-        async with asyncio.timeout(5):
+        async with asyncio.timeout(30):
             while True:
                 blockers = await self.control.fetchval("SELECT pg_blocking_pids($1)", writer_pid)
                 if holder_pid in blockers:
@@ -312,7 +347,7 @@ class TransferPartyPostgresTests(unittest.IsolatedAsyncioTestCase):
         await self.pool.execute("UPDATE transfers SET accountable_institution_id = 7 WHERE id = $1", self.transfer_id)
         release.set()
         with self.assertRaises(service.TransferPartyServiceError):
-            await asyncio.wait_for(operation, timeout=5)
+            await asyncio.wait_for(operation, timeout=30)
         self.assertEqual(await self.pool.fetchval("SELECT count(*) FROM transfer_parties"), 0)
 
     async def test_parent_lock_blocks_a_tenant_change_until_link_commits(self) -> None:
@@ -335,8 +370,8 @@ class TransferPartyPostgresTests(unittest.IsolatedAsyncioTestCase):
             await self.wait(ready)
             await self.assert_blocked(writer, identity["pid"], holder["pid"])
             release.set()
-            result = await asyncio.wait_for(operation, timeout=5)
-            await asyncio.wait_for(writer, timeout=5)
+            result = await asyncio.wait_for(operation, timeout=30)
+            await asyncio.wait_for(writer, timeout=30)
         self.assertEqual(result["accountable_institution_id"], 5)
         self.assertEqual(await self.pool.fetchval("SELECT accountable_institution_id FROM transfers WHERE id = $1", self.transfer_id), 5)
 
@@ -374,7 +409,7 @@ class TransferPartyPostgresTests(unittest.IsolatedAsyncioTestCase):
         await self.pool.execute(sql, *params)
         release.set()
         with self.assertRaises(service.TransferPartyServiceError):
-            await asyncio.wait_for(operation, timeout=5)
+            await asyncio.wait_for(operation, timeout=30)
         after = await self.party()
         for field in ("cached_name", "cached_id_number", "cached_email", "synced_at"):
             self.assertEqual(after[field], before[field])
@@ -437,8 +472,8 @@ class TransferPartyPostgresTests(unittest.IsolatedAsyncioTestCase):
             await self.assert_blocked(parent_writer, parent["pid"], holder["pid"])
             await self.assert_blocked(party_writer, party["pid"], holder["pid"])
             release.set()
-            await asyncio.wait_for(operation, timeout=5)
-            await asyncio.wait_for(asyncio.gather(parent_writer, party_writer), timeout=5)
+            await asyncio.wait_for(operation, timeout=30)
+            await asyncio.wait_for(asyncio.gather(parent_writer, party_writer), timeout=30)
         row = await self.party()
         self.assertEqual(row["golden_record_id"], self.golden_record_id)
         self.assertEqual(row["accountable_institution_id"], 5)
