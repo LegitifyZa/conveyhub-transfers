@@ -16,7 +16,10 @@ CACHED_COLUMNS = ("cached_name", "cached_id_number", "cached_email", "synced_at"
 _READ_COLUMNS = """
     id, transfer_id, golden_record_id, entity_type, role,
     accountable_institution_id, cached_name, cached_id_number, cached_email,
-    synced_at, created_at, updated_at
+    synced_at, party_source, manual_name, manual_id_number, manual_id_type,
+    manual_passport_country, manual_email,
+    manual_phone, manual_address, is_primary_contact, client_request_id,
+    request_fingerprint, acknowledged_duplicate, created_at, updated_at
 """.strip()
 
 
@@ -40,6 +43,10 @@ async def insert_transfer_party(
     cached_id_number: Optional[str] = None,
     cached_email: Optional[str] = None,
     synced_at: Optional[datetime] = None,
+    is_primary_contact: bool = False,
+    client_request_id: Optional[UUID] = None,
+    request_fingerprint: Optional[str] = None,
+    acknowledged_duplicate: bool = False,
     connection: Optional[Any] = None,
 ) -> Optional[dict]:
     """Idempotently attach a Golden Record entity to a transfer.
@@ -65,9 +72,14 @@ async def insert_transfer_party(
             cached_name,
             cached_id_number,
             cached_email,
-            synced_at
+            synced_at,
+            party_source,
+            is_primary_contact,
+            client_request_id,
+            request_fingerprint,
+            acknowledged_duplicate
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'golden_record', $10, $11, $12, $13)
         ON CONFLICT (transfer_id, golden_record_id, role)
         DO NOTHING
         RETURNING {_READ_COLUMNS}
@@ -85,6 +97,10 @@ async def insert_transfer_party(
             cached_id_number,
             cached_email,
             synced_at,
+            is_primary_contact,
+            client_request_id,
+            request_fingerprint,
+            acknowledged_duplicate,
         ],
         connection=connection,
     )
@@ -111,6 +127,102 @@ async def insert_transfer_party(
         return _to_dict(select_result.rows[0])
 
     return None
+
+
+async def find_transfer_party_by_client_request(
+    accountable_institution_id: int,
+    client_request_id: UUID,
+    *,
+    connection: Optional[Any] = None,
+) -> Optional[dict]:
+    """Return the party row created for an institution-scoped request key."""
+    select_sql = f"""
+        SELECT {_READ_COLUMNS}
+        FROM transfer_parties
+        WHERE accountable_institution_id = $1
+          AND client_request_id = $2
+    """
+    result = await query(
+        select_sql,
+        [accountable_institution_id, client_request_id],
+        connection=connection,
+    )
+    return _to_dict(result.rows[0]) if result.rows else None
+
+
+async def insert_manual_transfer_party(
+    transfer_id: UUID,
+    entity_type: str,
+    role: str,
+    accountable_institution_id: int,
+    *,
+    manual_name: str,
+    manual_id_number: Optional[str] = None,
+    manual_id_type: Optional[str] = None,
+    manual_passport_country: Optional[str] = None,
+    manual_email: Optional[str] = None,
+    manual_phone: Optional[str] = None,
+    manual_address: Optional[str] = None,
+    is_primary_contact: bool = False,
+    client_request_id: Optional[UUID] = None,
+    request_fingerprint: Optional[str] = None,
+    acknowledged_duplicate: bool = False,
+    connection: Optional[Any] = None,
+) -> Optional[dict]:
+    """Insert an institution-owned manual party row.
+
+    The source discriminator is written explicitly; the database CHECK rejects
+    manual rows that carry a golden_record_id or a non-person entity type. This
+    function performs no upstream call and no deduplication: distinct manual
+    identities are always distinct rows.
+    """
+    insert_sql = f"""
+        INSERT INTO transfer_parties (
+            transfer_id,
+            golden_record_id,
+            entity_type,
+            role,
+            accountable_institution_id,
+            party_source,
+            manual_name,
+            manual_id_number,
+            manual_id_type,
+            manual_passport_country,
+            manual_email,
+            manual_phone,
+            manual_address,
+            is_primary_contact,
+            client_request_id,
+            request_fingerprint,
+            acknowledged_duplicate
+        )
+        VALUES ($1, NULL, $2, $3, $4, 'manual', $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+        RETURNING {_READ_COLUMNS}
+    """
+
+    insert_result = await query(
+        insert_sql,
+        [
+            transfer_id,
+            entity_type,
+            role,
+            accountable_institution_id,
+            manual_name,
+            manual_id_number,
+            manual_id_type,
+            manual_passport_country,
+            manual_email,
+            manual_phone,
+            manual_address,
+            is_primary_contact,
+            client_request_id,
+            request_fingerprint,
+            acknowledged_duplicate,
+        ],
+        connection=connection,
+    )
+
+    return _to_dict(insert_result.rows[0]) if insert_result.rows else None
 
 
 async def refresh_transfer_party_cache_by_id(

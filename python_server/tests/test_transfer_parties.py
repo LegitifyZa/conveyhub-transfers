@@ -442,6 +442,10 @@ class LinkPartyToTransferTests(unittest.IsolatedAsyncioTestCase):
                 "cached_id_number",
                 "cached_email",
                 "synced_at",
+                "is_primary_contact",
+                "client_request_id",
+                "request_fingerprint",
+                "acknowledged_duplicate",
                 "connection",
             },
         )

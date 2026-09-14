@@ -1,10 +1,11 @@
 import React, { useEffect } from 'react'
 import { useLocation } from 'react-router-dom'
-import { Users, Plus, Trash2, User, Star, Phone, Mail } from 'lucide-react'
+import { Users, Plus, Trash2, User, Star, Phone, Mail, AlertTriangle, ShieldCheck } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui'
 import { Input } from '@/components/ui'
 import { Button } from '@/components/ui'
 import { useTransfer, Party } from './TransferForm'
+import { findPotentialDuplicates } from '@/lib/utils/partyDuplicates'
 import type { GoldenRecord, GoldenRecordEntityType } from '@/lib/api/goldenRecordsApi'
 
 const validateIDNumber = (idNumber: string): boolean => {
@@ -20,6 +21,7 @@ interface PartyCardProps {
   party: Party
   isPrimary?: boolean
   sameTypeCount: number
+  duplicates: { identifierMatches: Party[]; nameMatches: Party[] }
   onUpdate: (id: string, field: keyof Party, value: string | boolean) => void
   onRemove: (id: string) => void
   onSetPrimary: (type: 'buyer' | 'seller', partyId: string) => void
@@ -29,10 +31,16 @@ const PartyCard: React.FC<PartyCardProps> = ({
   party,
   isPrimary,
   sameTypeCount,
+  duplicates,
   onUpdate,
   onRemove,
   onSetPrimary
-}) => (
+}) => {
+  const duplicateNames = [...duplicates.identifierMatches, ...duplicates.nameMatches]
+    .map(p => p.name || 'another party')
+  const needsAcknowledgement = duplicateNames.length > 0 && !party.acknowledgedDuplicate
+
+  return (
   <Card variant="premium" className="animate-in fade-in slide-in-from-bottom-3 duration-300 hover:shadow-premium transition-all duration-300">
     <CardContent className="p-4 space-y-4">
       <div className="flex justify-between items-start">
@@ -49,6 +57,16 @@ const PartyCard: React.FC<PartyCardProps> = ({
               <span className="font-medium text-gray-900 dark:text-gray-100 capitalize">
                 {party.type}
               </span>
+              {party.source === 'golden_record' ? (
+                <span className="inline-flex items-center space-x-1 text-xs text-teal-700 dark:text-teal-300 bg-teal-50 dark:bg-teal-900/20 px-2 py-0.5 rounded-full">
+                  <ShieldCheck className="h-3 w-3" />
+                  <span>Golden Record</span>
+                </span>
+              ) : (
+                <span className="text-xs text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-navy-800 px-2 py-0.5 rounded-full">
+                  Manual entry
+                </span>
+              )}
               {isPrimary && (
                 <div className="flex items-center space-x-1">
                   <Star className="h-3 w-3 text-yellow-500 fill-yellow-500" />
@@ -88,6 +106,37 @@ const PartyCard: React.FC<PartyCardProps> = ({
         </div>
       </div>
 
+      {party.source === 'manual' && (
+        <p className="text-xs text-gray-500 dark:text-gray-400">
+          Captured manually for this matter — not a Golden Record and not verified.
+        </p>
+      )}
+
+      {duplicateNames.length > 0 && (
+        <div className="flex items-start space-x-2 rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-900/20 dark:border-amber-700 p-3">
+          <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400 mt-0.5" />
+          <div className="text-xs text-amber-800 dark:text-amber-200 space-y-1">
+            <p>
+              Possible duplicate: this party shares
+              {duplicates.identifierMatches.length > 0 ? ' an identifier' : ' a name'} with{' '}
+              {duplicateNames.join(', ')}. Parties are never merged automatically.
+            </p>
+            <label className="flex items-center space-x-2">
+              <input
+                type="checkbox"
+                checked={Boolean(party.acknowledgedDuplicate)}
+                onChange={(e) => onUpdate(party.id, 'acknowledgedDuplicate', e.target.checked)}
+              />
+              <span>
+                {needsAcknowledgement
+                  ? 'Confirm this is a different person (kept as a separate party)'
+                  : 'Kept as a separate party'}
+              </span>
+            </label>
+          </div>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         <div>
           <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">
@@ -112,13 +161,39 @@ const PartyCard: React.FC<PartyCardProps> = ({
             value={party.idNumber}
             onChange={(e) => onUpdate(party.id, 'idNumber', e.target.value)}
             className={`text-sm transition-all duration-200 focus:ring-2 focus:ring-teal-500 focus:border-teal-500 ${
-              (!party.entityType || party.entityType === 'person') && party.idNumber && !validateIDNumber(party.idNumber) ? 'border-red-500' : ''
+              (!party.entityType || party.entityType === 'person') && (!party.idType || party.idType === 'sa_id') && party.idNumber && !validateIDNumber(party.idNumber) ? 'border-red-500' : ''
             }`}
           />
-          {(!party.entityType || party.entityType === 'person') && party.idNumber && !validateIDNumber(party.idNumber) && (
+          {party.source === 'manual' && (
+            <select
+              value={party.idType ?? 'sa_id'}
+              onChange={(e) => onUpdate(party.id, 'idType', e.target.value)}
+              className="mt-1 w-full text-xs rounded-md border border-gray-300 dark:border-navy-600 bg-white dark:bg-navy-800 text-gray-700 dark:text-gray-200 px-2 py-1"
+            >
+              <option value="sa_id">SA ID</option>
+              <option value="passport">Passport</option>
+              <option value="other">Other identifier</option>
+            </select>
+          )}
+          {(!party.entityType || party.entityType === 'person') && (!party.idType || party.idType === 'sa_id') && party.idNumber && !validateIDNumber(party.idNumber) && (
             <p className="text-xs text-red-500 mt-1">Invalid ID/Reg number format</p>
           )}
         </div>
+
+        {party.source === 'manual' && party.idType === 'passport' && (
+          <div>
+            <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">
+              Passport Country
+            </label>
+            <Input
+              variant="premium"
+              placeholder="e.g. ZA"
+              value={party.passportCountry ?? ''}
+              onChange={(e) => onUpdate(party.id, 'passportCountry', e.target.value)}
+              className="text-sm transition-all duration-200 focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
+            />
+          </div>
+        )}
 
         <div>
           <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">
@@ -210,11 +285,14 @@ const PartyCard: React.FC<PartyCardProps> = ({
       )}
     </CardContent>
   </Card>
-)
+  )
+}
 
 export function goldenRecordToParty(record: GoldenRecord, id: string): Party {
   return {
     id,
+    source: 'golden_record',
+    clientRequestId: crypto.randomUUID(),
     type: 'buyer',
     goldenRecordId: record.goldenRecordId,
     entityType: record.entityType,
@@ -248,6 +326,8 @@ const StepParties: React.FC = () => {
     } else if (goldenRecordSearch) {
       const newParty: Party = {
         id: Date.now().toString(),
+        source: 'manual',
+        clientRequestId: crypto.randomUUID(),
         type: 'buyer',
         entityType: goldenRecordSearch.entityType,
         name: '',
@@ -265,6 +345,8 @@ const StepParties: React.FC = () => {
   const addParty = (type: 'buyer' | 'seller') => {
     const newParty: Party = {
       id: Date.now().toString(),
+      source: 'manual',
+      clientRequestId: crypto.randomUUID(),
       type,
       name: '',
       idNumber: '',
@@ -375,6 +457,7 @@ const StepParties: React.FC = () => {
                   party={party}
                   isPrimary={party.isPrimary}
                   sameTypeCount={getPartiesByType('buyer').length}
+                  duplicates={findPotentialDuplicates(party, parties)}
                   onUpdate={updateParty}
                   onRemove={removeParty}
                   onSetPrimary={setPrimaryParty}
@@ -436,6 +519,7 @@ const StepParties: React.FC = () => {
                   party={party}
                   isPrimary={party.isPrimary}
                   sameTypeCount={getPartiesByType('seller').length}
+                  duplicates={findPotentialDuplicates(party, parties)}
                   onUpdate={updateParty}
                   onRemove={removeParty}
                   onSetPrimary={setPrimaryParty}

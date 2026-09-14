@@ -15,8 +15,13 @@ export interface PropertyDetails {
   squareFootage: string
 }
 
+export type PartySource = 'manual' | 'golden_record'
+
 export interface Party {
   id: string
+  /** Explicit capture source. 'manual' = institution-captured matter data;
+   * 'golden_record' = linked Golden Record. Immutable once set. */
+  source: PartySource
   goldenRecordId?: string
   entityType?: GoldenRecordEntityType
   registrationNo?: string | null
@@ -24,13 +29,23 @@ export interface Party {
   isTrust?: boolean
   type: 'buyer' | 'seller'
   name: string
-  idNumber: string // SA ID number or company registration number
+  idNumber: string // SA ID number, passport number or company registration number
+  /** Identifier kind so duplicate warnings compare like types only. */
+  idType?: 'sa_id' | 'passport' | 'other'
+  /** ISO country for passport identifiers; captured only where available. */
+  passportCountry?: string
   email: string
   phone: string
   address: string
   company?: string
   role?: string
   isPrimary?: boolean // For marking primary buyer/seller
+  /** Idempotency key generated when the party is added; reused on save retries. */
+  clientRequestId?: string
+  /** True when the user explicitly kept a flagged possible duplicate. */
+  acknowledgedDuplicate?: boolean
+  /** Server transfer_parties row id once attached; set after a successful save. */
+  persistedPartyId?: string
 }
 
 export interface Financials {

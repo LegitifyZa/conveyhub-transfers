@@ -1,6 +1,6 @@
 import { apiRequest } from './http'
 import type { ApiResponse, PaginatedResponse, TransferFilters } from '../types'
-import type { TransferState, Document as TransferDocument } from '../../components/transfers/TransferForm'
+import type { TransferState, Document as TransferDocument, Party } from '../../components/transfers/TransferForm'
 
 export interface TransferAggregate extends TransferState {
   id?: string
@@ -186,9 +186,13 @@ function fromServerAggregate(server: ServerAggregate): TransferAggregate {
     },
     parties: (server.parties || []).map(party => ({
       id: value(party.id),
-      type: party.type === 'seller' ? 'seller' : 'buyer',
-      name: value(party.name),
-      idNumber: value(party.idNumber),
+      source: party.party_source === 'manual' || party.source === 'manual' ? 'manual' as const : 'golden_record' as const,
+      persistedPartyId: value(party.id) || undefined,
+      goldenRecordId: value(party.golden_record_id ?? party.goldenRecordId) || undefined,
+      entityType: value(party.entity_type ?? party.entityType) as Party['entityType'],
+      type: party.role === 'transferor' || party.type === 'seller' ? 'seller' as const : 'buyer' as const,
+      name: value(party.name) || `${value(party.first_name)} ${value(party.surname)}`.trim(),
+      idNumber: value(party.idNumber ?? party.id_number ?? party.sa_id_number ?? party.passport_number),
       email: value(party.email),
       phone: value(party.phone),
       address: value(party.address),
@@ -301,5 +305,166 @@ export class TransferApi {
 
   static async getActivity(id: string): Promise<ApiResponse<AuditEntry[]>> {
     return apiRequest(`/api/transfers/${id}/activity`)
+  }
+
+  // ---- Authenticated v1 matter + party lane (BFF → FastAPI) ----
+
+  /** Idempotent matter creation. `clientRequestId` must be stable across retries
+   * so a repeated request resolves to the same matter rather than duplicating it. */
+  static async createMatter(request: CreateMatterRequest): Promise<ApiResponse<MatterCreated>> {
+    return apiRequest('/api/v1/transfers/', { method: 'POST', body: request })
+  }
+
+  /** Attach one party (manual natural person or existing Golden Record). */
+  static async attachParty(transferId: string, request: AttachPartyRequest): Promise<ApiResponse<TransferPartyApi>> {
+    return apiRequest(`/api/v1/transfers/${transferId}/parties`, { method: 'POST', body: request })
+  }
+
+  /** Source-aware party read-back for reopening partially saved matters. */
+  static async getMatterParties(transferId: string): Promise<ApiResponse<TransferPartyApi[]>> {
+    const response = await apiRequest<ApiResponse<{ parties: TransferPartyApi[] }>>(`/api/v1/transfers/${transferId}/parties`)
+    return { ...response, data: response.data?.parties }
+  }
+}
+
+export interface CreateMatterRequest {
+  client_request_id: string
+  property_address: string
+  purchase_price: number
+  firm_reference?: string | null
+  classification_code?: string | null
+}
+
+/** POST /api/v1/transfers response (camelCase projection, mirrors _map_transfer). */
+export interface MatterCreated {
+  id: string
+  transferId: string | null
+  propertyAddress: string | null
+  purchasePrice: number | null
+  status: string | null
+  /** false when the request replayed an existing matter (HTTP 200). */
+  created: boolean
+}
+
+export interface ManualPersonPayload {
+  name: string
+  /** Identifier value; optional. Type is carried by id_type so duplicate
+   * warnings compare like types only. */
+  id_number?: string | null
+  id_type?: 'sa_id' | 'passport' | 'other' | null
+  passport_country?: string | null
+  email?: string | null
+  phone?: string | null
+  address?: string | null
+}
+
+export type AttachPartyRequest =
+  | {
+      client_request_id: string
+      party_source: 'manual'
+      entity_type: 'person'
+      role: 'transferor' | 'transferee'
+      acknowledged_duplicate?: boolean
+      is_primary_contact?: boolean
+      manual: ManualPersonPayload
+    }
+  | {
+      client_request_id: string
+      party_source: 'golden_record'
+      entity_type: 'person' | 'company' | 'trust'
+      role: 'transferor' | 'transferee'
+      golden_record_id: string
+      is_primary_contact?: boolean
+    }
+
+/** GET /api/v1/transfers/{id}/parties projection (camelCase, staff view). */
+export interface TransferPartyApi {
+  id: string
+  transferId: string
+  partySource: 'manual' | 'golden_record' | null
+  goldenRecordId: string | null
+  entityType: string | null
+  role: string
+  accountableInstitutionId: number | null
+  cachedName?: string | null
+  cachedIdNumber?: string | null
+  cachedEmail?: string | null
+  syncedAt?: string | null
+  manualName?: string | null
+  manualIdNumber?: string | null
+  manualIdType?: 'sa_id' | 'passport' | 'other' | null
+  manualPassportCountry?: string | null
+  manualEmail?: string | null
+  manualPhone?: string | null
+  manualAddress?: string | null
+  isPrimaryContact?: boolean
+  clientRequestId?: string | null
+  acknowledgedDuplicate?: boolean
+}
+
+/**
+ * Build the v1 attach request for a form party, or a failure reason when the
+ * party cannot be expressed in this slice (manual capture is person-only; a
+ * Golden Record party must carry goldenRecordId).
+ */
+export function buildAttachPartyRequest(party: Party): AttachPartyRequest | { error: string } {
+  const role = party.type === 'seller' ? 'transferor' : 'transferee'
+  const clientRequestId = party.clientRequestId || crypto.randomUUID()
+
+  if (party.source === 'golden_record') {
+    if (!party.goldenRecordId) {
+      return { error: 'Golden Record party has no record id' }
+    }
+    return {
+      client_request_id: clientRequestId,
+      party_source: 'golden_record',
+      entity_type: (party.entityType || 'person') as 'person' | 'company' | 'trust',
+      role,
+      golden_record_id: party.goldenRecordId,
+      is_primary_contact: Boolean(party.isPrimary)
+    }
+  }
+
+  if (party.entityType && party.entityType !== 'person') {
+    return { error: 'Manual capture currently supports natural persons only' }
+  }
+
+  return {
+    client_request_id: clientRequestId,
+    party_source: 'manual',
+    entity_type: 'person',
+    role,
+    acknowledged_duplicate: Boolean(party.acknowledgedDuplicate),
+    is_primary_contact: Boolean(party.isPrimary),
+    manual: {
+      name: party.name,
+      id_number: party.idNumber || null,
+      id_type: party.idType ?? null,
+      passport_country: party.idType === 'passport' ? party.passportCountry || null : null,
+      email: party.email || null,
+      phone: party.phone || null,
+      address: party.address || null
+    }
+  }
+}
+
+/** Map a v1 party row back to the form model, preserving source and identity. */
+export function transferPartyToFormParty(party: TransferPartyApi): Party {
+  const isManual = party.partySource === 'manual'
+  return {
+    id: party.id,
+    source: isManual ? 'manual' : 'golden_record',
+    persistedPartyId: party.id,
+    clientRequestId: party.clientRequestId || undefined,
+    goldenRecordId: party.goldenRecordId || undefined,
+    entityType: (party.entityType || undefined) as Party['entityType'],
+    type: party.role === 'transferor' ? 'seller' : 'buyer',
+    name: isManual ? party.manualName || '' : party.cachedName || '',
+    idNumber: isManual ? party.manualIdNumber || '' : party.cachedIdNumber || '',
+    email: isManual ? party.manualEmail || '' : party.cachedEmail || '',
+    phone: party.manualPhone || '',
+    address: party.manualAddress || '',
+    isPrimary: party.isPrimaryContact ?? false,
+    acknowledgedDuplicate: party.acknowledgedDuplicate ?? false
   }
 }

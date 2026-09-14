@@ -14,10 +14,14 @@ from datetime import datetime
 from typing import Any, Optional, Union
 from uuid import UUID
 
+import asyncpg
+
 import db
 from auth.current_user import is_positive_integer
 from clients.entities import EntitiesClient
 from repositories.transfer_parties import (
+    find_transfer_party_by_client_request,
+    insert_manual_transfer_party,
     insert_transfer_party,
     refresh_transfer_party_cache_by_id,
     refresh_transfer_party_cache_by_key,
@@ -29,6 +33,80 @@ class TransferPartyServiceError(Exception):
     """Raised for domain-level errors such as a missing parent transfer."""
 
     pass
+
+
+class PartyValidationError(TransferPartyServiceError):
+    """Raised when a party payload has an invalid source/field combination."""
+
+    pass
+
+
+class PartyConflictError(TransferPartyServiceError):
+    """Raised when a party violates a non-idempotency unique constraint."""
+
+    pass
+
+
+class IdempotencyConflictError(TransferPartyServiceError):
+    """A client_request_id was reused with a different payload."""
+
+    pass
+
+
+def _fingerprint_matches(existing: dict, request_fingerprint: Optional[str]) -> bool:
+    return existing.get("request_fingerprint") == request_fingerprint
+
+
+async def _resolve_client_request_replay(
+    accountable_institution_id: int,
+    client_request_id: Optional[UUID],
+    request_fingerprint: Optional[str],
+    *,
+    connection: Optional[Any] = None,
+) -> Optional[dict]:
+    """Return the existing row for a repeated request, or raise on payload reuse.
+
+    The lookup is scoped to the parent matter's institution so a foreign
+    institution's request id can neither observe nor collide with this row.
+    """
+    if client_request_id is None:
+        return None
+    existing = await find_transfer_party_by_client_request(
+        accountable_institution_id, client_request_id, connection=connection
+    )
+    if existing is None:
+        return None
+    if _fingerprint_matches(existing, request_fingerprint):
+        return existing
+    raise IdempotencyConflictError(
+        "client_request_id was already used with a different payload"
+    )
+
+
+async def _replay_or_conflict_after_unique_violation(
+    accountable_institution_id: int,
+    client_request_id: Optional[UUID],
+    request_fingerprint: Optional[str],
+) -> Optional[dict]:
+    """Handle a lost unique-key race after the transaction has rolled back.
+
+    The insert losing the race means the winner's row now exists: return it for
+    a true replay, surface an idempotency conflict for a different payload, or
+    report a non-idempotency conflict (e.g. the one-primary-per-role rule).
+    """
+    if client_request_id is not None:
+        existing = await find_transfer_party_by_client_request(
+            accountable_institution_id, client_request_id
+        )
+        if existing is not None:
+            if _fingerprint_matches(existing, request_fingerprint):
+                return existing
+            raise IdempotencyConflictError(
+                "client_request_id was already used with a different payload"
+            )
+    raise PartyConflictError(
+        "Party conflicts with an existing relationship or primary-contact rule"
+    )
 
 
 async def _get_parent_accountable_institution_id(
@@ -60,8 +138,17 @@ async def _persist_party(
     cached_id_number: Optional[str],
     cached_email: Optional[str],
     synced_at: Optional[datetime],
+    is_primary_contact: bool = False,
+    client_request_id: Optional[UUID] = None,
+    request_fingerprint: Optional[str] = None,
+    acknowledged_duplicate: bool = False,
 ) -> Optional[dict]:
-    """Short transaction: re-check the parent transfer, then insert the party row."""
+    """Short transaction: re-check the parent transfer, then insert the party row.
+
+    When a client_request_id is supplied, an earlier request with the same key
+    and payload resolves to the existing row; reuse with a different payload
+    raises IdempotencyConflictError.
+    """
 
     async def _do_persist(connection: Any) -> Optional[dict]:
         current_ai = await _get_parent_accountable_institution_id(
@@ -69,6 +156,14 @@ async def _persist_party(
         )
         if current_ai != accountable_institution_id:
             raise TransferPartyServiceError("Parent transfer tenant changed")
+        replayed = await _resolve_client_request_replay(
+            accountable_institution_id,
+            client_request_id,
+            request_fingerprint,
+            connection=connection,
+        )
+        if replayed is not None:
+            return replayed
         return await insert_transfer_party(
             transfer_id=transfer_id,
             golden_record_id=golden_record_id,
@@ -79,10 +174,19 @@ async def _persist_party(
             cached_id_number=cached_id_number,
             cached_email=cached_email,
             synced_at=synced_at,
+            is_primary_contact=is_primary_contact,
+            client_request_id=client_request_id,
+            request_fingerprint=request_fingerprint,
+            acknowledged_duplicate=acknowledged_duplicate,
             connection=connection,
         )
 
-    return await db.with_transaction(_do_persist)
+    try:
+        return await db.with_transaction(_do_persist)
+    except asyncpg.UniqueViolationError:
+        return await _replay_or_conflict_after_unique_violation(
+            accountable_institution_id, client_request_id, request_fingerprint
+        )
 
 
 async def link_party_to_transfer(
@@ -92,6 +196,10 @@ async def link_party_to_transfer(
     role: str,
     *,
     entities_client: EntitiesClient,
+    is_primary_contact: bool = False,
+    client_request_id: Optional[UUID] = None,
+    request_fingerprint: Optional[str] = None,
+    acknowledged_duplicate: bool = False,
 ) -> Optional[dict]:
     """Link a caller-supplied Golden Record to an already-authorised transfer.
 
@@ -124,7 +232,90 @@ async def link_party_to_transfer(
         cached_id_number=cache.id_number,
         cached_email=cache.email,
         synced_at=visible.synced_at,
+        is_primary_contact=is_primary_contact,
+        client_request_id=client_request_id,
+        request_fingerprint=request_fingerprint,
+        acknowledged_duplicate=acknowledged_duplicate,
     )
+
+
+async def attach_manual_party_to_transfer(
+    transfer_id: UUID,
+    *,
+    entity_type: str,
+    role: str,
+    manual_name: str,
+    manual_id_number: Optional[str] = None,
+    manual_id_type: Optional[str] = None,
+    manual_passport_country: Optional[str] = None,
+    manual_email: Optional[str] = None,
+    manual_phone: Optional[str] = None,
+    manual_address: Optional[str] = None,
+    is_primary_contact: bool = False,
+    acknowledged_duplicate: bool = False,
+    client_request_id: Optional[UUID] = None,
+    request_fingerprint: Optional[str] = None,
+) -> Optional[dict]:
+    """Persist an institution-owned manual party on an authorised transfer.
+
+    This entrypoint performs no upstream call: manual capture never creates or
+    updates Golden Records and implies no verification. The tenant is derived
+    from the parent transfer and re-checked inside a short transaction, exactly
+    like the Golden Record path. ``entity_type`` is explicit and limited to
+    natural persons in this slice.
+    """
+    if entity_type != "person":
+        raise PartyValidationError(
+            "Manual capture currently supports natural persons only"
+        )
+    if not isinstance(manual_name, str) or not manual_name.strip():
+        raise PartyValidationError("manual name is required")
+    if manual_id_type is not None and manual_id_type not in ("sa_id", "passport", "other"):
+        raise PartyValidationError("manual id_type must be 'sa_id', 'passport' or 'other'")
+    if manual_passport_country is not None and manual_id_type != "passport":
+        raise PartyValidationError("manual passport_country requires id_type 'passport'")
+
+    accountable_institution_id = await _get_parent_accountable_institution_id(transfer_id)
+
+    async def _do_persist(connection: Any) -> Optional[dict]:
+        current_ai = await _get_parent_accountable_institution_id(
+            transfer_id, connection=connection
+        )
+        if current_ai != accountable_institution_id:
+            raise TransferPartyServiceError("Parent transfer tenant changed")
+        replayed = await _resolve_client_request_replay(
+            accountable_institution_id,
+            client_request_id,
+            request_fingerprint,
+            connection=connection,
+        )
+        if replayed is not None:
+            return replayed
+        return await insert_manual_transfer_party(
+            transfer_id,
+            entity_type,
+            role,
+            accountable_institution_id,
+            manual_name=manual_name.strip(),
+            manual_id_number=manual_id_number,
+            manual_id_type=manual_id_type,
+            manual_passport_country=manual_passport_country,
+            manual_email=manual_email,
+            manual_phone=manual_phone,
+            manual_address=manual_address,
+            is_primary_contact=is_primary_contact,
+            client_request_id=client_request_id,
+            request_fingerprint=request_fingerprint,
+            acknowledged_duplicate=acknowledged_duplicate,
+            connection=connection,
+        )
+
+    try:
+        return await db.with_transaction(_do_persist)
+    except asyncpg.UniqueViolationError:
+        return await _replay_or_conflict_after_unique_violation(
+            accountable_institution_id, client_request_id, request_fingerprint
+        )
 
 
 async def attach_party_to_transfer(
@@ -137,6 +328,10 @@ async def attach_party_to_transfer(
     cached_id_number: Optional[str] = None,
     cached_email: Optional[str] = None,
     synced_at: Optional[datetime] = None,
+    is_primary_contact: bool = False,
+    client_request_id: Optional[UUID] = None,
+    request_fingerprint: Optional[str] = None,
+    acknowledged_duplicate: bool = False,
 ) -> Optional[dict]:
     """Persist an already visibility-validated Golden Record party.
 
@@ -158,6 +353,10 @@ async def attach_party_to_transfer(
         cached_id_number=cached_id_number,
         cached_email=cached_email,
         synced_at=synced_at,
+        is_primary_contact=is_primary_contact,
+        client_request_id=client_request_id,
+        request_fingerprint=request_fingerprint,
+        acknowledged_duplicate=acknowledged_duplicate,
     )
 
 

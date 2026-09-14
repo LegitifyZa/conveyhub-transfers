@@ -1,11 +1,10 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui'
 import {
   TransferProvider,
   useTransfer,
-  getProgressPercentage,
-  TransferState
+  getProgressPercentage
 } from '@/components/transfers/TransferForm'
 import { StepProperty } from '@/components/transfers/StepProperty'
 import { StepParties } from '@/components/transfers/StepParties'
@@ -14,8 +13,8 @@ import { StepDocuments } from '@/components/transfers/StepDocuments'
 import { StepReview } from '@/components/transfers/StepReview'
 import { TransferNavigation } from '@/components/transfers/TransferNavigation'
 import { UnavailableNotice } from '@/components/ui'
-import { useTransfers, TransferAggregate } from '@/hooks/useTransfers'
-import { TransferApi } from '@/lib/api/transferApi'
+import { useTransfers } from '@/hooks/useTransfers'
+import { TransferApi, buildAttachPartyRequest, transferPartyToFormParty } from '@/lib/api/transferApi'
 import { isPersistenceDisabled, isPersistenceUnavailable, probeMatterPersistence, serviceUnavailableMessage } from '@/lib/api/serviceStatus'
 
 const Transfers: React.FC = () => {
@@ -26,24 +25,24 @@ const Transfers: React.FC = () => {
   )
 }
 
-const buildAggregate = (state: TransferState, status?: TransferState['status']): TransferAggregate => ({
-  ...state,
-  status: status ?? state.status,
-  documents: state.documents.map(({ file: _file, ...metadata }) => metadata)
-})
-
 const TransferWorkflow: React.FC = () => {
   const navigate = useNavigate()
   const location = useLocation()
   const { state, dispatch } = useTransfer()
   const { currentStep } = state
   const transferId = (location.state as { transferId?: string } | null)?.transferId || new URLSearchParams(location.search).get('id') || undefined
+  const matterDetails = (location.state as { matterDetails?: { fileReference?: string } } | null)?.matterDetails
 
   const { fetchTransfer, error, isLoading } = useTransfers()
   const [isSaving, setIsSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
+  const [saveNotice, setSaveNotice] = useState<string | null>(null)
+  const [partySaveState, setPartySaveState] = useState<Record<string, 'saved' | 'failed'>>({})
   const [persistenceError, setPersistenceError] = useState<Error | null>(null)
   const [persistenceChecked, setPersistenceChecked] = useState(false)
+  // Stable idempotency key for matter creation; generated once per form session
+  // so a retried save resolves to the same matter instead of duplicating it.
+  const matterRequestKey = useRef<string | null>(null)
 
   // Probe the matter-persistence lane once so Save/Submit are disabled up front
   // while the legacy transfers API is unavailable, instead of failing on click.
@@ -58,14 +57,47 @@ const TransferWorkflow: React.FC = () => {
   }, [])
 
   // Load an existing transfer aggregate when the component is entered with a transfer id.
+  // Source-aware party read-back runs through the authenticated v1 lane so a
+  // partially saved matter reopens with party sources and identity intact.
   useEffect(() => {
     if (!transferId) return
 
     let cancelled = false
     const load = async () => {
-      const aggregate = await fetchTransfer(transferId)
-      if (!cancelled && aggregate) {
-        dispatch({ type: 'HYDRATE_TRANSFER', payload: aggregate })
+      const [aggregate, partiesResponse] = await Promise.all([
+        fetchTransfer(transferId),
+        TransferApi.getMatterParties(transferId).catch(() => null)
+      ])
+      if (cancelled) return
+
+      const serverParties = partiesResponse?.success ? partiesResponse.data || [] : null
+      if (aggregate) {
+        dispatch({
+          type: 'HYDRATE_TRANSFER',
+          payload: serverParties
+            ? { ...aggregate, parties: serverParties.map(transferPartyToFormParty) }
+            : aggregate
+        })
+        if (serverParties) {
+          setPartySaveState(Object.fromEntries(serverParties.map(p => [p.id, 'saved' as const])))
+        }
+      } else if (serverParties) {
+        // The legacy aggregate is quarantined/failed but the matter exists:
+        // reopen a minimal draft so failed party attachments can be retried
+        // against the preserved matter id.
+        dispatch({
+          type: 'HYDRATE_TRANSFER',
+          payload: {
+            id: transferId,
+            currentStep: 1,
+            status: 'draft',
+            propertyDetails: { address: '', city: '', state: '', zipCode: '', propertyType: '', lotNumber: '', legalDescription: '', yearBuilt: '', squareFootage: '' },
+            parties: serverParties.map(transferPartyToFormParty),
+            financials: { purchasePrice: '', depositAmount: '', loanAmount: '', interestRate: '', loanTerm: '', transferDuty: '', conveyancingFees: '', deedsOfficeFees: '', vat: '', postPetty: '', clearanceCertificate: '', ratesClearance: '' },
+            documents: []
+          }
+        })
+        setPartySaveState(Object.fromEntries(serverParties.map(p => [p.id, 'saved' as const])))
       }
     }
     load()
@@ -80,28 +112,95 @@ const TransferWorkflow: React.FC = () => {
     dispatch({ type: 'SET_CURRENT_STEP', payload: Math.min(5, currentStep + 1) })
   }
 
-  // Returns the saved aggregate on success, or null when nothing was saved.
-  // Callers must treat null strictly as "not saved" — no success messaging or
-  // navigation may follow it. Entered form state is left untouched on failure.
-  const persistAggregate = async (status?: TransferState['status']): Promise<TransferAggregate | null> => {
+  // Saves the matter (once, idempotently) then attaches each unsaved party.
+  // Returns the matter id plus the ids of parties that failed; callers must not
+  // report complete success or navigate while failures are non-empty. The
+  // matter id is preserved in state so a retry never creates a second matter.
+  const persistAggregate = async (): Promise<{ matterId: string; failedPartyIds: string[] } | null> => {
     setSaveError(null)
+    setSaveNotice(null)
     if (isPersistenceDisabled(persistenceChecked, persistenceError)) return null
     setIsSaving(true)
     try {
-      const aggregate = buildAggregate(state, status)
-      const existingId = state.id || state.transfer_id || transferId
-      const response = existingId
-        ? await TransferApi.updateTransfer(existingId, aggregate)
-        : await TransferApi.createTransfer(aggregate)
-      if (response.success && response.data) {
+      // 1. Ensure the matter exists (idempotent via a stable client key).
+      let matterId = state.id || state.transfer_id || transferId
+      if (!matterId) {
+        matterRequestKey.current ||= crypto.randomUUID()
+        const created = await TransferApi.createMatter({
+          client_request_id: matterRequestKey.current,
+          property_address: state.propertyDetails.address,
+          purchase_price: Number.parseFloat(state.financials.purchasePrice) || 0,
+          firm_reference: matterDetails?.fileReference || null,
+          classification_code: null
+        })
+        if (!created.success || !created.data?.id) {
+          setSaveError(created.error || 'The matter could not be created. Your entries remain on this page.')
+          return null
+        }
+        matterId = created.data.id
         dispatch({
           type: 'SET_TRANSFER_ID',
-          payload: { id: response.data.id, transfer_id: response.data.transfer_id }
+          payload: { id: created.data.id, transfer_id: created.data.transferId || undefined }
         })
-        return response.data
+      } else {
+        // The matter id stays fixed: retries attach to it, never recreate it.
+        matterRequestKey.current ||= crypto.randomUUID()
       }
-      setSaveError(response.error || 'The transfer could not be saved. Your entries remain on this page.')
-      return null
+
+      // 2. Attach each party that has not yet been persisted.
+      const failedPartyIds: string[] = []
+      const failureReasons: string[] = []
+      const nextSaveState: Record<string, 'saved' | 'failed'> = { ...partySaveState }
+      for (const party of state.parties) {
+        if (party.persistedPartyId) {
+          nextSaveState[party.id] = 'saved'
+          continue
+        }
+        const request = buildAttachPartyRequest(party)
+        if ('error' in request) {
+          failedPartyIds.push(party.id)
+          failureReasons.push(`${party.name || 'Unnamed party'}: ${request.error}`)
+          nextSaveState[party.id] = 'failed'
+          continue
+        }
+        try {
+          const attached = await TransferApi.attachParty(matterId, request)
+          if (attached.success && attached.data) {
+            nextSaveState[party.id] = 'saved'
+            dispatch({
+              type: 'UPDATE_PARTY',
+              payload: {
+                id: party.id,
+                updates: {
+                  persistedPartyId: attached.data.id,
+                  clientRequestId: request.client_request_id
+                }
+              }
+            })
+          } else {
+            failedPartyIds.push(party.id)
+            failureReasons.push(`${party.name || 'Unnamed party'}: ${attached.error || 'save failed'}`)
+            nextSaveState[party.id] = 'failed'
+          }
+        } catch (err) {
+          failedPartyIds.push(party.id)
+          failureReasons.push(`${party.name || 'Unnamed party'}: ${err instanceof Error ? err.message : 'save failed'}`)
+          nextSaveState[party.id] = 'failed'
+        }
+      }
+      setPartySaveState(nextSaveState)
+
+      if (failedPartyIds.length > 0) {
+        const savedCount = state.parties.length - failedPartyIds.length
+        setSaveError(
+          `Matter saved; ${savedCount} of ${state.parties.length} parties saved. ` +
+          `${failureReasons.join(' ')} Retry to save the remaining parties — the same matter is kept.`
+        )
+        return { matterId, failedPartyIds }
+      }
+
+      setSaveNotice('Matter and all parties saved.')
+      return { matterId, failedPartyIds }
     } catch (err) {
       const failure = err instanceof Error ? err : new Error('The transfer could not be saved')
       setSaveError(`${serviceUnavailableMessage('Matter saving', failure)} Your entries remain on this page.`)
@@ -115,22 +214,20 @@ const TransferWorkflow: React.FC = () => {
   }
 
   const handleSaveDraft = async () => {
-    const result = await persistAggregate('draft')
+    const result = await persistAggregate()
     if (!result) {
       setSaveError(current => current ?? 'The draft could not be saved. Your entries remain on this page.')
     }
   }
 
   const handleSubmit = async () => {
-    const result = await persistAggregate('in_progress')
-    if (!result) {
+    const result = await persistAggregate()
+    // Never claim success or navigate while any party failed to attach.
+    if (!result || result.failedPartyIds.length > 0) {
       setSaveError(current => current ?? 'The transfer could not be submitted. Your entries remain on this page.')
       return
     }
-    const id = result.id || result.transfer_id
-    if (id) {
-      navigate(`/transfers/${id}/milestones`)
-    }
+    navigate(`/transfers/${result.matterId}/milestones`)
   }
 
   const renderStep = () => {
@@ -175,6 +272,14 @@ const TransferWorkflow: React.FC = () => {
           <div className="mb-6 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4">
             <p className="text-sm text-red-700 dark:text-red-300">
               {saveError || error}
+            </p>
+          </div>
+        )}
+
+        {saveNotice && !saveError && (
+          <div className="mb-6 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg p-4">
+            <p className="text-sm text-green-700 dark:text-green-300">
+              {saveNotice}
             </p>
           </div>
         )}
