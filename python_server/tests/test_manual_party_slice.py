@@ -472,6 +472,27 @@ class ManualPartyRouteTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(response.status_code, 409)
 
+    async def test_client_role_denied_on_every_write_route_even_with_write_ability(self):
+        # Role 4 must be denied explicitly: a caller holding transfers:write on
+        # the client role cannot reach any v1 write route. Denial precedes body
+        # validation, so deliberately empty bodies are used.
+        headers = self._headers(role=4, abilities=["transfers:read", "transfers:write"])
+        party = "88888888-8888-4888-8888-888888888888"
+        writes = [
+            ("/api/v1/transfers/", {}),
+            (f"/api/v1/transfers/{OWN}/parties", {}),
+            (f"/api/v1/transfers/{OWN}/parties/{party}/relationships", {}),
+            (f"/api/v1/transfers/{OWN}/estate-contexts", {}),
+            (f"/api/v1/transfers/{OWN}/representative-assignments", {}),
+        ]
+        for path, body in writes:
+            response = await self.client.post(path, json=body, headers=headers)
+            self.assertEqual(response.status_code, 403, path)
+        self.create_matter.assert_not_called()
+        self.attach_manual.assert_not_called()
+        self.link_gr.assert_not_called()
+        self.query.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

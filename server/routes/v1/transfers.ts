@@ -765,7 +765,9 @@ router.post(
     const { id, transfer_party_id } = req.params
     const body = req.body || {}
 
-    if (!user.hasAbility('transfers:write')) {
+    // Clients are denied explicitly — not merely via the absence of the
+    // transfers:write ability in their role assignment.
+    if (user.isClient || !user.hasAbility('transfers:write')) {
       res.status(403).json({ success: false, error: 'Forbidden' })
       return
     }
@@ -942,12 +944,26 @@ router.get(
 // Write routes are owned by the FastAPI service: party attach may need the
 // Golden Record visibility recipe (Entities S2S lane), and matter create shares
 // the same transaction semantics. The JWT is verified locally, then forwarded.
-router.post('/', requireJwt, asyncHandler((req, res) => proxyDeedly(req, res, '/', 'POST')))
+// Clients are denied here as well so a forwarded client write can never be
+// attempted: FastAPI applies the same explicit denial authoritatively.
+function denyClientWrite(req: Request, res: Response): boolean {
+  if (req.currentUser!.isClient) {
+    res.status(403).json({ success: false, error: 'Forbidden' })
+    return true
+  }
+  return false
+}
+
+router.post('/', requireJwt, asyncHandler((req, res) => {
+  if (denyClientWrite(req, res)) return
+  return proxyDeedly(req, res, '/', 'POST')
+}))
 
 router.post(
   '/:id/parties',
   requireJwt,
   asyncHandler(async (req: Request, res: Response) => {
+    if (denyClientWrite(req, res)) return
     const { id } = req.params
     if (!isUuid(id)) {
       res.status(404).json({ success: false, error: 'Not found' })

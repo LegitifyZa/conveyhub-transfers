@@ -564,6 +564,17 @@ def _map_representative_assignment(row: dict) -> dict:
     }
 
 
+def _require_transfers_write(user: CurrentUser) -> None:
+    """transfers:write gate for staff write routes.
+
+    Clients (role 4) are denied explicitly: the upstream ability catalogue
+    excludes :write on staff surfaces, but a route must not depend on that
+    assignment alone.
+    """
+    if user.is_client or not user.has_ability("transfers:write"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+
 def _require_body_keys(body: Any, *, required: AbstractSet[str], optional: AbstractSet[str] = frozenset()) -> None:
     """Reject anything not explicitly allowed.
 
@@ -768,8 +779,7 @@ async def create_transfer_party_relationship(
 ):
     """Assign a relationship code to a transfer party."""
 
-    if not user.has_ability("transfers:write"):
-        raise HTTPException(status_code=403, detail="Forbidden")
+    _require_transfers_write(user)
 
     if set(body.keys()) != {"relationship_code"}:
         raise HTTPException(status_code=422, detail="Only relationship_code is accepted")
@@ -923,8 +933,7 @@ async def post_transfer_estate_context(
 ):
     """Create an estate context for a transfer, deriving tenant from the transfer."""
 
-    if not user.has_ability("transfers:write"):
-        raise HTTPException(status_code=403, detail="Forbidden")
+    _require_transfers_write(user)
 
     transfer = await _authorize_transfer(user, id)
     if not transfer:
@@ -963,8 +972,7 @@ async def post_transfer_representative_assignment(
 ):
     """Assign a person, in a capacity, to represent an estate context or a trust party."""
 
-    if not user.has_ability("transfers:write"):
-        raise HTTPException(status_code=403, detail="Forbidden")
+    _require_transfers_write(user)
 
     transfer = await _authorize_transfer(user, id)
     if not transfer:
@@ -1033,8 +1041,7 @@ async def create_transfer(
     value is honoured only for the documented cross-tenant roles (policy §5.5).
     client_request_id makes creation idempotent per institution.
     """
-    if not user.has_ability("transfers:write"):
-        raise HTTPException(status_code=403, detail="Forbidden")
+    _require_transfers_write(user)
 
     _require_body_keys(
         body,
@@ -1142,8 +1149,7 @@ async def attach_transfer_party(
     the existing institution-linkage visibility recipe; manual parties persist
     institution-owned capture fields and never call upstream.
     """
-    if not user.has_ability("transfers:write"):
-        raise HTTPException(status_code=403, detail="Forbidden")
+    _require_transfers_write(user)
 
     transfer = await _authorize_transfer(user, id)
     if not transfer:

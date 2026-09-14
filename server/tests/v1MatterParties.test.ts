@@ -192,4 +192,26 @@ describe('v1 matter create + party attach BFF proxies', async () => {
     )
     assert.equal(res.status, 403)
   })
+
+  it('denies client-role matter creation even with transfers:write, without calling upstream', async () => {
+    const token = makeToken(['api', 'transfers:read', 'transfers:write'], 4, 5)
+    const res = await httpPost(
+      '/api/v1/transfers/',
+      { Authorization: `Bearer ${token}` },
+      { property_address: 'A', purchase_price: 1, client_request_id: REQUEST_ID }
+    )
+    assert.equal(res.status, 403)
+    assert.equal(captured.length, 0)
+  })
+
+  it('denies client-role party attach even with transfers:write, without calling upstream', async () => {
+    const token = makeToken(['api', 'transfers:read', 'transfers:write'], 4, 5)
+    const res = await httpPost(
+      `/api/v1/transfers/${TRANSFER_ID}/parties`,
+      { Authorization: `Bearer ${token}` },
+      { party_source: 'manual', entity_type: 'person', role: 'transferor', manual: { name: 'Jane' } }
+    )
+    assert.equal(res.status, 403)
+    assert.equal(captured.length, 0)
+  })
 })
