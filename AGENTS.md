@@ -152,14 +152,14 @@ fixtures are synthetic in-memory SQLite, not PostgreSQL migration certification.
   401; verified callers receive 503 before any legacy handler, cache, DB or provider
   operation. Restoring these paths requires an approved authenticated contract,
   not simply removing the quarantine dependency/middleware.
-- Only roles 1 and 6 have the documented cross-institution matter-access exception,
-  and it is read-only: approved policy allows no caller — including roles 1/6 —
-  to mutate another accountable institution's matters or child resources, and
-  matter creation is always attributed to the verified caller's institution.
-  Institution ID 1 is not a privileged role. Other callers require their verified
-  institution, including clients who must additionally prove GR party membership.
-  Standalone GR discovery/retrieval keeps its existing linkage-scoped projection;
-  no charging trigger or new entitlement policy is enabled.
+- Same-institution isolation applies to every caller — approved policy removed
+  the former cross-institution exception for platform roles 1/6 entirely: no
+  role may read, list or mutate another accountable institution's matters or
+  child resources, and matter creation is always attributed to the verified
+  caller's institution. Institution ID 1 is not a privileged role. Clients must
+  additionally prove GR party membership. Standalone GR discovery/retrieval
+  keeps its existing linkage-scoped projection; no charging trigger or new
+  entitlement policy is enabled.
 - Accounts browser requests no longer use institution-unscoped memory/localStorage
   fallbacks or claim offline saves succeeded. Existing legacy browser storage is
   not automatically deleted; restoration/data recovery needs an approved decision.
@@ -203,12 +203,13 @@ python -m mypy --follow-imports=silent --ignore-missing-imports --no-incremental
   path reads repositories/serializers; submit, resubmit and provider/profile runs
   are separate. Deployed discovery/billing behaviour remains unverified.
 - **Documented role authority:** upstream
-  `docs/transfers_golden_record_providers_auth.md` sections 4.3 and 5.5 name role 1
-  (Super Admin) and role 6 (Admin Agent) as cross-institution by design; everyone
-  else is locked to their JWT AI, with additional GR membership for clients.
-  Per approved policy this exception is read-scoped: it does not bypass abilities,
-  standalone GR linkage checks, or the same-institution requirement for writes
-  (`authorize_mutation`/`resolve_write_tenant_id`, `for_write` authorization).
+  `docs/transfers_golden_record_providers_auth.md` sections 4.3 and 5.5 describe a
+  six-role model; the newer `docs/rbac.md` describes four roles (1 Super Admin,
+  2 AI Admin, 3 Agent, 4 Client) with roles 5/6 retired — the role-name mapping
+  needs Clive's confirmation. Per approved product policy, DEEDLY applies
+  same-institution isolation to every caller regardless of role: abilities and
+  GR party membership still apply, and standalone GR linkage checks are
+  unchanged. Scoping never consults `user_roles_id` for privileged exceptions.
   `test_policy.py`, `test_ai_tenant_security.py` and `aiTenantSecurity.test.ts`
   cover privileged roles and ordinary/client users, including ID/scope tampering.
 - **P0 legacy restoration:** authenticated matter saving and durable GR attachment,

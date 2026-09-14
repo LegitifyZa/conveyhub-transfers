@@ -494,8 +494,8 @@ class ManualPartyRouteTests(unittest.IsolatedAsyncioTestCase):
         self.query.assert_not_called()
 
     async def test_cross_institution_roles_cannot_create_under_foreign_institution(self):
-        # Roles 1/6 keep their read exception but hold no write exception:
-        # matter creation is attributed to the verified caller institution.
+        # No role holds a cross-institution exception: matter creation is
+        # always attributed to the verified caller institution.
         for role in (1, 6):
             with self.subTest(role=role):
                 response = await self.client.post(

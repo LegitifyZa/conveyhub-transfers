@@ -183,7 +183,8 @@ describe('Verified institution claims and policy', () => {
   it('keeps no cross-institution write exception for privileged roles', () => {
     for (const role of [1, 6]) {
       const user = new CurrentUser({ user_id: 1, accountable_institution_id: 5, user_roles_id: role })
-      assert.equal(authorizeRecordAccess(user, 7), 'allowed')
+      assert.equal(authorizeRecordAccess(user, 7), 'not_found')
+      assert.equal(authorizeRecordAccess(user, 5), 'allowed')
       assert.equal(authorizeMutation(user, 7), 'not_found')
       assert.equal(authorizeMutation(user, 5), 'allowed')
       assert.equal(resolveWriteTenantId(user), 5)
@@ -262,11 +263,19 @@ describe('Contracted v1 institution boundaries', () => {
     }
   })
 
-  it('preserves documented role 1 and role 6 access across institutions', async () => {
+  it('keeps no cross-institution read or list exception for privileged roles', async () => {
     for (const role of [1, 6]) {
-      const result = await request(`/api/v1/transfers/${FOREIGN}`, authorization({ user_roles_id: role }))
-      assert.equal(result.status, 200)
-      assert.equal(result.body.data.id, FOREIGN)
+      const detail = await request(`/api/v1/transfers/${FOREIGN}`, authorization({ user_roles_id: role }))
+      assert.equal(detail.status, 404)
+      const listing = await request('/api/v1/transfers/', authorization({ user_roles_id: role }))
+      assert.equal(listing.status, 200)
+      assert.deepEqual(listing.body.data.transfers.map((item: { id: string }) => item.id), [OWN])
+      for (const nested of ['parties', 'milestones', 'documents', 'financials', 'estate-contexts']) {
+        const result = await request(
+          `/api/v1/transfers/${FOREIGN}/${nested}`, authorization({ user_roles_id: role }),
+        )
+        assert.equal(result.status, 404, nested)
+      }
     }
   })
 

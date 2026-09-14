@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express'
 import { query, withTransaction } from '../db'
 import { asyncHandler } from '../utils/asyncHandler'
 import { quarantineLegacyRoute } from '../auth/requireJwt'
-import { resolveEffectiveTenantId, resolveWriteTenantId, isCrossTenant, authorizeRecordAccess, AuthorizationDecision } from '../auth/policy'
+import { resolveEffectiveTenantId, resolveWriteTenantId, authorizeRecordAccess, AuthorizationDecision } from '../auth/policy'
 import { CurrentUser } from '../auth/currentUser'
 import {
   DEFAULT_FIRM_SETTINGS,
