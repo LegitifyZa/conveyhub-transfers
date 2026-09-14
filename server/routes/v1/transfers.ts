@@ -902,9 +902,9 @@ function denyClientWrite(req: Request, res: Response): boolean {
   return false
 }
 
-router.post('/', requireJwt, asyncHandler((req, res) => {
+router.post('/', requireJwt, asyncHandler(async (req, res) => {
   if (denyClientWrite(req, res)) return
-  return proxyDeedly(req, res, '/', 'POST')
+  await proxyDeedly(req, res, '/', 'POST')
 }))
 
 router.post(
