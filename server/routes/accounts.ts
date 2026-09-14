@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express'
 import { query, withTransaction } from '../db'
 import { asyncHandler } from '../utils/asyncHandler'
 import { quarantineLegacyRoute } from '../auth/requireJwt'
-import { resolveEffectiveTenantId, isCrossTenant, authorizeRecordAccess, AuthorizationDecision } from '../auth/policy'
+import { resolveEffectiveTenantId, resolveWriteTenantId, isCrossTenant, authorizeRecordAccess, AuthorizationDecision } from '../auth/policy'
 import { CurrentUser } from '../auth/currentUser'
 import {
   DEFAULT_FIRM_SETTINGS,
@@ -162,7 +162,7 @@ router.get(
 router.put(
   '/settings',
   asyncHandler(async (req: Request, res: Response) => {
-    const aiId = resolveEffectiveTenantId(req.currentUser!)
+    const aiId = resolveWriteTenantId(req.currentUser!)
 
     await ensureTablesExist()
     const body = req.body as Partial<FirmAccountSettings>
@@ -278,7 +278,7 @@ router.get(
 router.post(
   '/tariffs',
   asyncHandler(async (req: Request, res: Response) => {
-    const aiId = resolveEffectiveTenantId(req.currentUser!)
+    const aiId = resolveWriteTenantId(req.currentUser!)
 
     const schedule = req.body as TariffSchedule
     if (!schedule || !schedule.id || !schedule.name || !Array.isArray(schedule.brackets)) {
@@ -457,7 +457,7 @@ router.get(
 router.put(
   '/transfers/:transferId/proforma',
   asyncHandler(async (req: Request, res: Response) => {
-    const aiId = resolveEffectiveTenantId(req.currentUser!)
+    const aiId = resolveWriteTenantId(req.currentUser!)
 
     await ensureTablesExist()
     const { transferId } = req.params
@@ -679,7 +679,7 @@ router.post(
 router.post(
   '/reset',
   asyncHandler(async (req: Request, res: Response) => {
-    const aiId = resolveEffectiveTenantId(req.currentUser!)
+    const aiId = resolveWriteTenantId(req.currentUser!)
 
     inMemoryTenantSettings[aiId] = {
       ...DEFAULT_FIRM_SETTINGS,

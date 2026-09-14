@@ -5,7 +5,7 @@ import { after, before, beforeEach, describe, it, mock } from 'node:test'
 import jwt from 'jsonwebtoken'
 import { CurrentUser } from '../auth/currentUser'
 import { JWTVerificationError, verifyJwt } from '../auth/jwt'
-import { authorizeRecordAccess, resolveEffectiveTenantId } from '../auth/policy'
+import { authorizeMutation, authorizeRecordAccess, resolveEffectiveTenantId, resolveWriteTenantId } from '../auth/policy'
 
 process.env.VERCEL = '1'
 process.env.JWT_SECRET = 'ai-security-tests-only-32-byte-secret'
@@ -20,6 +20,7 @@ const GR = '11111111-1111-4111-8111-111111111111'
 const OWN = '22222222-2222-4222-8222-222222222222'
 const FOREIGN = '33333333-3333-4333-8333-333333333333'
 const PARTY = '44444444-4444-4444-8444-444444444444'
+const OTHER_PARTY = '55555555-5555-4555-8555-555555555555'
 const MARKER = 'private-security-fixture-not-for-response-or-logs'
 const { default: app } = await import('../index')
 const { pool, query, checkDatabaseHealth } = await import('../db')
@@ -66,6 +67,7 @@ function row(id: string, ai: number) {
 async function fixtureQuery(text: string, params: unknown[] = []) {
   calls.push({ text, params })
   if (failQuery) throw new Error(MARKER)
+  if (text === 'BEGIN' || text === 'COMMIT' || text === 'ROLLBACK') return { rows: [], rowCount: 0 }
   if (text.includes('FROM transfers t')) {
     let rows = [row(OWN, 5), row(FOREIGN, 7)]
     if (text.includes('t.id = $1')) rows = rows.filter(item => item.id === params[0])
@@ -74,6 +76,25 @@ async function fixtureQuery(text: string, params: unknown[] = []) {
     if (text.includes('EXISTS')) rows = rows.filter(() => params[1] === GR)
     if (text.includes('COUNT(*)')) return { rows: [{ count: String(rows.length) }], rowCount: 1 }
     return { rows, rowCount: rows.length }
+  }
+  if (text.includes('FROM transfer_parties') && text.includes('SELECT 1')) {
+    const ownerAi = params[1] === OWN ? 5 : 7
+    const ownedParty = params[1] === OWN ? params[0] === PARTY : params[0] === OTHER_PARTY
+    const scoped = params.length < 3 || params[2] === ownerAi
+    const visible = ownedParty && scoped
+    return { rows: visible ? [{ exists: 1 }] : [], rowCount: visible ? 1 : 0 }
+  }
+  if (text.includes('FROM party_relationship_definitions')) {
+    return { rows: [{ code: params[0] }], rowCount: 1 }
+  }
+  if (text.includes('INSERT INTO party_relationship_assignments')) {
+    return {
+      rows: [{
+        id: GR, transfer_party_id: params[0], relationship_code: params[1],
+        created_at: '2026-01-01', updated_at: '2026-01-01',
+      }],
+      rowCount: 1,
+    }
   }
   if (text.includes('FROM transfer_parties') && !text.includes('SELECT 1')) {
     const ai = params[0] === OWN ? 5 : 7
@@ -87,7 +108,10 @@ async function fixtureQuery(text: string, params: unknown[] = []) {
 }
 
 mock.method(pool, 'query', fixtureQuery as typeof pool.query)
-mock.method(pool, 'connect', (() => { throw new Error('Unexpected database connection') }) as typeof pool.connect)
+mock.method(pool, 'connect', (async () => ({
+  query: (text: string, params?: unknown[]) => fixtureQuery(text, params),
+  release: () => {},
+})) as typeof pool.connect)
 
 async function request(path: string, headers: Record<string, string> = {}, method = 'GET', body?: unknown) {
   const response = await fetch(`${baseUrl}${path}`, {
@@ -153,6 +177,18 @@ describe('Verified institution claims and policy', () => {
         assert.equal(authorizeRecordAccess(user, value as number), 'not_found')
         if (value !== undefined) assert.throws(() => resolveEffectiveTenantId(user, value as number))
       }
+    }
+  })
+
+  it('keeps no cross-institution write exception for privileged roles', () => {
+    for (const role of [1, 6]) {
+      const user = new CurrentUser({ user_id: 1, accountable_institution_id: 5, user_roles_id: role })
+      assert.equal(authorizeRecordAccess(user, 7), 'allowed')
+      assert.equal(authorizeMutation(user, 7), 'not_found')
+      assert.equal(authorizeMutation(user, 5), 'allowed')
+      assert.equal(resolveWriteTenantId(user), 5)
+      assert.equal(resolveWriteTenantId(user, 5), 5)
+      assert.throws(() => resolveWriteTenantId(user, 7))
     }
   })
 })
@@ -231,6 +267,38 @@ describe('Contracted v1 institution boundaries', () => {
       const result = await request(`/api/v1/transfers/${FOREIGN}`, authorization({ user_roles_id: role }))
       assert.equal(result.status, 200)
       assert.equal(result.body.data.id, FOREIGN)
+    }
+  })
+
+  it('denies client-role writes even when the token carries transfers:write', async () => {
+    const result = await request(
+      `/api/v1/transfers/${OWN}/parties/${PARTY}/relationships`,
+      authorization({ user_roles_id: 4 }), 'POST', { relationship_code: 'test_relationship' },
+    )
+    assert.equal(result.status, 403)
+    assert.deepEqual(calls, [])
+  })
+
+  it('denies cross-institution writes for roles 1 and 6 before any mutation', async () => {
+    for (const role of [1, 6]) {
+      const result = await request(
+        `/api/v1/transfers/${FOREIGN}/parties/${OTHER_PARTY}/relationships`,
+        authorization({ user_roles_id: role }), 'POST', { relationship_code: 'test_relationship' },
+      )
+      assert.equal(result.status, 404)
+      assert.ok(calls.every(call => !call.text.includes('INSERT')))
+      calls = []
+    }
+    assert.deepEqual(outbound, [])
+  })
+
+  it('keeps same-institution writes working for roles 1 and 6', async () => {
+    for (const role of [1, 6]) {
+      const result = await request(
+        `/api/v1/transfers/${OWN}/parties/${PARTY}/relationships`,
+        authorization({ user_roles_id: role }), 'POST', { relationship_code: 'test_relationship' },
+      )
+      assert.equal(result.status, 201)
     }
   })
 

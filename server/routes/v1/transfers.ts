@@ -195,7 +195,10 @@ const SELECT_TRANSFER_COLUMNS = `
          t.current_step, t.total_steps, t.progress, t.created_at, t.updated_at
 `
 
-async function authorizeTransfer(user: CurrentUser, id: string): Promise<any | null> {
+// forWrite=true scopes the lookup to the caller's verified institution for
+// every role: the documented cross-institution read exception for roles 1/6
+// does not extend to mutations.
+async function authorizeTransfer(user: CurrentUser, id: string, forWrite = false): Promise<any | null> {
   if (!isUuid(id)) {
     return null
   }
@@ -219,7 +222,7 @@ async function authorizeTransfer(user: CurrentUser, id: string): Promise<any | n
   }
 
   // Staff ability check is performed by the caller.
-  const crossTenant = isCrossTenant(user)
+  const crossTenant = isCrossTenant(user) && !forWrite
   const detailQuery = crossTenant
     ? `${SELECT_TRANSFER_COLUMNS} FROM transfers t WHERE t.id = $1`
     : `${SELECT_TRANSFER_COLUMNS} FROM transfers t WHERE t.id = $1 AND t.accountable_institution_id = $2`
@@ -601,8 +604,10 @@ function mapRepresentativeAssignment(row: any) {
   }
 }
 
-async function authorizeTransferParty(user: CurrentUser, transferId: string, transferPartyId: string): Promise<boolean> {
-  const crossTenant = isCrossTenant(user)
+// forWrite=true scopes to the caller's verified institution for every role;
+// the cross-institution read exception does not extend to mutations.
+async function authorizeTransferParty(user: CurrentUser, transferId: string, transferPartyId: string, forWrite = false): Promise<boolean> {
+  const crossTenant = isCrossTenant(user) && !forWrite
   const sql = `
     SELECT 1
     FROM transfer_parties
@@ -783,13 +788,13 @@ router.post(
       return
     }
 
-    const transfer = await authorizeTransfer(user, id)
+    const transfer = await authorizeTransfer(user, id, true)
     if (!transfer) {
       res.status(404).json({ success: false, error: 'Not found' })
       return
     }
 
-    const partyBelongs = await authorizeTransferParty(user, id, transfer_party_id)
+    const partyBelongs = await authorizeTransferParty(user, id, transfer_party_id, true)
     if (!partyBelongs) {
       res.status(404).json({ success: false, error: 'Not found' })
       return

@@ -90,16 +90,50 @@ def authorize_record_access(
     return AuthorizationDecision.NOT_FOUND
 
 
+def resolve_write_tenant_id(
+    user: CurrentUser,
+    requested_ai: Optional[int] = None,
+) -> int:
+    """Return the accountable_institution_id a mutation should be attributed to.
+
+    Approved policy: mutations always use the verified caller's institution —
+    cross-tenant roles (1, 6) retain no write exception. A requested AI that
+    differs from the caller's verified AI is a tenant boundary violation.
+    """
+    if not is_positive_integer(user.accountable_institution_id) or (
+        requested_ai is not None and not is_positive_integer(requested_ai)
+    ):
+        raise TenantBoundaryError("Invalid institution context")
+
+    if requested_ai is not None and requested_ai != user.accountable_institution_id:
+        raise TenantBoundaryError("Tenant scope mismatch")
+
+    return user.accountable_institution_id
+
+
 def authorize_mutation(
     user: CurrentUser,
     record_accountable_institution_id: int,
 ) -> str:
     """Decide whether a user may mutate a record with the given tenant ID.
 
-    Same semantics as authorize_record_access, but exposed as a separate helper
-    so routes can map it to 404 for foreign-tenant mutations specifically.
+    Approved policy: no caller — including platform roles 1/6 — may mutate
+    another accountable institution's records, so the cross-tenant read
+    exception does not apply here. A mismatch returns NOT_FOUND so
+    foreign-tenant mutations do not reveal existence.
     """
-    return authorize_record_access(user, record_accountable_institution_id)
+    if not is_positive_integer(user.accountable_institution_id) or not is_positive_integer(record_accountable_institution_id):
+        return AuthorizationDecision.NOT_FOUND
+
+    if user.is_client:
+        if user.accountable_institution_id != record_accountable_institution_id or user.golden_record_id is None:
+            return AuthorizationDecision.NOT_FOUND
+        return AuthorizationDecision.CLIENT_PARTY_CHECK_REQUIRED
+
+    if user.accountable_institution_id == record_accountable_institution_id:
+        return AuthorizationDecision.ALLOWED
+
+    return AuthorizationDecision.NOT_FOUND
 
 
 class TenantBoundaryError(Exception):

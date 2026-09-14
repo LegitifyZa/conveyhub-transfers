@@ -493,6 +493,55 @@ class ManualPartyRouteTests(unittest.IsolatedAsyncioTestCase):
         self.link_gr.assert_not_called()
         self.query.assert_not_called()
 
+    async def test_cross_institution_roles_cannot_create_under_foreign_institution(self):
+        # Roles 1/6 keep their read exception but hold no write exception:
+        # matter creation is attributed to the verified caller institution.
+        for role in (1, 6):
+            with self.subTest(role=role):
+                response = await self.client.post(
+                    "/api/v1/transfers/",
+                    json={"property_address": "12 Test Street", "purchase_price": 100,
+                          "accountable_institution_id": 7},
+                    headers=self._headers(role=role),
+                )
+                self.assertEqual(response.status_code, 403)
+        self.create_matter.assert_not_called()
+
+    async def test_cross_institution_roles_cannot_write_foreign_matters(self):
+        body = {"party_source": "manual", "entity_type": "person", "role": "transferor",
+                "manual": {"name": "Jane"}}
+        for role in (1, 6):
+            for path, payload in (
+                (f"/api/v1/transfers/{FOREIGN}/parties", body),
+                (f"/api/v1/transfers/{FOREIGN}/estate-contexts", {}),
+                (f"/api/v1/transfers/{FOREIGN}/representative-assignments", {}),
+            ):
+                with self.subTest(role=role, path=path):
+                    response = await self.client.post(path, json=payload, headers=self._headers(role=role))
+                    self.assertEqual(response.status_code, 404)
+        self.attach_manual.assert_not_called()
+        self.link_gr.assert_not_called()
+        self.entities.get_entity.assert_not_awaited()
+        self.entities.get_client_by_golden_record.assert_not_awaited()
+
+    async def test_cross_institution_roles_still_write_own_matters(self):
+        for role in (1, 6):
+            with self.subTest(role=role):
+                create = await self.client.post(
+                    "/api/v1/transfers/",
+                    json={"property_address": "12 Test Street", "purchase_price": 100,
+                          "client_request_id": REQUEST_ID},
+                    headers=self._headers(role=role),
+                )
+                self.assertEqual(create.status_code, 201)
+                attach = await self.client.post(
+                    f"/api/v1/transfers/{OWN}/parties",
+                    json={"party_source": "manual", "entity_type": "person", "role": "transferor",
+                          "manual": {"name": "Jane"}},
+                    headers=self._headers(role=role),
+                )
+                self.assertEqual(attach.status_code, 201)
+
 
 if __name__ == "__main__":
     unittest.main()
