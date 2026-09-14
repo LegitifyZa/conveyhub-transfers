@@ -9,6 +9,7 @@ from auth.policy import (
     authorize_record_access,
     is_cross_tenant,
     resolve_effective_tenant_id,
+    resolve_write_tenant_id,
 )
 
 
@@ -131,6 +132,51 @@ class RecordAccessTests(TestCase):
         self.assertEqual(
             authorize_mutation(user, 99), AuthorizationDecision.NOT_FOUND
         )
+
+    def test_cross_tenant_roles_cannot_mutate_foreign_tenant(self):
+        # Approved policy: roles 1/6 keep no write exception — reads remain
+        # cross-tenant (see test_super_admin_allowed_any_tenant above).
+        for role in (1, 6):
+            with self.subTest(role=role):
+                user = _user(role, 2)
+                self.assertEqual(
+                    authorize_mutation(user, 99), AuthorizationDecision.NOT_FOUND
+                )
+                self.assertEqual(
+                    authorize_mutation(user, 2), AuthorizationDecision.ALLOWED
+                )
+
+
+class WriteTenantResolutionTests(TestCase):
+    def test_cross_tenant_roles_are_locked_to_own_ai_for_writes(self):
+        for role in (1, 6):
+            with self.subTest(role=role):
+                user = _user(role, 2)
+                self.assertEqual(resolve_write_tenant_id(user), 2)
+                self.assertEqual(resolve_write_tenant_id(user, 2), 2)
+                with self.assertRaises(TenantBoundaryError):
+                    resolve_write_tenant_id(user, 99)
+
+    def test_staff_write_resolution_matches_read_resolution(self):
+        user = _user(3, 2)
+        self.assertEqual(resolve_write_tenant_id(user), 2)
+        self.assertEqual(resolve_write_tenant_id(user, 2), 2)
+        with self.assertRaises(TenantBoundaryError):
+            resolve_write_tenant_id(user, 99)
+
+    def test_invalid_requested_ai_never_resolves_a_write_tenant(self):
+        for role in (1, 3, 6):
+            for requested in (False, 0, -1, 2.5, "2"):
+                with self.subTest(role=role, requested=requested):
+                    with self.assertRaises(TenantBoundaryError):
+                        resolve_write_tenant_id(_user(role, 2), requested)
+
+    def test_invalid_caller_ai_never_resolves_a_write_tenant(self):
+        for role in (1, 6):
+            for ai in (None, False, 0, -1, 2.5, "2"):
+                with self.subTest(role=role, ai=ai):
+                    with self.assertRaises(TenantBoundaryError):
+                        resolve_write_tenant_id(_user(role, ai))
 
     def test_no_undocumented_role_cross_tenant(self):
         for role in (2, 3, 4, 5):

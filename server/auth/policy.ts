@@ -85,12 +85,53 @@ export function authorizeRecordAccess(
 }
 
 /**
+ * Return the accountable_institution_id a mutation should be attributed to.
+ * Approved policy: mutations always use the verified caller's institution —
+ * cross-tenant roles (1, 6) retain no write exception. A requested AI that
+ * differs from the caller's verified AI is a tenant boundary violation.
+ */
+export function resolveWriteTenantId(
+  user: CurrentUser,
+  requestedAi?: number
+): number {
+  if (!isPositiveInteger(user.accountable_institution_id)
+    || (requestedAi !== undefined && !isPositiveInteger(requestedAi))) {
+    throw new TenantBoundaryError('Invalid institution context')
+  }
+
+  if (requestedAi !== undefined && requestedAi !== user.accountable_institution_id) {
+    throw new TenantBoundaryError('Tenant scope mismatch')
+  }
+
+  return user.accountable_institution_id
+}
+
+/**
  * Decide whether a user may mutate a record with the given tenant ID.
- * Same semantics as authorizeRecordAccess, exposed as a separate helper.
+ * Approved policy: no caller — including platform roles 1/6 — may mutate
+ * another accountable institution's records, so the cross-tenant read
+ * exception does not apply here. Foreign-tenant mismatches return NOT_FOUND
+ * so existence is not revealed.
  */
 export function authorizeMutation(
   user: CurrentUser,
   recordAccountableInstitutionId: number
 ): AuthorizationDecision {
-  return authorizeRecordAccess(user, recordAccountableInstitutionId)
+  if (!isPositiveInteger(user.accountable_institution_id) || !isPositiveInteger(recordAccountableInstitutionId)) {
+    return AuthorizationDecision.NOT_FOUND
+  }
+
+  if (user.isClient) {
+    if (user.accountable_institution_id !== recordAccountableInstitutionId
+      || user.golden_record_id === null || user.golden_record_id === undefined) {
+      return AuthorizationDecision.NOT_FOUND
+    }
+    return AuthorizationDecision.CLIENT_PARTY_CHECK_REQUIRED
+  }
+
+  if (user.accountable_institution_id === recordAccountableInstitutionId) {
+    return AuthorizationDecision.ALLOWED
+  }
+
+  return AuthorizationDecision.NOT_FOUND
 }

@@ -126,8 +126,11 @@ fixtures are synthetic in-memory SQLite, not PostgreSQL migration certification.
   401; verified callers receive 503 before any legacy handler, cache, DB or provider
   operation. Restoring these paths requires an approved authenticated contract,
   not simply removing the quarantine dependency/middleware.
-- Only roles 1 and 6 have the documented cross-institution matter-access exception;
-  institution ID 1 is not a privileged role. Other callers require their verified
+- Only roles 1 and 6 have the documented cross-institution matter-access exception,
+  and it is read-only: approved policy allows no caller — including roles 1/6 —
+  to mutate another accountable institution's matters or child resources, and
+  matter creation is always attributed to the verified caller's institution.
+  Institution ID 1 is not a privileged role. Other callers require their verified
   institution, including clients who must additionally prove GR party membership.
   Standalone GR discovery/retrieval keeps its existing linkage-scoped projection;
   no charging trigger or new entitlement policy is enabled.
@@ -177,7 +180,9 @@ python -m mypy --follow-imports=silent --ignore-missing-imports --no-incremental
   `docs/transfers_golden_record_providers_auth.md` sections 4.3 and 5.5 name role 1
   (Super Admin) and role 6 (Admin Agent) as cross-institution by design; everyone
   else is locked to their JWT AI, with additional GR membership for clients.
-  This exception does not bypass abilities or standalone GR linkage checks.
+  Per approved policy this exception is read-scoped: it does not bypass abilities,
+  standalone GR linkage checks, or the same-institution requirement for writes
+  (`authorize_mutation`/`resolve_write_tenant_id`, `for_write` authorization).
   `test_policy.py`, `test_ai_tenant_security.py` and `aiTenantSecurity.test.ts`
   cover privileged roles and ordinary/client users, including ID/scope tampering.
 - **P0 legacy restoration:** authenticated matter saving and durable GR attachment,

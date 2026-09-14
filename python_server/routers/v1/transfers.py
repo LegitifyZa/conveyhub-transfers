@@ -149,8 +149,13 @@ def _is_valid_uuid(value: str) -> bool:
     return bool(re.match(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", value, re.IGNORECASE))
 
 
-async def _authorize_transfer(user: CurrentUser, id: str):
-    """Return the authorised transfer row, or None if not accessible."""
+async def _authorize_transfer(user: CurrentUser, id: str, *, for_write: bool = False):
+    """Return the authorised transfer row, or None if not accessible.
+
+    for_write=True scopes the lookup to the caller's verified institution for
+    every role: the documented cross-institution read exception for roles 1/6
+    does not extend to mutations.
+    """
 
     if not _is_valid_uuid(id):
         return None
@@ -172,7 +177,7 @@ async def _authorize_transfer(user: CurrentUser, id: str):
         client_result = await query(client_sql, [id, user.golden_record_id, user.accountable_institution_id])
         return client_result.rows[0] if client_result.rows else None
 
-    cross_tenant = is_cross_tenant(user)
+    cross_tenant = is_cross_tenant(user) and not for_write
 
     if cross_tenant:
         detail_sql = f"""
@@ -593,13 +598,30 @@ def _specialist_error_response(exc: MatterSpecialistServiceError) -> JSONRespons
     )
 
 
+def _require_transfers_write(user: CurrentUser) -> None:
+    """transfers:write gate for staff write routes.
+
+    Clients (role 4) are denied explicitly: the upstream ability catalogue
+    excludes :write on staff surfaces, but a route must not depend on that
+    assignment alone.
+    """
+    if user.is_client or not user.has_ability("transfers:write"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+
 async def _authorize_transfer_party(
     user: CurrentUser,
     transfer_id: str,
     transfer_party_id: str,
+    *,
+    for_write: bool = False,
 ) -> bool:
-    """Verify that transfer_party_id belongs to transfer_id and the user's tenant."""
-    cross_tenant = is_cross_tenant(user)
+    """Verify that transfer_party_id belongs to transfer_id and the user's tenant.
+
+    for_write=True scopes to the caller's verified institution for every role;
+    the cross-institution read exception does not extend to mutations.
+    """
+    cross_tenant = is_cross_tenant(user) and not for_write
 
     sql = """
         SELECT 1
@@ -736,8 +758,7 @@ async def create_transfer_party_relationship(
 ):
     """Assign a relationship code to a transfer party."""
 
-    if not user.has_ability("transfers:write"):
-        raise HTTPException(status_code=403, detail="Forbidden")
+    _require_transfers_write(user)
 
     if set(body.keys()) != {"relationship_code"}:
         raise HTTPException(status_code=422, detail="Only relationship_code is accepted")
@@ -746,11 +767,11 @@ async def create_transfer_party_relationship(
     if not isinstance(relationship_code, str) or not relationship_code.strip():
         raise HTTPException(status_code=422, detail="relationship_code is required")
 
-    transfer = await _authorize_transfer(user, id)
+    transfer = await _authorize_transfer(user, id, for_write=True)
     if not transfer:
         raise HTTPException(status_code=404, detail="Not found")
 
-    if not await _authorize_transfer_party(user, id, transfer_party_id):
+    if not await _authorize_transfer_party(user, id, transfer_party_id, for_write=True):
         raise HTTPException(status_code=404, detail="Not found")
 
     # Verify the relationship definition exists and is active.
@@ -891,10 +912,9 @@ async def post_transfer_estate_context(
 ):
     """Create an estate context for a transfer, deriving tenant from the transfer."""
 
-    if not user.has_ability("transfers:write"):
-        raise HTTPException(status_code=403, detail="Forbidden")
+    _require_transfers_write(user)
 
-    transfer = await _authorize_transfer(user, id)
+    transfer = await _authorize_transfer(user, id, for_write=True)
     if not transfer:
         raise HTTPException(status_code=404, detail="Not found")
 
@@ -931,10 +951,9 @@ async def post_transfer_representative_assignment(
 ):
     """Assign a person, in a capacity, to represent an estate context or a trust party."""
 
-    if not user.has_ability("transfers:write"):
-        raise HTTPException(status_code=403, detail="Forbidden")
+    _require_transfers_write(user)
 
-    transfer = await _authorize_transfer(user, id)
+    transfer = await _authorize_transfer(user, id, for_write=True)
     if not transfer:
         raise HTTPException(status_code=404, detail="Not found")
 

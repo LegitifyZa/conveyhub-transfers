@@ -230,6 +230,51 @@ class InstitutionBoundaryRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(allowed.status_code, 201)
         self.tx.assert_awaited_once()
 
+    async def test_cross_institution_roles_cannot_write_foreign_matters(self):
+        # Approved policy: roles 1/6 keep their read exception but retain no
+        # cross-institution write exception — foreign writes fail closed with
+        # 404 before any mutation, transaction or upstream call.
+        for role in (1, 6):
+            writes = (
+                (f"/api/v1/transfers/{FOREIGN}/parties/{OTHER_PARTY}/relationships",
+                 {"relationship_code": "test_relationship"}),
+                (f"/api/v1/transfers/{FOREIGN}/estate-contexts", {}),
+                (f"/api/v1/transfers/{FOREIGN}/representative-assignments", {}),
+            )
+            for path, body in writes:
+                with self.subTest(role=role, path=path):
+                    response = await self.client.post(path, headers=headers(role=role), json=body)
+                    self.assertEqual(response.status_code, 404)
+        self.tx.assert_not_awaited()
+        self.entities.get_entity.assert_not_awaited()
+        self.entities.get_client_by_golden_record.assert_not_awaited()
+
+    async def test_cross_institution_roles_still_write_own_matters(self):
+        for role in (1, 6):
+            with self.subTest(role=role):
+                response = await self.client.post(
+                    f"/api/v1/transfers/{OWN}/parties/{PARTY}/relationships",
+                    headers=headers(role=role), json={"relationship_code": "test_relationship"},
+                )
+                self.assertEqual(response.status_code, 201)
+        self.assertEqual(self.tx.await_count, 2)
+
+    async def test_client_role_denied_on_write_routes_even_with_write_ability(self):
+        # The default token grants transfers:write; role 4 must be denied
+        # explicitly before any authorisation query or mutation runs.
+        writes = (
+            (f"/api/v1/transfers/{OWN}/parties/{PARTY}/relationships",
+             {"relationship_code": "test_relationship"}),
+            (f"/api/v1/transfers/{OWN}/estate-contexts", {}),
+            (f"/api/v1/transfers/{OWN}/representative-assignments", {}),
+        )
+        for path, body in writes:
+            with self.subTest(path=path):
+                response = await self.client.post(path, headers=headers(role=4), json=body)
+                self.assertEqual(response.status_code, 403)
+        self.query.assert_not_awaited()
+        self.tx.assert_not_awaited()
+
     async def test_sensitive_responses_are_not_cacheable(self):
         for path, authentication in (
             (f"/api/v1/transfers/{OWN}", headers()),
