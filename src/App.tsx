@@ -4,15 +4,16 @@ import { MainLayout } from '@/layouts'
 import { Dashboard, Cases, Documents, DocumentCatalogue, DataDictionary, TemplateEngine, ClauseLibrary, DocumentGenerator, Settings, Login, NewTransfer, Transfers, Bonds, Cancellations, TransfersDashboard, TransferMilestones, AccountsCalculator } from '@/pages'
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
-  const { isAuthenticated } = useAuth()
+  const { isAuthenticated, isRestoring } = useAuth()
+  if (isRestoring) return null
   return isAuthenticated ? <>{children}</> : <Navigate to="/login" replace />
 }
 
 function AuthenticatedRoutes() {
-  const { isAuthenticated } = useAuth()
+  const { isAuthenticated, isRestoring } = useAuth()
   return (
     <Routes>
-      <Route path="/" element={isAuthenticated ? <Navigate to="/transfers" replace /> : <Navigate to="/login" replace />} />
+      <Route path="/" element={isRestoring ? null : isAuthenticated ? <Navigate to="/transfers" replace /> : <Navigate to="/login" replace />} />
       <Route path="/login" element={<Login />} />
       <Route path="/dashboard" element={<RequireAuth><MainLayout><Dashboard /></MainLayout></RequireAuth>} />
       <Route path="/cases" element={<RequireAuth><MainLayout><Cases /></MainLayout></RequireAuth>} />
