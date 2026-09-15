@@ -1,4 +1,4 @@
-import { getAccessToken, refreshSession } from './session'
+import { getAccessToken, getSession, refreshSession } from './session'
 
 const API_BASE = ((import.meta as unknown as { env?: Record<string, string> }).env?.VITE_API_BASE_URL as string | undefined) ?? ''
 
@@ -38,6 +38,7 @@ function isAuthPath(path: string): boolean {
 }
 
 export async function apiRequest<T>(path: string, options: ApiRequestOptions = {}, allowRefreshRetry = true): Promise<T> {
+  const startSid = getSession()?.sid ?? null
   const headers: Record<string, string> = {}
 
   const body = options.body
@@ -80,8 +81,17 @@ export async function apiRequest<T>(path: string, options: ApiRequestOptions = {
   // options object — the same serialized body — so client_request_id
   // idempotency keys on matter/party creates are preserved and a replay is
   // deduplicated upstream rather than duplicating a row.
+  //
+  // The retry is additionally refused when the session's sid changed while
+  // the request was in flight: a session that logged out or was replaced by a
+  // different login must never have its in-flight write replayed under the
+  // new user/institution (client_request_id keys are institution-scoped and
+  // would not catch that).
   if (response.status === 401 && allowRefreshRetry && !isAuthPath(path)) {
-    if (await refreshSession()) {
+    const sameSession = () => (getSession()?.sid ?? null) === startSid
+    if ((startSid === null || sameSession())
+      && await refreshSession()
+      && (startSid === null || sameSession())) {
       return apiRequest<T>(path, options, false)
     }
   }

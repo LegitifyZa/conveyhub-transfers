@@ -60,6 +60,19 @@ const loginResponse = {
   },
 }
 
+const SID_A = '11111111-1111-4111-8111-111111111111'
+const SID_B = '22222222-2222-4222-8222-222222222222'
+const REFRESH_TOKEN_A = 'a'.repeat(64)
+
+// The sid-bound cookie pair as the BFF sets it: HttpOnly refresh credential
+// plus the JS-readable sid the client echoes back via X-Deedly-Session.
+function authHeaders(sid = SID_A, token = REFRESH_TOKEN_A) {
+  return {
+    Cookie: `deedly_refresh=${sid}.${token}; deedly_sid=${sid}`,
+    'X-Deedly-Session': sid,
+  }
+}
+
 function listen(target: Server): Promise<string> {
   return new Promise((resolve) => {
     target.listen(0, '127.0.0.1', () => {
@@ -259,14 +272,24 @@ describe('BFF auth proxy: login', () => {
     assert.deepEqual(body.data.refresh_expires, undefined)
     assert.deepEqual(body.data.dev_otp, undefined)
     assert.doesNotMatch(JSON.stringify(body), /r{64}|dev_otp|999999/)
-    const cookie = cookies.find((c) => c.startsWith('deedly_refresh='))
-    assert.ok(cookie, 'refresh cookie must be set')
-    assert.match(cookie, /HttpOnly/)
-    assert.match(cookie, /Secure/)
-    assert.match(cookie, /SameSite=Strict/)
-    assert.match(cookie, /Path=\/api\/auth/)
-    assert.match(cookie, /Max-Age=2592000/)
-    assert.equal(decodeURIComponent(cookie.split(';')[0].split('=')[1]), 'r'.repeat(64))
+    // The cookie carries <sid>.<refresh_token>; the body exposes only the sid.
+    const refreshCookie = cookies.find((c) => c.startsWith('deedly_refresh='))
+    assert.ok(refreshCookie, 'refresh cookie must be set')
+    assert.match(refreshCookie, /HttpOnly/)
+    assert.match(refreshCookie, /Secure/)
+    assert.match(refreshCookie, /SameSite=Strict/)
+    assert.match(refreshCookie, /Path=\/api\/auth/)
+    assert.match(refreshCookie, /Max-Age=2592000/)
+    const cookieValue = decodeURIComponent(refreshCookie.split(';')[0].split('=').slice(1).join('='))
+    const sid = cookieValue.slice(0, cookieValue.indexOf('.'))
+    const embeddedToken = cookieValue.slice(cookieValue.indexOf('.') + 1)
+    assert.equal(embeddedToken, 'r'.repeat(64))
+    assert.equal(body.data.sid, sid)
+    assert.match(sid, /^[0-9a-f-]{36}$/)
+    const sidCookie = cookies.find((c) => c.startsWith('deedly_sid='))
+    assert.ok(sidCookie, 'readable sid cookie must be set')
+    assert.doesNotMatch(sidCookie, /HttpOnly/)
+    assert.equal(decodeURIComponent(sidCookie.split(';')[0].split('=')[1]), sid)
     assert.deepEqual(JSON.parse(captured[0].body), { user_id: 42, otp: 123456 })
   })
 
@@ -307,45 +330,62 @@ describe('BFF auth proxy: refresh', () => {
     assert.equal(captured.length, 0)
   })
 
+  it('refuses a refresh cookie without the matching X-Deedly-Session sid', async () => {
+    // No header at all.
+    const missing = await post('/api/auth/refresh', {}, { Cookie: `deedly_refresh=${SID_A}.${REFRESH_TOKEN_A}` })
+    assert.equal(missing.status, 401)
+    // Mismatched sid: the cookie belongs to a different login.
+    const mismatched = await post('/api/auth/refresh', {}, {
+      Cookie: `deedly_refresh=${SID_A}.${REFRESH_TOKEN_A}; deedly_sid=${SID_A}`,
+      'X-Deedly-Session': SID_B,
+    })
+    assert.equal(mismatched.status, 401)
+    // A bare (pre-sid) cookie value is not a usable credential either.
+    const legacy = await post('/api/auth/refresh', {}, { Cookie: `deedly_refresh=${REFRESH_TOKEN_A}`, 'X-Deedly-Session': SID_A })
+    assert.equal(legacy.status, 401)
+    assert.equal(captured.length, 0)
+    // Refresh never writes cookies — a late response cannot set/clear one.
+    assert.equal(missing.cookies.length, 0)
+    assert.equal(mismatched.cookies.length, 0)
+    assert.equal(legacy.cookies.length, 0)
+  })
+
   it('exchanges the cookie refresh token upstream and relays the new access token', async () => {
     const token = makeAccessToken()
     respond = () => ({ status: 200, body: { message: 'Token refreshed', data: { token, expires: 999999 } } })
-    const { status, body } = await post('/api/auth/refresh', {}, { Cookie: 'deedly_refresh=abc123refresh; other=1' })
+    const { status, body, cookies } = await post('/api/auth/refresh', {}, authHeaders())
     assert.equal(status, 200)
     assert.equal(body.data.token, token)
-    assert.deepEqual(JSON.parse(captured[0].body), { refresh_token: 'abc123refresh' })
+    assert.deepEqual(JSON.parse(captured[0].body), { refresh_token: REFRESH_TOKEN_A })
     assert.equal(captured[0].url, '/api/v1/auth/refresh')
+    assert.equal(cookies.length, 0)
   })
 
-  it('clears the cookie when upstream rejects the refresh token', async () => {
+  it('never emits Set-Cookie — even when upstream rejects the refresh token', async () => {
     respond = () => ({ status: 401, body: { message: 'Invalid refresh token', data: [] } })
-    const { status, cookies } = await post('/api/auth/refresh', {}, { Cookie: 'deedly_refresh=expired' })
+    const { status, cookies } = await post('/api/auth/refresh', {}, authHeaders())
     assert.equal(status, 401)
-    const cleared = cookies.find((c) => c.startsWith('deedly_refresh='))
-    assert.ok(cleared)
-    assert.match(cleared, /Max-Age=0/)
+    assert.equal(cookies.length, 0)
   })
 
   it('applies the same claim checks as login before returning a refreshed token', async () => {
-    // Retired-role token: a session must not be formed, so the refresh cookie
-    // is cleared — retrying would only mint the same unusable token.
     respond = () => ({ status: 200, body: { message: 'Token refreshed', data: { token: makeAccessToken(5), expires: 999999 } } })
-    const retired = await post('/api/auth/refresh', {}, { Cookie: 'deedly_refresh=abc123refresh' })
+    const retired = await post('/api/auth/refresh', {}, authHeaders())
     assert.equal(retired.status, 401)
     assert.equal(retired.body.success, false)
-    assert.match(retired.cookies.find((c) => c.startsWith('deedly_refresh=')) ?? '', /Max-Age=0/)
+    assert.equal(retired.cookies.length, 0)
     assert.doesNotMatch(JSON.stringify(retired.body), /token/)
 
     const foreign = jwt.sign({ type: 'access' }, 'a-different-secret')
     respond = () => ({ status: 200, body: { message: 'Token refreshed', data: { token: foreign, expires: 999999 } } })
-    const wrongSignature = await post('/api/auth/refresh', {}, { Cookie: 'deedly_refresh=abc123refresh' })
+    const wrongSignature = await post('/api/auth/refresh', {}, authHeaders())
     assert.equal(wrongSignature.status, 401)
-    assert.match(wrongSignature.cookies.find((c) => c.startsWith('deedly_refresh=')) ?? '', /Max-Age=0/)
+    assert.equal(wrongSignature.cookies.length, 0)
   })
 
   it('returns 503 without a cookie change when the refresh body violates the token contract', async () => {
     respond = () => ({ status: 200, body: { message: 'Token refreshed', data: { token: 123 } } })
-    const { status, body, cookies } = await post('/api/auth/refresh', {}, { Cookie: 'deedly_refresh=abc123refresh' })
+    const { status, body, cookies } = await post('/api/auth/refresh', {}, authHeaders())
     assert.equal(status, 503)
     assert.equal(body.success, false)
     assert.equal(cookies.length, 0)
@@ -353,11 +393,31 @@ describe('BFF auth proxy: refresh', () => {
 })
 
 describe('BFF auth proxy: logout', () => {
-  it('always clears the cookie and succeeds even with no Bearer token', async () => {
-    const { status, body, cookies } = await post('/api/auth/logout', {})
-    assert.equal(status, 200)
-    assert.equal(body.success, true)
-    assert.match(cookies.find((c) => c.startsWith('deedly_refresh=')) ?? '', /Max-Age=0/)
+  it('clears the cookie pair only when the presented sid matches the cookie', async () => {
+    // Matching sid → both cookies cleared.
+    const own = await post('/api/auth/logout', {}, authHeaders())
+    assert.equal(own.status, 200)
+    assert.equal(own.body.success, true)
+    assert.match(own.cookies.find((c) => c.startsWith('deedly_refresh=')) ?? '', /Max-Age=0/)
+    assert.match(own.cookies.find((c) => c.startsWith('deedly_sid=')) ?? '', /Max-Age=0/)
+
+    // A logout for session A must not clear session B's cookie.
+    const other = await post('/api/auth/logout', {}, {
+      Cookie: `deedly_refresh=${SID_B}.tokenB; deedly_sid=${SID_B}`,
+      'X-Deedly-Session': SID_A,
+    })
+    assert.equal(other.status, 200)
+    assert.equal(other.cookies.length, 0)
+
+    // No cookie → nothing to clear; still succeeds.
+    const none = await post('/api/auth/logout', {}, { 'X-Deedly-Session': SID_A })
+    assert.equal(none.status, 200)
+    assert.equal(none.cookies.length, 0)
+
+    // Cookie present but no sid proof → not cleared.
+    const unproven = await post('/api/auth/logout', {}, { Cookie: `deedly_refresh=${SID_B}.tokenB` })
+    assert.equal(unproven.status, 200)
+    assert.equal(unproven.cookies.length, 0)
     assert.equal(captured.length, 0)
   })
 
@@ -370,10 +430,59 @@ describe('BFF auth proxy: logout', () => {
     assert.equal(captured[0].headers.authorization, `Bearer ${token}`)
   })
 
-  it('still clears the session locally when upstream logout fails', async () => {
+  it('still succeeds and clears a matching cookie when upstream logout fails', async () => {
     respond = () => ({ status: 500, body: {} })
-    const { status, cookies } = await post('/api/auth/logout', {}, { Authorization: `Bearer ${makeAccessToken()}` })
+    const { status, cookies } = await post('/api/auth/logout', {}, {
+      ...authHeaders(),
+      Authorization: `Bearer ${makeAccessToken()}`,
+    })
     assert.equal(status, 200)
     assert.match(cookies.find((c) => c.startsWith('deedly_refresh=')) ?? '', /Max-Age=0/)
+  })
+})
+
+describe('BFF auth proxy: origin/CSRF guard', () => {
+  it('rejects a cross-site Origin before any upstream activity', async () => {
+    const { status, body } = await post('/api/auth/initiate-login', { id_number: '8001010001081', password: 'x' }, { Origin: 'https://evil.example' })
+    assert.equal(status, 403)
+    assert.equal(body.success, false)
+    assert.equal(captured.length, 0)
+  })
+
+  it('rejects Sec-Fetch-Site: cross-site even without an Origin', async () => {
+    const { status } = await post('/api/auth/refresh', {}, { 'Sec-Fetch-Site': 'cross-site' })
+    assert.equal(status, 403)
+    assert.equal(captured.length, 0)
+  })
+
+  it('applies the guard to every auth mutation including login and logout', async () => {
+    for (const path of ['/api/auth/initiate-login', '/api/auth/otp', '/api/auth/login', '/api/auth/refresh', '/api/auth/logout']) {
+      const { status } = await post(path, {}, { Origin: 'https://evil.example' })
+      assert.equal(status, 403, path)
+    }
+    assert.equal(captured.length, 0)
+  })
+
+  it('accepts the same-origin Host match and the loopback dev origin', async () => {
+    const sameOrigin = await post('/api/auth/refresh', {}, { Origin: baseUrl })
+    assert.equal(sameOrigin.status, 401) // passes the guard; fails on missing cookie
+    const devOrigin = await post('/api/auth/refresh', {}, { Origin: 'http://localhost:5173' })
+    assert.equal(devOrigin.status, 401)
+  })
+
+  it('honours AUTH_ALLOWED_ORIGINS when configured and rejects others', async () => {
+    const saved = process.env.AUTH_ALLOWED_ORIGINS
+    process.env.AUTH_ALLOWED_ORIGINS = 'https://app.example.test'
+    try {
+      const allowed = await post('/api/auth/refresh', {}, { Origin: 'https://app.example.test' })
+      assert.equal(allowed.status, 401)
+      const denied = await post('/api/auth/refresh', {}, { Origin: 'http://localhost:5173' })
+      assert.equal(denied.status, 403)
+      const hostMatch = await post('/api/auth/refresh', {}, { Origin: baseUrl })
+      assert.equal(hostMatch.status, 403)
+    } finally {
+      if (saved === undefined) delete process.env.AUTH_ALLOWED_ORIGINS
+      else process.env.AUTH_ALLOWED_ORIGINS = saved
+    }
   })
 })

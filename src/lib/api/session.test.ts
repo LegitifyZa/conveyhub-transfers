@@ -42,10 +42,27 @@ const fakeStorage = {
   clear() { this.data.clear() },
 }
 
+// Minimal document.cookie jar for the readable deedly_sid cookie.
+const fakeDocument = {
+  jar: new Map<string, string>(),
+  get cookie() {
+    return [...this.jar.entries()].map(([k, v]) => `${k}=${v}`).join('; ')
+  },
+  set cookie(value: string) {
+    const [pair, ...attrs] = value.split(';')
+    const eq = pair.indexOf('=')
+    const key = pair.slice(0, eq).trim()
+    if (attrs.some((a) => /Max-Age=0/i.test(a.trim()))) this.jar.delete(key)
+    else this.jar.set(key, pair.slice(eq + 1).trim())
+  },
+}
+
 beforeEach(() => {
   clearSession()
   fakeStorage.data.clear()
+  fakeDocument.jar.clear()
   ;(globalThis as { localStorage?: unknown }).localStorage = fakeStorage
+  ;(globalThis as { document?: unknown }).document = fakeDocument
   fetchMock.mock.resetCalls()
   handler = () => Promise.resolve(jsonResponse({ success: true }))
 })
@@ -53,10 +70,11 @@ beforeEach(() => {
 afterEach(() => {
   clearSession()
   delete (globalThis as { localStorage?: unknown }).localStorage
+  delete (globalThis as { document?: unknown }).document
 })
 
-function makeSession(token = 'access-token-1') {
-  setSession({ accessToken: token, expires: 9999999999, user: { id: 42 } })
+function makeSession(token = 'access-token-1', sid = 'sid-1') {
+  setSession({ accessToken: token, expires: 9999999999, user: { id: 42 }, sid })
 }
 
 describe('credential attachment', () => {
@@ -168,17 +186,40 @@ describe('expired-session refresh and retry', () => {
 
 describe('refreshSession', () => {
   it('exchanges the HttpOnly cookie via the BFF and stores only the access token', async () => {
-    makeSession('old')
+    makeSession('old', 'sid-9')
     handler = (url, init) => {
       assert.equal(url, '/api/auth/refresh')
       assert.equal(init?.credentials, 'same-origin')
       assert.equal(init?.method, 'POST')
+      assert.equal(new Headers(init?.headers).get('X-Deedly-Session'), 'sid-9')
       return Promise.resolve(jsonResponse({ data: { token: 'new-access', expires: 42 } }))
     }
     assert.equal(await refreshSession(), true)
     assert.equal(getAccessToken(), 'new-access')
     assert.equal(getSession()?.expires, 42)
     assert.deepEqual(getSession()?.user, { id: 42 })
+    assert.equal(getSession()?.sid, 'sid-9')
+  })
+
+  it('restores a post-reload session by echoing the readable sid cookie', async () => {
+    // Memory is empty (page reloaded); only the readable sid cookie survives.
+    fakeDocument.jar.set('deedly_sid', 'sid-reload')
+    handler = (_url, init) => {
+      assert.equal(new Headers(init?.headers).get('X-Deedly-Session'), 'sid-reload')
+      return Promise.resolve(jsonResponse({ data: { token: 'restored', expires: 7 } }))
+    }
+    assert.equal(await refreshSession(), true)
+    assert.equal(getAccessToken(), 'restored')
+    assert.equal(getSession()?.sid, 'sid-reload')
+  })
+
+  it('sends no sid header when neither session nor sid cookie exists', async () => {
+    handler = (_url, init) => {
+      assert.equal(new Headers(init?.headers).get('X-Deedly-Session'), null)
+      return Promise.resolve(jsonResponse({ message: 'Authentication required' }, 401))
+    }
+    assert.equal(await refreshSession(), false)
+    assert.equal(getSession(), null)
   })
 
   it('fails and clears the session on a malformed refresh body', async () => {
@@ -207,8 +248,8 @@ describe('refreshSession', () => {
 describe('stale-response invalidation', () => {
   const tick = () => new Promise<void>((resolve) => setImmediate(resolve))
 
-  it('a refresh resolving after logout cannot restore the cleared session', async () => {
-    makeSession('old-token')
+  it('a logout issued during an in-flight refresh still ends the session', async () => {
+    makeSession('old-token', 'sid-A')
     let resolveRefresh: (r: Response) => void = () => {}
     handler = (url) =>
       url === '/api/auth/refresh'
@@ -216,8 +257,11 @@ describe('stale-response invalidation', () => {
         : Promise.resolve(jsonResponse({ error: 'expired' }, 401))
     const request = apiRequest('/api/v1/transfers/')
     await tick() // let the refresh exchange start
-    await logoutSession()
+    // Logout queues behind the refresh: the refresh result lands first, then
+    // logout runs and clears it — the session cannot survive the logout.
+    const logout = logoutSession()
     resolveRefresh(jsonResponse({ data: { token: 'stale-token', expires: 1 } }))
+    await logout
     await assert.rejects(request, ApiRequestError)
     assert.equal(getSession(), null)
     assert.equal(getAccessToken(), null)
@@ -231,10 +275,11 @@ describe('stale-response invalidation', () => {
         : Promise.resolve(jsonResponse({ success: true }))
     const pending = refreshSession()
     await tick()
-    setSession({ accessToken: 'new-login-token', expires: 2, user: { id: 7 } })
+    setSession({ accessToken: 'new-login-token', expires: 2, user: { id: 7 }, sid: 'sid-B' })
     resolveRefresh(jsonResponse({ data: { token: 'old-refresh-token', expires: 1 } }))
     assert.equal(await pending, false)
     assert.equal(getAccessToken(), 'new-login-token')
+    assert.equal(getSession()?.sid, 'sid-B')
     assert.deepEqual(getSession()?.user, { id: 7 })
   })
 
@@ -246,10 +291,59 @@ describe('stale-response invalidation', () => {
         : Promise.resolve(jsonResponse({ success: true }))
     const pending = refreshSession()
     await tick()
-    setSession({ accessToken: 'new-login-token', expires: 2, user: { id: 7 } })
+    setSession({ accessToken: 'new-login-token', expires: 2, user: { id: 7 }, sid: 'sid-B' })
     resolveRefresh(jsonResponse({ message: 'Invalid refresh token' }, 401))
     assert.equal(await pending, false)
     assert.equal(getAccessToken(), 'new-login-token')
+  })
+
+  it('never replays a pending write under a session that changed mid-flight', async () => {
+    makeSession('old-token', 'sid-A')
+    let resolveData: (r: Response) => void = () => {}
+    handler = (url) =>
+      url === '/api/v1/transfers/'
+        ? new Promise<Response>((resolve) => { resolveData = resolve })
+        : Promise.resolve(jsonResponse({ data: { token: 'fresh', expires: 1 } }))
+    const request = apiRequest('/api/v1/transfers/', {
+      method: 'POST', body: { client_request_id: 'b6f0c0f0-1111-4222-8333-444455556666' },
+    })
+    await tick() // the write is in flight under session A
+    // A different login replaces the session while the request is pending.
+    setSession({ accessToken: 'user-B-token', expires: 2, user: { id: 9 }, sid: 'sid-B' })
+    resolveData(jsonResponse({ error: 'expired' }, 401))
+    await assert.rejects(request, ApiRequestError)
+    // No retry under session B and no refresh consumed for a stale session.
+    assert.equal(callsTo('/api/v1/transfers/').length, 1)
+    assert.equal(callsTo('/api/auth/refresh').length, 0)
+  })
+
+  it('serializes auth operations: logout waits for an in-flight refresh', async () => {
+    makeSession('old-token', 'sid-A')
+    fakeDocument.jar.set('deedly_sid', 'sid-A')
+    let resolveRefresh: (r: Response) => void = () => {}
+    const order: string[] = []
+    const logoutHeaders: Headers[] = []
+    handler = (url, init) => {
+      order.push(url)
+      if (url === '/api/auth/refresh') {
+        return new Promise<Response>((resolve) => { resolveRefresh = resolve })
+      }
+      logoutHeaders.push(new Headers(init?.headers))
+      return Promise.resolve(jsonResponse({ success: true }))
+    }
+    const refresh = refreshSession()
+    const logout = logoutSession()
+    await tick()
+    // Logout is queued behind the in-flight refresh — nothing sent yet.
+    assert.deepEqual(order, ['/api/auth/refresh'])
+    resolveRefresh(jsonResponse({ data: { token: 'new', expires: 1 } }))
+    await Promise.all([refresh, logout])
+    assert.deepEqual(order, ['/api/auth/refresh', '/api/auth/logout'])
+    assert.equal(getSession(), null)
+    // The queued logout tears down whatever session exists when it runs —
+    // after the refresh landed, that is the refreshed token under the same sid.
+    assert.equal(logoutHeaders[0].get('X-Deedly-Session'), 'sid-A')
+    assert.equal(logoutHeaders[0].get('Authorization'), 'Bearer new')
   })
 
   it('a retried write repeats the identical body so client_request_id deduplicates upstream', async () => {
@@ -273,17 +367,31 @@ describe('stale-response invalidation', () => {
 })
 
 describe('logout and session transitions', () => {
-  it('sends the Bearer token to the BFF logout and clears the session', async () => {
-    makeSession('token-logout')
-    let seen: string | null = null
+  it('sends the Bearer token and sid to the BFF logout and clears the session', async () => {
+    makeSession('token-logout', 'sid-A')
+    fakeDocument.jar.set('deedly_sid', 'sid-A')
+    let auth: string | null = null
+    let sid: string | null = null
     handler = (url, init) => {
       assert.equal(url, '/api/auth/logout')
-      seen = new Headers(init?.headers).get('Authorization')
+      const headers = new Headers(init?.headers)
+      auth = headers.get('Authorization')
+      sid = headers.get('X-Deedly-Session')
       return Promise.resolve(jsonResponse({ success: true }))
     }
     await logoutSession()
-    assert.equal(seen, 'Bearer token-logout')
+    assert.equal(auth, 'Bearer token-logout')
+    assert.equal(sid, 'sid-A')
     assert.equal(getSession(), null)
+    // The readable sid cookie is cleared too — but only because it matched.
+    assert.equal(fakeDocument.jar.has('deedly_sid'), false)
+  })
+
+  it('does not delete a readable sid cookie that belongs to a newer session', async () => {
+    makeSession('token-A', 'sid-A')
+    fakeDocument.jar.set('deedly_sid', 'sid-B') // a newer login already owns it
+    await logoutSession()
+    assert.equal(fakeDocument.jar.get('deedly_sid'), 'sid-B')
   })
 
   it('clears the session even when the logout request fails', async () => {

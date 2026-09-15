@@ -1,12 +1,12 @@
 import { createContext, useContext, useState, useCallback, useEffect, ReactNode } from 'react'
 import { apiRequest } from '@/lib/api/http'
 import {
+  enqueueAuthOp,
   getSession,
   getSessionUser,
   logoutSession,
   onSessionChange,
   refreshSession,
-  sessionEpoch,
   setSession,
 } from '@/lib/api/session'
 
@@ -126,25 +126,31 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   }, [])
 
   const completeLogin = useCallback(async (userId: number, otp: number): Promise<void> => {
-    const epochBefore = sessionEpoch()
-    const response = await apiRequest<UpstreamEnvelope>('/api/auth/login', {
-      method: 'POST',
-      body: { user_id: userId, otp },
-      cache: 'no-store',
-      credentials: 'same-origin',
-    })
-    const data = response?.data
-    if (typeof data?.token !== 'string' || !data.token
-      || typeof data.expires !== 'number' || !Number.isFinite(data.expires)) {
-      throw new Error('Unexpected authentication response')
-    }
-    // The session was cleared or replaced during the login round-trip —
-    // discard this response rather than resurrecting the old session.
-    if (sessionEpoch() !== epochBefore) return
-    setSession({
-      accessToken: data.token,
-      expires: data.expires,
-      user: (typeof data.user === 'object' && data.user !== null ? data.user : null) as Record<string, unknown> | null,
+    // Queued with refresh/logout so a login response is never in flight while
+    // another auth operation is applying cookies.
+    await enqueueAuthOp(async () => {
+      const sidAtStart = getSession()?.sid ?? null
+      const response = await apiRequest<UpstreamEnvelope>('/api/auth/login', {
+        method: 'POST',
+        body: { user_id: userId, otp },
+        cache: 'no-store',
+        credentials: 'same-origin',
+      })
+      const data = response?.data
+      if (typeof data?.token !== 'string' || !data.token
+        || typeof data.expires !== 'number' || !Number.isFinite(data.expires)
+        || typeof data.sid !== 'string' || !data.sid) {
+        throw new Error('Unexpected authentication response')
+      }
+      // A session appeared or changed during the login round-trip — discard
+      // this response rather than displacing it.
+      if ((getSession()?.sid ?? null) !== sidAtStart) return
+      setSession({
+        accessToken: data.token,
+        expires: data.expires,
+        user: (typeof data.user === 'object' && data.user !== null ? data.user : null) as Record<string, unknown> | null,
+        sid: data.sid,
+      })
     })
   }, [])
 
