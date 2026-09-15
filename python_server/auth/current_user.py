@@ -7,6 +7,13 @@ def is_positive_integer(value: object) -> TypeGuard[int]:
     return type(value) is int and 0 < value < 2**53
 
 
+# Deployed platform roles confirmed by Clive: 1 Super Admin,
+# 2 Manager [Compliance Officer], 3 User [General Staff], 4 Client.
+# Retired IDs 5/6 and any unknown ID have no access; JWT verification
+# rejects them outright — they are never remapped.
+DEPLOYED_ROLE_IDS = frozenset({1, 2, 3, 4})
+
+
 @dataclass(frozen=True)
 class CurrentUser:
     user_id: int

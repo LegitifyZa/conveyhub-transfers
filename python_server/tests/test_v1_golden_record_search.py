@@ -707,7 +707,7 @@ class V1GoldenRecordRetrievalTests(_GoldenRecordsRouteFixture, unittest.TestCase
         self._assert_no_lookup()
 
     def test_jwt_ai_is_authoritative_even_for_admins_and_override_headers(self):
-        for role in (1, 3, 6):
+        for role in (1, 2, 3):
             with self.subTest(role=role):
                 headers = dict(_auth_header(role, 42), **{"X-Accountable-Institution-Id": "999", "X-Tenant-Id": "OTHER", "X-Service-Key": "browser-key"})
                 response = self._retrieve(headers=headers)

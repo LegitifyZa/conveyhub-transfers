@@ -1,5 +1,5 @@
 import jwt, { JwtPayload } from 'jsonwebtoken'
-import { CurrentUser, isPositiveInteger } from './currentUser'
+import { CurrentUser, DEPLOYED_ROLE_IDS, isPositiveInteger } from './currentUser'
 
 export class JWTVerificationError extends Error {
   constructor(message: string) {
@@ -59,12 +59,17 @@ function buildCurrentUser(payload: TokenClaims): CurrentUser {
     throw new JWTVerificationError(`JWT missing required claims: ${missing.join(', ')}`)
   }
 
+  const userRolesId = toInt(payload.user_roles_id, 'user_roles_id')
+  if (!DEPLOYED_ROLE_IDS.has(userRolesId)) {
+    throw new JWTVerificationError('Invalid user_roles_id claim')
+  }
+
   return new CurrentUser({
     user_id: toInt(payload.user_id, 'user_id'),
     golden_record_id: toUuidOrNull(payload.golden_record_id, 'golden_record_id'),
     abilities: toStringArray(payload.abilities, 'abilities'),
     accountable_institution_id: toInt(payload.accountable_institution_id, 'accountable_institution_id'),
-    user_roles_id: toInt(payload.user_roles_id, 'user_roles_id'),
+    user_roles_id: userRolesId,
     tenant_id: toUuidOrNull(payload.tenant_id, 'tenant_id'),
   })
 }

@@ -27,8 +27,8 @@ class TenantIsolationTests(TestCase):
     """Approved policy: same-institution isolation for every caller.
 
     Institution scoping is independent of user_roles_id — no role,
-    including platform roles 1/6 (or any future privileged role), may
-    read, list or mutate another accountable institution's records.
+    including privileged or retired IDs (or any future privileged role),
+    may read, list or mutate another accountable institution's records.
     """
 
     def test_no_role_has_a_cross_institution_exception(self):

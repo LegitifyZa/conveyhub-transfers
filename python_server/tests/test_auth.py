@@ -170,10 +170,30 @@ class IntegerClaimSecurityTests(TestCase):
 
     def test_canonical_integer_strings_remain_supported(self):
         user = verify_jwt(
-            _make_token(user_id="123", accountable_institution_id="5", user_roles_id="6"),
+            _make_token(user_id="123", accountable_institution_id="5", user_roles_id="2"),
             TEST_JWT_SECRET,
         )
-        self.assertEqual((user.user_id, user.accountable_institution_id, user.user_roles_id), (123, 5, 6))
+        self.assertEqual((user.user_id, user.accountable_institution_id, user.user_roles_id), (123, 5, 2))
+
+    def test_retired_and_unknown_role_ids_are_rejected(self):
+        # Deployed roles are 1-4 only; retired 5/6 and unknown IDs fail closed
+        # even when the token carries read and write abilities.
+        for role in (5, 6, 7, 99):
+            with self.subTest(role=role):
+                with self.assertRaises(JWTVerificationError):
+                    verify_jwt(
+                        _make_token(
+                            user_roles_id=role,
+                            abilities=["transfers:read", "transfers:write"],
+                        ),
+                        TEST_JWT_SECRET,
+                    )
+
+    def test_deployed_role_ids_are_accepted(self):
+        for role in (1, 2, 3, 4):
+            with self.subTest(role=role):
+                user = verify_jwt(_make_token(user_roles_id=role), TEST_JWT_SECRET)
+                self.assertEqual(user.user_roles_id, role)
 
     def test_non_finite_expiration_is_a_controlled_authentication_failure(self):
         with self.assertRaises(JWTVerificationError):
