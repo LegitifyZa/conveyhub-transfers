@@ -159,7 +159,7 @@ describe('Golden Record search BFF proxy', async () => {
 
   it('rejects invalid institution claims before either Golden Record proxy can forward', async () => {
     for (const ai of [0, -1, 5.5]) {
-      const authorization = { Authorization: `Bearer ${makeToken(6, ai)}`, 'X-Accountable-Institution-Id': '5' }
+      const authorization = { Authorization: `Bearer ${makeToken(1, ai)}`, 'X-Accountable-Institution-Id': '5' }
       const search = await httpPost('/api/v1/golden-records/search', authorization, searchBody())
       assert.equal(search.status, 401)
       const detail = await fetch(`${baseUrl}/api/v1/golden-records/${personCandidate.goldenRecordId}?entity_type=person`, { headers: authorization })

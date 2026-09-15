@@ -137,7 +137,7 @@ class InstitutionBoundaryRouteTests(unittest.IsolatedAsyncioTestCase):
         cases = [
             ({}, 401), ({"X-Service-Key": "test-service-key", "X-Accountable-Institution-Id": "5"}, 401),
             (headers(), 503), (headers(ai=1), 503), (headers(ai=7), 503),
-            (headers(role=1), 503), (headers(role=6), 503),
+            (headers(role=1), 503), (headers(role=5), 401), (headers(role=6), 401),
         ]
         routes = {path: operations for path, operations in app.openapi()["paths"].items()
                   if any(path.startswith(prefix) for prefix in LEGACY_PREFIXES)}
@@ -186,9 +186,9 @@ class InstitutionBoundaryRouteTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_no_cross_institution_read_or_list_exception(self):
         # Approved policy: same-institution isolation applies to every caller,
-        # including platform roles 1/6 — foreign detail is NOT_FOUND and the
+        # including the Super Admin role — foreign detail is NOT_FOUND and the
         # list only returns own-institution rows.
-        for role in (1, 6):
+        for role in (1, 2, 3):
             with self.subTest(role=role):
                 detail = await self.client.get(f"/api/v1/transfers/{FOREIGN}", headers=headers(role=role))
                 self.assertEqual(detail.status_code, 404)
@@ -209,7 +209,7 @@ class InstitutionBoundaryRouteTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_missing_and_malformed_institution_context_never_reaches_data_services(self):
         tokens = [token(omit=("accountable_institution_id",))]
-        tokens.extend(token(role=6, ai=value) for value in (None, False, 0, -1, 5.5))
+        tokens.extend(token(role=1, ai=value) for value in (None, False, 0, -1, 5.5))
         for encoded in tokens:
             for path, method in (("/api/v1/transfers/", "GET"), ("/api/v1/golden-records/search", "POST")):
                 with self.subTest(path=path, encoded=encoded[:12]):
@@ -244,10 +244,10 @@ class InstitutionBoundaryRouteTests(unittest.IsolatedAsyncioTestCase):
         self.tx.assert_awaited_once()
 
     async def test_cross_institution_roles_cannot_write_foreign_matters(self):
-        # Approved policy: roles 1/6 keep their read exception but retain no
-        # cross-institution write exception — foreign writes fail closed with
-        # 404 before any mutation, transaction or upstream call.
-        for role in (1, 6):
+        # Approved policy: no deployed role holds a cross-institution write
+        # exception — foreign writes fail closed with 404 before any mutation,
+        # transaction or upstream call.
+        for role in (1, 2, 3):
             writes = (
                 (f"/api/v1/transfers/{FOREIGN}/parties/{OTHER_PARTY}/relationships",
                  {"relationship_code": "test_relationship"}),
@@ -263,14 +263,14 @@ class InstitutionBoundaryRouteTests(unittest.IsolatedAsyncioTestCase):
         self.entities.get_client_by_golden_record.assert_not_awaited()
 
     async def test_cross_institution_roles_still_write_own_matters(self):
-        for role in (1, 6):
+        for role in (1, 2, 3):
             with self.subTest(role=role):
                 response = await self.client.post(
                     f"/api/v1/transfers/{OWN}/parties/{PARTY}/relationships",
                     headers=headers(role=role), json={"relationship_code": "test_relationship"},
                 )
                 self.assertEqual(response.status_code, 201)
-        self.assertEqual(self.tx.await_count, 2)
+        self.assertEqual(self.tx.await_count, 3)
 
     async def test_client_role_denied_on_write_routes_even_with_write_ability(self):
         # The default token grants transfers:write; role 4 must be denied
@@ -287,6 +287,32 @@ class InstitutionBoundaryRouteTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(response.status_code, 403)
         self.query.assert_not_awaited()
         self.tx.assert_not_awaited()
+
+    async def test_retired_and_unknown_role_ids_denied_before_any_handler(self):
+        # Deployed roles are 1-4 only: validly signed tokens carrying retired
+        # IDs 5/6 or unknown IDs are rejected at authentication even with
+        # transfers:read and transfers:write — before persistence or upstream.
+        requests = (
+            ("GET", "/api/v1/transfers/", None),
+            ("GET", f"/api/v1/transfers/{OWN}", None),
+            ("POST", f"/api/v1/transfers/{OWN}/parties/{PARTY}/relationships",
+             {"relationship_code": "test_relationship"}),
+            ("POST", "/api/v1/golden-records/search",
+             {"entity_type": "person", "query": "Example"}),
+        )
+        for role in (5, 6, 7, 99):
+            for method, path, body in requests:
+                with self.subTest(role=role, path=path):
+                    response = await self.client.request(
+                        method, path, headers=headers(role=role),
+                        **({"json": body} if body is not None else {}),
+                    )
+                    self.assertEqual(response.status_code, 401)
+                    self.assertEqual(response.headers.get("cache-control"), "no-store")
+        self.query.assert_not_awaited()
+        self.tx.assert_not_awaited()
+        self.entities.search_entities.assert_not_awaited()
+        self.entities.get_client_by_golden_record.assert_not_awaited()
 
     async def test_sensitive_responses_are_not_cacheable(self):
         for path, authentication in (

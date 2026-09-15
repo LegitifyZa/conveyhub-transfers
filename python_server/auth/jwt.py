@@ -4,7 +4,7 @@ from typing import List, Optional
 
 import jwt
 
-from .current_user import CurrentUser, is_positive_integer
+from .current_user import CurrentUser, DEPLOYED_ROLE_IDS, is_positive_integer
 
 
 class JWTVerificationError(Exception):
@@ -53,6 +53,10 @@ def _build_current_user(payload: dict) -> CurrentUser:
             f"JWT missing required claims: {', '.join(missing)}"
         )
 
+    user_roles_id = _to_int(payload["user_roles_id"], "user_roles_id")
+    if user_roles_id not in DEPLOYED_ROLE_IDS:
+        raise JWTVerificationError("Invalid user_roles_id claim")
+
     return CurrentUser(
         user_id=_to_int(payload["user_id"], "user_id"),
         golden_record_id=_to_uuid_or_none(
@@ -62,7 +66,7 @@ def _build_current_user(payload: dict) -> CurrentUser:
         accountable_institution_id=_to_int(
             payload["accountable_institution_id"], "accountable_institution_id"
         ),
-        user_roles_id=_to_int(payload["user_roles_id"], "user_roles_id"),
+        user_roles_id=user_roles_id,
         tenant_id=_to_uuid_or_none(payload.get("tenant_id"), "tenant_id"),
     )
 

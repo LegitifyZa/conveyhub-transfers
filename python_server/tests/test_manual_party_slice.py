@@ -496,7 +496,7 @@ class ManualPartyRouteTests(unittest.IsolatedAsyncioTestCase):
     async def test_cross_institution_roles_cannot_create_under_foreign_institution(self):
         # No role holds a cross-institution exception: matter creation is
         # always attributed to the verified caller institution.
-        for role in (1, 6):
+        for role in (1, 2, 3):
             with self.subTest(role=role):
                 response = await self.client.post(
                     "/api/v1/transfers/",
@@ -510,7 +510,7 @@ class ManualPartyRouteTests(unittest.IsolatedAsyncioTestCase):
     async def test_cross_institution_roles_cannot_write_foreign_matters(self):
         body = {"party_source": "manual", "entity_type": "person", "role": "transferor",
                 "manual": {"name": "Jane"}}
-        for role in (1, 6):
+        for role in (1, 2, 3):
             for path, payload in (
                 (f"/api/v1/transfers/{FOREIGN}/parties", body),
                 (f"/api/v1/transfers/{FOREIGN}/estate-contexts", {}),
@@ -525,7 +525,7 @@ class ManualPartyRouteTests(unittest.IsolatedAsyncioTestCase):
         self.entities.get_client_by_golden_record.assert_not_awaited()
 
     async def test_cross_institution_roles_still_write_own_matters(self):
-        for role in (1, 6):
+        for role in (1, 2, 3):
             with self.subTest(role=role):
                 create = await self.client.post(
                     "/api/v1/transfers/",

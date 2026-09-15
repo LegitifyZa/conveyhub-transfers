@@ -155,10 +155,23 @@ describe('Verified institution claims and policy', () => {
   }
 
   it('retains canonical integer-string claims', () => {
-    const user = verifyJwt(makeToken({ user_id: '123', accountable_institution_id: '5', user_roles_id: '6' }), SECRET)
+    const user = verifyJwt(makeToken({ user_id: '123', accountable_institution_id: '5', user_roles_id: '2' }), SECRET)
     assert.equal(user.user_id, 123)
     assert.equal(user.accountable_institution_id, 5)
-    assert.equal(user.user_roles_id, 6)
+    assert.equal(user.user_roles_id, 2)
+  })
+
+  it('denies retired and unknown role IDs even with read and write abilities', () => {
+    for (const role of [5, 6, 7, 99]) {
+      assert.throws(
+        () => verifyJwt(makeToken({ user_roles_id: role }), SECRET),
+        JWTVerificationError, `user_roles_id: ${role}`,
+      )
+    }
+    for (const role of [1, 2, 3, 4]) {
+      const user = verifyJwt(makeToken({ user_roles_id: role }), SECRET)
+      assert.equal(user.user_roles_id, role)
+    }
   })
 
   it('does not let client identity override the institution boundary', () => {
@@ -168,7 +181,7 @@ describe('Verified institution claims and policy', () => {
   })
 
   it('rejects missing, non-positive and malformed institution scopes even for privileged roles', () => {
-    for (const role of [1, 3, 4, 6]) {
+    for (const role of [1, 2, 3, 4]) {
       for (const value of [undefined, null, false, 0, -1, 2.5, '2']) {
         const user = new CurrentUser({ user_id: 1, accountable_institution_id: value as number, user_roles_id: role })
         assert.equal(authorizeRecordAccess(user, 5), 'not_found')
@@ -181,7 +194,7 @@ describe('Verified institution claims and policy', () => {
   })
 
   it('keeps no cross-institution write exception for privileged roles', () => {
-    for (const role of [1, 6]) {
+    for (const role of [1, 2, 3]) {
       const user = new CurrentUser({ user_id: 1, accountable_institution_id: 5, user_roles_id: role })
       assert.equal(authorizeRecordAccess(user, 7), 'not_found')
       assert.equal(authorizeRecordAccess(user, 5), 'allowed')
@@ -221,7 +234,8 @@ describe('Legacy quarantine', () => {
         [{}, 401], [{ 'X-Service-Key': 'test-service-key', 'X-Accountable-Institution-Id': '5' }, 401],
         [authorization(), 503], [authorization({ accountable_institution_id: 1 }), 503],
         [authorization({ accountable_institution_id: 7 }), 503],
-        [authorization({ user_roles_id: 1 }), 503], [authorization({ user_roles_id: 6 }), 503],
+        [authorization({ user_roles_id: 1 }), 503],
+        [authorization({ user_roles_id: 5 }), 401], [authorization({ user_roles_id: 6 }), 401],
       ]
       for (const [authentication, expected] of cases) {
         const result = await request(`${path}?accountable_institution_id=7&text=Test&q=Test&id=${GR}`, authentication, method,
@@ -264,7 +278,7 @@ describe('Contracted v1 institution boundaries', () => {
   })
 
   it('keeps no cross-institution read or list exception for privileged roles', async () => {
-    for (const role of [1, 6]) {
+    for (const role of [1, 2, 3]) {
       const detail = await request(`/api/v1/transfers/${FOREIGN}`, authorization({ user_roles_id: role }))
       assert.equal(detail.status, 404)
       const listing = await request('/api/v1/transfers/', authorization({ user_roles_id: role }))
@@ -288,8 +302,24 @@ describe('Contracted v1 institution boundaries', () => {
     assert.deepEqual(calls, [])
   })
 
-  it('denies cross-institution writes for roles 1 and 6 before any mutation', async () => {
-    for (const role of [1, 6]) {
+  it('denies retired and unknown role IDs before any handler, persistence or upstream', async () => {
+    for (const role of [5, 6, 7, 99]) {
+      for (const [path, method, body] of [
+        ['/api/v1/transfers/', 'GET', undefined],
+        [`/api/v1/transfers/${OWN}`, 'GET', undefined],
+        [`/api/v1/transfers/${OWN}/parties/${PARTY}/relationships`, 'POST', { relationship_code: 'test_relationship' }],
+      ] as const) {
+        const result = await request(path, authorization({ user_roles_id: role }), method, body)
+        assert.equal(result.status, 401, `role ${role} ${method} ${path}`)
+        assert.equal(result.headers.get('cache-control'), 'no-store')
+      }
+    }
+    assert.deepEqual(calls, [])
+    assert.deepEqual(outbound, [])
+  })
+
+  it('denies cross-institution writes for staff roles before any mutation', async () => {
+    for (const role of [1, 2, 3]) {
       const result = await request(
         `/api/v1/transfers/${FOREIGN}/parties/${OTHER_PARTY}/relationships`,
         authorization({ user_roles_id: role }), 'POST', { relationship_code: 'test_relationship' },
@@ -301,8 +331,8 @@ describe('Contracted v1 institution boundaries', () => {
     assert.deepEqual(outbound, [])
   })
 
-  it('keeps same-institution writes working for roles 1 and 6', async () => {
-    for (const role of [1, 6]) {
+  it('keeps same-institution writes working for staff roles', async () => {
+    for (const role of [1, 2, 3]) {
       const result = await request(
         `/api/v1/transfers/${OWN}/parties/${PARTY}/relationships`,
         authorization({ user_roles_id: role }), 'POST', { relationship_code: 'test_relationship' },
@@ -313,7 +343,7 @@ describe('Contracted v1 institution boundaries', () => {
 
   it('rejects missing and tampered JWT institution context without touching persistence', async () => {
     const tokens = [makeToken({}, ['accountable_institution_id']), `${makeToken()}.tampered`]
-    for (const ai of [null, false, 0, -1, 5.5]) tokens.push(makeToken({ accountable_institution_id: ai, user_roles_id: 6 }))
+    for (const ai of [null, false, 0, -1, 5.5]) tokens.push(makeToken({ accountable_institution_id: ai, user_roles_id: 1 }))
     for (const encoded of tokens) {
       const result = await request('/api/v1/transfers?accountable_institution_id=5', {
         Authorization: `Bearer ${encoded}`, 'X-Accountable-Institution-Id': '5',

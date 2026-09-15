@@ -153,10 +153,13 @@ fixtures are synthetic in-memory SQLite, not PostgreSQL migration certification.
   operation. Restoring these paths requires an approved authenticated contract,
   not simply removing the quarantine dependency/middleware.
 - Same-institution isolation applies to every caller — approved policy removed
-  the former cross-institution exception for platform roles 1/6 entirely: no
+  the former cross-institution exception for privileged roles entirely: no
   role may read, list or mutate another accountable institution's matters or
   child resources, and matter creation is always attributed to the verified
-  caller's institution. Institution ID 1 is not a privileged role. Clients must
+  caller's institution. Institution ID 1 is not a privileged role. Only the
+  deployed roles 1–4 can authenticate at all: retired IDs 5/6 and unknown IDs
+  are rejected at JWT verification in both servers (see the confirmed role
+  authority note below). Clients must
   additionally prove GR party membership. Standalone GR discovery/retrieval
   keeps its existing linkage-scoped projection; no charging trigger or new
   entitlement policy is enabled.
@@ -216,30 +219,27 @@ python -m mypy --follow-imports=silent --ignore-missing-imports --no-incremental
 - Discovery creates no linkage and enables no charging trigger. The source search
   path reads repositories/serializers; submit, resubmit and provider/profile runs
   are separate. Deployed discovery/billing behaviour remains unverified.
-- **Documented role authority:** upstream
-  `docs/transfers_golden_record_providers_auth.md` sections 4.3 and 5.5 describe a
-  six-role model; the newer `docs/rbac.md` describes four roles (1 Super Admin,
-  2 AI Admin, 3 Agent, 4 Client) with roles 5/6 retired. The supplied
-  `DEEDLY_Role_CRUD_Permissions` workbook ("Role Permissions" sheet) now
-  supports the intended four-role model: XML inspection of the current copy
-  shows the former roles 5 (Executive Compliance Officer) and 6 (Admin Agent)
-  rows removed outright — rows 9–10 are empty `<row>` elements with no cells,
-  no `hidden` attribute and no strikethrough formatting, and their shared
-  strings are gone. Remaining roles: 1 Super Admin, 2 Manager [Compliance
-  Officer], 3 User [General Staff], 4 Client (Client denied all transfer
-  writes). Its provisional disclaimer still stands — it is a
-  best-current-estimate pending the platform's canonical ability/role
-  contract — so deployed role IDs, the four↔six correspondence (e.g. whether
-  "AI Admin"/"Agent" map to "Manager [Compliance Officer]"/"User [General
-  Staff]") and handling of the retired roles still need Clive's confirmation.
-  Do not infer or renumber roles. Per approved product policy, DEEDLY applies
-  same-institution isolation to every caller regardless of role — including
-  the roles the matrix describes as cross-tenant for reads: abilities and GR
+- **Documented role authority — confirmed:** Clive confirmed the deployed
+  platform uses roles 1–4 exactly as the `DEEDLY_Role_CRUD_Permissions`
+  workbook lists them: 1 Super Admin, 2 Manager [Compliance Officer],
+  3 User [General Staff], 4 Client. The role-ID mapping question, including
+  Client = 4, is closed; the upstream six-role
+  `docs/transfers_golden_record_providers_auth.md` model is superseded for
+  DEEDLY. Product decision: retired roles 5/6 and any unknown role ID have no
+  access whatsoever — validly signed tokens carrying them are rejected, never
+  remapped, at JWT claim validation in both servers
+  (`python_server/auth/jwt.py`, `server/auth/jwt.ts`, `DEPLOYED_ROLE_IDS`), so
+  they receive 401 before any protected handler, database or upstream call
+  even when the token carries read/write abilities. Previously such tokens
+  verified as non-client staff with same-institution access — the gap this
+  closes. Per approved product policy, DEEDLY applies same-institution
+  isolation to every deployed caller regardless of role: abilities and GR
   party membership still apply, and standalone GR linkage checks are
   unchanged. Scoping never consults `user_roles_id` for privileged
-  exceptions. `test_policy.py`, `test_ai_tenant_security.py` and
-  `aiTenantSecurity.test.ts` cover privileged roles and ordinary/client users,
-  including ID/scope tampering.
+  exceptions. `test_auth.py`, `test_policy.py`,
+  `test_ai_tenant_security.py` and `aiTenantSecurity.test.ts` cover deployed,
+  retired and unknown roles and ordinary/client users, including ID/scope
+  tampering.
 - **Test tenant identifiers received** (`Documentation/test data/Test platform
   identifiers.txt`): AI 1 Legitify, 2 Remax Evolve, 3 Rockstar Realty, 4 Kruger
   Attorneys & Conveyancers Inc, 5 QA Sandbox; Legitify and QA Sandbox are
