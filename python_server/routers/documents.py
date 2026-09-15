@@ -1,8 +1,9 @@
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 
+from auth.dependencies import quarantine_legacy_route
 from db import query
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(quarantine_legacy_route)])
 
 
 def map_document_row(row):

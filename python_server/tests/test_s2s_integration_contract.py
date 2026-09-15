@@ -821,6 +821,22 @@ class SearchWorkflowContractTests(unittest.IsolatedAsyncioTestCase):
         entity_ids = [r.url.path[len(ENTITIES_PREFIX) :] for r in gateway.entity_requests]
         self.assertEqual(entity_ids, [str(GR_PERSON)])
 
+    async def test_current_linkage_contract_does_not_expose_or_link_an_unlinked_candidate(self):
+        gateway = FakeLegitifyGateway(search_results=[{"id": str(GR_OTHER_AI)}])
+        original_linkages = {key: dict(row) for key, row in gateway.linkages.items()}
+
+        result = await self._search(gateway)
+
+        self.assertEqual(result.status, SearchStatus.NOT_FOUND)
+        self.assertIsNone(result.record)
+        self.assertFalse(result.candidates)
+        self.assertEqual(gateway.linkages, original_linkages)
+        self.assertEqual(
+            [(request.method, request.url.path) for request in gateway.requests],
+            [("POST", "/api/v1/entities/search"), ("GET", f"{LINKAGE_PREFIX}{GR_OTHER_AI}")],
+        )
+        self.assertEqual(gateway.entity_requests, [])
+
     async def test_multiple_visible_candidates_return_ambiguous(self):
         gateway = FakeLegitifyGateway(
             search_results=[{"id": str(GR_PERSON)}, {"id": str(GR_SHARED)}]

@@ -11,6 +11,7 @@ interface TransferNavigationProps {
   onSave?: () => void
   onSubmit?: () => void
   isSaving?: boolean
+  persistenceDisabled?: boolean
 }
 
 const TransferNavigation: React.FC<TransferNavigationProps> = ({
@@ -20,7 +21,8 @@ const TransferNavigation: React.FC<TransferNavigationProps> = ({
   onNext,
   onSave,
   onSubmit,
-  isSaving = false
+  isSaving = false,
+  persistenceDisabled = false
 }) => {
   const { state } = useTransfer()
 
@@ -131,7 +133,7 @@ const TransferNavigation: React.FC<TransferNavigationProps> = ({
             <Button
               variant="secondary"
               onClick={onSave}
-              disabled={isSaving}
+              disabled={isSaving || persistenceDisabled}
               className="transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <Save className="h-4 w-4 mr-2" />
@@ -143,7 +145,7 @@ const TransferNavigation: React.FC<TransferNavigationProps> = ({
             <Button
               variant="premium-primary"
               onClick={onSubmit}
-              disabled={!canProceed || isSaving}
+              disabled={!canProceed || isSaving || persistenceDisabled}
               className="transition-all duration-200 hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               Submit Transfer

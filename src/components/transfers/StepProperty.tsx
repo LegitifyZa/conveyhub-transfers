@@ -6,6 +6,7 @@ import 'leaflet/dist/leaflet.css'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui'
 import { Input } from '@/components/ui'
 import { apiRequest } from '@/lib/api/http'
+import { serviceUnavailableMessage } from '@/lib/api/serviceStatus'
 import { useTransfer, PropertyDetails } from './TransferForm'
 
 const StepProperty: React.FC = () => {
@@ -86,7 +87,7 @@ const StepProperty: React.FC = () => {
         })))
       } catch (err) {
         setSuggestions([])
-        setSearchError(err instanceof Error ? err.message : 'Address search failed')
+        setSearchError(`${serviceUnavailableMessage('Address lookup', err)} You can still type the address manually.`)
       } finally {
         setIsSearching(false)
       }
@@ -144,7 +145,7 @@ const StepProperty: React.FC = () => {
         await geocodeAddress(result)
       }
     } catch (err) {
-      setSearchError(err instanceof Error ? err.message : 'Could not retrieve address')
+      setSearchError(`${serviceUnavailableMessage('Address lookup', err)} You can still type the address manually.`)
     }
   }
 

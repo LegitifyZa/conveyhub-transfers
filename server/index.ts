@@ -22,6 +22,10 @@ const app = express()
 const PORT = parseInt(process.env.PORT || '3001', 10)
 
 app.use(cors())
+app.use('/api', (_req: Request, res: Response, next: NextFunction) => {
+  res.setHeader('Cache-Control', 'no-store')
+  next()
+})
 app.use(express.json({ limit: '10mb' }))
 app.use(express.urlencoded({ extended: true }))
 
@@ -84,11 +88,14 @@ app.use((_req: Request, res: Response) => {
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
-  console.error('Unhandled error:', err)
-  const statusCode = (err as any).statusCode || 500
+  const reportedStatus = (err as { statusCode?: unknown }).statusCode
+  const statusCode = typeof reportedStatus === 'number' && Number.isInteger(reportedStatus)
+    && reportedStatus >= 400 && reportedStatus <= 599 ? reportedStatus : 500
+  console.error('API request failed', { statusCode })
+  res.setHeader('Cache-Control', 'no-store')
   res.status(statusCode).json({
     success: false,
-    error: process.env.NODE_ENV === 'production' ? 'Internal server error' : err.message,
+    error: statusCode >= 500 ? 'Internal server error' : 'Invalid request',
   })
 })
 

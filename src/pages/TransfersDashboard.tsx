@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Plus, Search, Calendar, User, Building, FileText, TrendingUp } from 'lucide-react'
-import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui'
+import { Card, CardHeader, CardTitle, CardContent, UnavailableNotice } from '@/components/ui'
 import { Button } from '@/components/ui'
 import { Input } from '@/components/ui'
 import { Badge } from '@/components/ui'
@@ -132,7 +132,7 @@ const TransfersDashboard: React.FC = () => {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm text-gray-600 dark:text-gray-400">Total Transfers</p>
-                  <p className="text-2xl font-bold text-gray-900 dark:text-gray-100">{stats.total}</p>
+                  <p className="text-2xl font-bold text-gray-900 dark:text-gray-100">{error ? '—' : stats.total}</p>
                 </div>
                 <div className="w-12 h-12 rounded-full bg-blue-100 dark:bg-blue-900/20 flex items-center justify-center">
                   <FileText className="w-6 h-6 text-blue-600 dark:text-blue-400" />
@@ -146,7 +146,7 @@ const TransfersDashboard: React.FC = () => {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm text-gray-600 dark:text-gray-400">Completed</p>
-                  <p className="text-2xl font-bold text-green-600 dark:text-green-400">{stats.completed}</p>
+                  <p className="text-2xl font-bold text-green-600 dark:text-green-400">{error ? '—' : stats.completed}</p>
                 </div>
                 <div className="w-12 h-12 rounded-full bg-green-100 dark:bg-green-900/20 flex items-center justify-center">
                   <TrendingUp className="w-6 h-6 text-green-600 dark:text-green-400" />
@@ -160,7 +160,7 @@ const TransfersDashboard: React.FC = () => {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm text-gray-600 dark:text-gray-400">In Progress</p>
-                  <p className="text-2xl font-bold text-blue-600 dark:text-blue-400">{stats.inProgress}</p>
+                  <p className="text-2xl font-bold text-blue-600 dark:text-blue-400">{error ? '—' : stats.inProgress}</p>
                 </div>
                 <div className="w-12 h-12 rounded-full bg-blue-100 dark:bg-blue-900/20 flex items-center justify-center">
                   <Calendar className="w-6 h-6 text-blue-600 dark:text-blue-400" />
@@ -174,7 +174,7 @@ const TransfersDashboard: React.FC = () => {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm text-gray-600 dark:text-gray-400">Draft</p>
-                  <p className="text-2xl font-bold text-gray-600 dark:text-gray-400">{stats.draft}</p>
+                  <p className="text-2xl font-bold text-gray-600 dark:text-gray-400">{error ? '—' : stats.draft}</p>
                 </div>
                 <div className="w-12 h-12 rounded-full bg-gray-100 dark:bg-gray-900/20 flex items-center justify-center">
                   <FileText className="w-6 h-6 text-gray-600 dark:text-gray-400" />
@@ -240,8 +240,11 @@ const TransfersDashboard: React.FC = () => {
           </div>
         )}
         {error && !isLoading && (
-          <div className="mb-6 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4">
-            <p className="text-sm text-red-700 dark:text-red-300">{error}</p>
+          <div className="mb-6">
+            <UnavailableNotice
+              message="Transfers are temporarily unavailable."
+              detail={`${error} — the counts and list below are not live.`}
+            />
           </div>
         )}
 
@@ -252,7 +255,11 @@ const TransfersDashboard: React.FC = () => {
               <CardTitle>Recent Transfers</CardTitle>
             </CardHeader>
             <CardContent>
-              {filteredTransfers.length === 0 ? (
+              {error ? (
+                <p className="py-12 text-center text-sm text-gray-500 dark:text-gray-400">
+                  No transfer data is available.
+                </p>
+              ) : filteredTransfers.length === 0 ? (
                 <div className="text-center py-12">
                   <div className="w-16 h-16 rounded-full bg-gray-100 dark:bg-gray-900/20 flex items-center justify-center mx-auto mb-4">
                     <Search className="w-8 h-8 text-gray-400" />

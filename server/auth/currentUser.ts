@@ -1,3 +1,13 @@
+export function isPositiveInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
+}
+
+// Deployed platform roles confirmed by Clive: 1 Super Admin,
+// 2 Manager [Compliance Officer], 3 User [General Staff], 4 Client.
+// Retired IDs 5/6 and any unknown ID have no access; JWT verification
+// rejects them outright — they are never remapped.
+export const DEPLOYED_ROLE_IDS: ReadonlySet<number> = new Set([1, 2, 3, 4])
+
 export class CurrentUser {
   user_id: number
   golden_record_id: string | null

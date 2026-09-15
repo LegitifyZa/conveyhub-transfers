@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { ArrowLeft, CheckCircle2, Clock, Circle, AlertCircle, Calendar, Building, User, ChevronDown, ChevronUp, History } from 'lucide-react'
-import { Card, CardHeader, CardTitle, CardContent, Modal } from '@/components/ui'
+import { Card, CardHeader, CardTitle, CardContent, Modal, UnavailableNotice } from '@/components/ui'
 import { Button } from '@/components/ui'
 import { Badge } from '@/components/ui'
 import { useTransfers, TransferAggregate } from '@/hooks/useTransfers'
@@ -253,10 +253,12 @@ const TransferMilestones: React.FC = () => {
     ])
   }
 
-  const persistMilestones = async (updatedMilestones: Milestone[]) => {
-    if (!resolvedTransferId) return
-    await updateMilestones(resolvedTransferId, updatedMilestones)
+  const persistMilestones = async (updatedMilestones: Milestone[]): Promise<boolean> => {
+    if (!resolvedTransferId) return false
+    const saved = await updateMilestones(resolvedTransferId, updatedMilestones)
+    if (!saved) return false
     await fetchActivity(resolvedTransferId)
+    return true
   }
 
   const updatePropertyDetail = (field: keyof TransferDetails['property'], value: string) => {
@@ -268,17 +270,15 @@ const TransferMilestones: React.FC = () => {
   }
 
   const saveTransferDetails = async () => {
-    if (!resolvedTransferId || !currentTransfer) {
-      addAuditEntry('Updated transfer, property, buyer, or seller details.')
-      setIsDetailsExpanded(false)
-      return
-    }
+    if (!resolvedTransferId || !currentTransfer) return
     setIsSaving(true)
     try {
       const updated = detailsToAggregate(currentTransfer, transfer)
-      await updateTransfer(resolvedTransferId, updated)
-      addAuditEntry('Updated transfer, property, buyer, or seller details.')
-      setIsDetailsExpanded(false)
+      const saved = await updateTransfer(resolvedTransferId, updated)
+      if (saved) {
+        addAuditEntry('Updated transfer, property, buyer, or seller details.')
+        setIsDetailsExpanded(false)
+      }
     } finally {
       setIsSaving(false)
     }
@@ -298,8 +298,12 @@ const TransferMilestones: React.FC = () => {
         : item
     )
     setMilestones(updated)
-    addAuditEntry(`Changed ${milestone.name} status from ${getStatusText(milestone.status)} to ${getStatusText(newStatus)}.`)
-    await persistMilestones(updated)
+    const saved = await persistMilestones(updated)
+    if (saved) {
+      addAuditEntry(`Changed ${milestone.name} status from ${getStatusText(milestone.status)} to ${getStatusText(newStatus)}.`)
+    } else {
+      setMilestones(milestones)
+    }
   }
 
   const updateMilestoneNotes = (id: string, notes: string) => {
@@ -312,8 +316,12 @@ const TransferMilestones: React.FC = () => {
     const previousNotes = noteValuesAtFocus.current.get(id) || ''
     const milestone = milestones.find(item => item.id === id)
     if (milestone && previousNotes !== notes) {
-      addAuditEntry(`${notes.trim() ? 'Updated' : 'Cleared'} notes for ${milestone.name}.`)
-      await persistMilestones(milestones.map(m => m.id === id ? { ...m, notes } : m))
+      const saved = await persistMilestones(milestones.map(m => m.id === id ? { ...m, notes } : m))
+      if (saved) {
+        addAuditEntry(`${notes.trim() ? 'Updated' : 'Cleared'} notes for ${milestone.name}.`)
+      } else {
+        setMilestones(milestones)
+      }
     }
     noteValuesAtFocus.current.delete(id)
   }
@@ -332,8 +340,12 @@ const TransferMilestones: React.FC = () => {
       m.id === id ? { ...m, dueDate } : m
     )
     setMilestones(updated)
-    addAuditEntry(dueDate ? `Set the due date for ${milestone.name} to ${dueDate}.` : `Cleared the due date for ${milestone.name}.`)
-    await persistMilestones(updated)
+    const saved = await persistMilestones(updated)
+    if (saved) {
+      addAuditEntry(dueDate ? `Set the due date for ${milestone.name} to ${dueDate}.` : `Cleared the due date for ${milestone.name}.`)
+    } else {
+      setMilestones(milestones)
+    }
   }
 
   const getStatusIcon = (status: MilestoneStatus) => {
@@ -423,11 +435,17 @@ const TransferMilestones: React.FC = () => {
           </div>
         </div>
 
-        {(error || isLoading) && (
-          <div className={`mb-6 rounded-lg p-4 ${error ? 'bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800' : 'bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800'}`}>
-            <p className={`text-sm ${error ? 'text-red-700 dark:text-red-300' : 'text-blue-700 dark:text-blue-300'}`}>
-              {error ? error : 'Loading transfer milestones...'}
-            </p>
+        {isLoading && (
+          <div className="mb-6 rounded-lg p-4 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800">
+            <p className="text-sm text-blue-700 dark:text-blue-300">Loading transfer milestones...</p>
+          </div>
+        )}
+        {error && (
+          <div className="mb-6">
+            <UnavailableNotice
+              message="This transfer is temporarily unavailable."
+              detail={error}
+            />
           </div>
         )}
 
@@ -439,28 +457,28 @@ const TransferMilestones: React.FC = () => {
                 <Building className="w-4 h-4 text-gray-400" />
                 <div>
                   <p className="text-xs text-gray-500 dark:text-gray-400">Property</p>
-                  <p className="text-sm font-medium text-gray-900 dark:text-gray-100">{transfer.property.address}, {transfer.property.city}</p>
+                  <p className="text-sm font-medium text-gray-900 dark:text-gray-100">{currentTransfer ? `${transfer.property.address}, ${transfer.property.city}` : '—'}</p>
                 </div>
               </div>
               <div className="flex items-center space-x-2">
                 <User className="w-4 h-4 text-gray-400" />
                 <div>
                   <p className="text-xs text-gray-500 dark:text-gray-400">Buyer</p>
-                  <p className="text-sm font-medium text-gray-900 dark:text-gray-100">{transfer.buyer.fullName}</p>
+                  <p className="text-sm font-medium text-gray-900 dark:text-gray-100">{currentTransfer ? transfer.buyer.fullName : '—'}</p>
                 </div>
               </div>
               <div className="flex items-center space-x-2">
                 <User className="w-4 h-4 text-gray-400" />
                 <div>
                   <p className="text-xs text-gray-500 dark:text-gray-400">Seller</p>
-                  <p className="text-sm font-medium text-gray-900 dark:text-gray-100">{transfer.seller.fullName}</p>
+                  <p className="text-sm font-medium text-gray-900 dark:text-gray-100">{currentTransfer ? transfer.seller.fullName : '—'}</p>
                 </div>
               </div>
               <div>
                 <p className="text-xs text-gray-500 dark:text-gray-400">Purchase Price</p>
-                <p className="text-sm font-bold text-gray-900 dark:text-gray-100">{formatCurrency(transfer.purchasePrice)}</p>
+                <p className="text-sm font-bold text-gray-900 dark:text-gray-100">{currentTransfer ? formatCurrency(transfer.purchasePrice) : '—'}</p>
               </div>
-              <Button variant="outline" size="sm" onClick={() => setIsDetailsExpanded(current => !current)} disabled={isSaving}>
+              <Button variant="outline" size="sm" onClick={() => setIsDetailsExpanded(current => !current)} disabled={isSaving || !currentTransfer}>
                 {isDetailsExpanded ? <ChevronUp className="mr-2 h-4 w-4" /> : <ChevronDown className="mr-2 h-4 w-4" />}
                 {isDetailsExpanded ? 'Hide Details' : 'View & Edit Details'}
               </Button>
@@ -529,6 +547,12 @@ const TransferMilestones: React.FC = () => {
         </div>
 
         {activeTab === 'milestones' ? (
+          error ? (
+            <UnavailableNotice
+              message="Milestones are temporarily unavailable."
+              detail="Milestone progress and audit history cannot be loaded or saved right now, so no milestone changes are shown."
+            />
+          ) : (
           <>
             {/* Progress Overview */}
         <div className="grid grid-cols-1 gap-4 md:grid-cols-5 mb-6">
@@ -701,6 +725,7 @@ const TransferMilestones: React.FC = () => {
           </CardContent>
         </Card>
           </>
+          )
         ) : activeTab === 'documents' ? (
           <TransferDocumentsPanel transferId={resolvedTransferId} />
         ) : (

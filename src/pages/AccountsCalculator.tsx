@@ -32,6 +32,8 @@ export const AccountsCalculator: React.FC = () => {
   const [activeTab, setActiveTab] = useState<CalcTab>('transfer')
   const [firmSettings, setFirmSettings] = useState<FirmAccountSettings>(DEFAULT_FIRM_SETTINGS)
   const [activeTariff, setActiveTariff] = useState<TariffSchedule>(LSSA_TARIFF_2026_2027)
+  const [accountsReady, setAccountsReady] = useState(false)
+  const [accountsError, setAccountsError] = useState(false)
 
   // Inputs
   const [purchasePrice, setPurchasePrice] = useState<string>('2500000')
@@ -49,8 +51,16 @@ export const AccountsCalculator: React.FC = () => {
   const [generatedProforma, setGeneratedProforma] = useState<ProformaStatementData | null>(null)
 
   useEffect(() => {
-    AccountsApi.getFirmSettings().then(setFirmSettings)
-    AccountsApi.getActiveTariffSchedule().then(setActiveTariff)
+    let active = true
+    Promise.all([AccountsApi.getFirmSettings(), AccountsApi.getTariffSchedules()])
+      .then(([settings, tariffs]) => {
+        if (!active) return
+        setFirmSettings(settings)
+        setActiveTariff(tariffs.find(t => t.id === settings.activeTariffScheduleId) || tariffs[0] || LSSA_TARIFF_2026_2027)
+        setAccountsReady(true)
+      })
+      .catch(() => { if (active) setAccountsError(true) })
+    return () => { active = false }
   }, [])
 
   // Parsed Numerical Values
@@ -191,6 +201,16 @@ export const AccountsCalculator: React.FC = () => {
     })
     setGeneratedProforma(proforma)
     setActiveTab('proforma')
+  }
+
+  if (accountsError || !accountsReady) {
+    return (
+      <Card><CardContent className="p-6">
+        <p role={accountsError ? 'alert' : 'status'}>
+          {accountsError ? 'Accounts are unavailable pending authenticated institution access.' : 'Loading accounts...'}
+        </p>
+      </CardContent></Card>
+    )
   }
 
   return (

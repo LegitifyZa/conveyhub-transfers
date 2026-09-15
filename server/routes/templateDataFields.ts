@@ -1,9 +1,11 @@
 import { Router, Request, Response } from 'express'
+import { quarantineLegacyRoute } from '../auth/requireJwt'
 import { query } from '../db'
 import { asyncHandler } from '../utils/asyncHandler'
 import { isNonEmptyString } from '../utils/validate'
 
 const router = Router()
+router.use(quarantineLegacyRoute)
 
 function mapFieldRow(row: any) {
   return {

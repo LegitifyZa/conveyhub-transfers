@@ -1,4 +1,4 @@
-import { CurrentUser } from './currentUser'
+import { CurrentUser, isPositiveInteger } from './currentUser'
 
 export const AuthorizationDecision = {
   ALLOWED: 'allowed',
@@ -9,8 +9,6 @@ export const AuthorizationDecision = {
 
 export type AuthorizationDecision = (typeof AuthorizationDecision)[keyof typeof AuthorizationDecision]
 
-export const CROSS_TENANT_ROLES = [1, 6]
-
 export class TenantBoundaryError extends Error {
   constructor(message: string) {
     super(message)
@@ -19,24 +17,15 @@ export class TenantBoundaryError extends Error {
 }
 
 /**
- * Return true for roles documented in the handover as cross-tenant.
- * Handover §4.3 and §5.5: user_roles_id ∈ (1, 6) (Super Admin, Admin Agent)
- * are cross-tenant by design.
+ * Resolve the caller's verified institution, rejecting any other.
+ * Approved policy: same-institution isolation applies to every caller —
+ * there is no privileged-role exception. Institution scoping is independent
+ * of user_roles_id.
  */
-export function isCrossTenant(user: CurrentUser): boolean {
-  return CROSS_TENANT_ROLES.includes(user.user_roles_id)
-}
-
-/**
- * Return the accountable_institution_id a SQL query should scope to.
- * Cross-tenant users may explicitly select another AI; normal staff are locked.
- */
-export function resolveEffectiveTenantId(
-  user: CurrentUser,
-  requestedAi?: number
-): number {
-  if (isCrossTenant(user)) {
-    return requestedAi ?? user.accountable_institution_id
+function resolveOwnTenantId(user: CurrentUser, requestedAi?: number): number {
+  if (!isPositiveInteger(user.accountable_institution_id)
+    || (requestedAi !== undefined && !isPositiveInteger(requestedAi))) {
+    throw new TenantBoundaryError('Invalid institution context')
   }
 
   if (requestedAi !== undefined && requestedAi !== user.accountable_institution_id) {
@@ -44,6 +33,17 @@ export function resolveEffectiveTenantId(
   }
 
   return user.accountable_institution_id
+}
+
+/**
+ * Return the accountable_institution_id a read query should scope to.
+ * All callers are locked to their verified institution.
+ */
+export function resolveEffectiveTenantId(
+  user: CurrentUser,
+  requestedAi?: number
+): number {
+  return resolveOwnTenantId(user, requestedAi)
 }
 
 /**
@@ -55,14 +55,15 @@ export function authorizeRecordAccess(
   user: CurrentUser,
   recordAccountableInstitutionId: number
 ): AuthorizationDecision {
-  if (isCrossTenant(user)) {
-    return AuthorizationDecision.ALLOWED
+  if (!isPositiveInteger(user.accountable_institution_id) || !isPositiveInteger(recordAccountableInstitutionId)) {
+    return AuthorizationDecision.NOT_FOUND
   }
 
   if (user.isClient) {
     // Handover §5.5: client may only see matters where their golden_record_id
     // is a party. Without that proof, fail closed.
-    if (user.golden_record_id === null || user.golden_record_id === undefined) {
+    if (user.accountable_institution_id !== recordAccountableInstitutionId
+      || user.golden_record_id === null || user.golden_record_id === undefined) {
       return AuthorizationDecision.NOT_FOUND
     }
     return AuthorizationDecision.CLIENT_PARTY_CHECK_REQUIRED
@@ -76,12 +77,43 @@ export function authorizeRecordAccess(
 }
 
 /**
+ * Return the accountable_institution_id a mutation should be attributed to.
+ * Approved policy: mutations always use the verified caller's institution —
+ * no role holds a cross-tenant exception. A requested AI that differs from
+ * the caller's verified AI is a tenant boundary violation.
+ */
+export function resolveWriteTenantId(
+  user: CurrentUser,
+  requestedAi?: number
+): number {
+  return resolveOwnTenantId(user, requestedAi)
+}
+
+/**
  * Decide whether a user may mutate a record with the given tenant ID.
- * Same semantics as authorizeRecordAccess, exposed as a separate helper.
+ * Approved policy: no caller may mutate another accountable institution's
+ * records — institution scoping is independent of user_roles_id.
+ * Foreign-tenant mismatches return NOT_FOUND so existence is not revealed.
  */
 export function authorizeMutation(
   user: CurrentUser,
   recordAccountableInstitutionId: number
 ): AuthorizationDecision {
-  return authorizeRecordAccess(user, recordAccountableInstitutionId)
+  if (!isPositiveInteger(user.accountable_institution_id) || !isPositiveInteger(recordAccountableInstitutionId)) {
+    return AuthorizationDecision.NOT_FOUND
+  }
+
+  if (user.isClient) {
+    if (user.accountable_institution_id !== recordAccountableInstitutionId
+      || user.golden_record_id === null || user.golden_record_id === undefined) {
+      return AuthorizationDecision.NOT_FOUND
+    }
+    return AuthorizationDecision.CLIENT_PARTY_CHECK_REQUIRED
+  }
+
+  if (user.accountable_institution_id === recordAccountableInstitutionId) {
+    return AuthorizationDecision.ALLOWED
+  }
+
+  return AuthorizationDecision.NOT_FOUND
 }

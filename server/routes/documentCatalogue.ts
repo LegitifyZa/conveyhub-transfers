@@ -1,9 +1,11 @@
 import { Router, Request, Response } from 'express'
+import { quarantineLegacyRoute } from '../auth/requireJwt'
 import { query, withTransaction } from '../db'
 import { asyncHandler } from '../utils/asyncHandler'
 import { isNonEmptyString } from '../utils/validate'
 
 const router = Router()
+router.use(quarantineLegacyRoute)
 
 const VALID_MODULES = ['Transfers', 'Bonds', 'Cancellations', 'General']
 const VALID_STATUSES = ['Active', 'Draft', 'Retired']

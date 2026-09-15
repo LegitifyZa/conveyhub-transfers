@@ -1,9 +1,11 @@
 import { Router, Request, Response } from 'express'
+import { quarantineLegacyRoute } from '../auth/requireJwt'
 import { query, withTransaction } from '../db'
 import { asyncHandler } from '../utils/asyncHandler'
 import { isNonEmptyString, toDateString } from '../utils/validate'
 
 const router = Router()
+router.use(quarantineLegacyRoute)
 
 const isUuid = (value: unknown): value is string => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
 const VALID_CLAUSE_STATUS = ['Active', 'Draft', 'Retired']

@@ -1,10 +1,11 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 
+from auth.dependencies import quarantine_legacy_route
 from db import query
 from utils.validate import is_non_empty_string
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(quarantine_legacy_route)])
 
 
 def map_user_row(row):

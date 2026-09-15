@@ -156,11 +156,13 @@ export const useTransfers = () => {
       const response = await TransferApi.getMilestones(id)
       if (response.success && response.data) {
         setState(prev => ({ ...prev, currentMilestones: response.data! }))
+      } else {
+        setError(response.error || 'Milestones are temporarily unavailable')
       }
     } catch (error) {
-      console.error('Error fetching milestones:', error)
+      setError(error instanceof Error ? error.message : 'Milestones are temporarily unavailable')
     }
-  }, [])
+  }, [setError])
 
   // Update milestones for a transfer
   const updateMilestones = useCallback(async (id: string, milestones: Milestone[]) => {
@@ -170,12 +172,13 @@ export const useTransfers = () => {
         setState(prev => ({ ...prev, currentMilestones: response.data! }))
         return response.data
       }
+      setError(response.error || 'Milestone changes could not be saved')
       return null
     } catch (error) {
-      console.error('Error updating milestones:', error)
+      setError(error instanceof Error ? error.message : 'Milestone changes could not be saved')
       return null
     }
-  }, [])
+  }, [setError])
 
   // Fetch activity/audit trail for a transfer
   const fetchActivity = useCallback(async (id: string) => {
@@ -183,11 +186,13 @@ export const useTransfers = () => {
       const response = await TransferApi.getActivity(id)
       if (response.success && response.data) {
         setState(prev => ({ ...prev, activity: response.data! }))
+      } else {
+        setError(response.error || 'Transfer activity is temporarily unavailable')
       }
     } catch (error) {
-      console.error('Error fetching activity:', error)
+      setError(error instanceof Error ? error.message : 'Transfer activity is temporarily unavailable')
     }
-  }, [])
+  }, [setError])
 
   const clearError = useCallback(() => {
     setState(prev => ({ ...prev, error: null }))

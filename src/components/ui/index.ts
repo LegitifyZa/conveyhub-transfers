@@ -3,6 +3,7 @@ export { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter }
 export { Input } from './Input'
 export { Badge } from './Badge'
 export { Modal } from './Modal'
+export { UnavailableNotice } from './UnavailableNotice'
 export { ServiceCard } from './ServiceCard'
 export { ProgressStepper } from './ProgressStepper'
 export { EmailModal } from '../EmailModal'

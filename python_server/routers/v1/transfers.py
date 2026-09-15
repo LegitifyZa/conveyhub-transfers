@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 
 from auth.current_user import CurrentUser
 from auth.dependencies import require_jwt
-from auth.policy import is_cross_tenant
+
 from clients.dependencies import get_entities_client
 from db import query, with_transaction
 from services.golden_record_visibility import GoldenRecordVisibilityError
@@ -150,7 +150,11 @@ def _is_valid_uuid(value: str) -> bool:
 
 
 async def _authorize_transfer(user: CurrentUser, id: str):
-    """Return the authorised transfer row, or None if not accessible."""
+    """Return the authorised transfer row, or None if not accessible.
+
+    All callers are scoped to their verified institution — there is no
+    privileged-role exception for reads or writes.
+    """
 
     if not _is_valid_uuid(id):
         return None
@@ -162,33 +166,22 @@ async def _authorize_transfer(user: CurrentUser, id: str):
         client_sql = f"""
             {SELECT_TRANSFER_COLUMNS}
             FROM transfers t
-            WHERE t.id = $1
+            WHERE t.id = $1 AND t.accountable_institution_id = $3
               AND EXISTS (
                 SELECT 1 FROM transfer_parties tp
                 WHERE tp.transfer_id = t.id AND tp.golden_record_id = $2::uuid
+                  AND tp.accountable_institution_id = $3
               )
         """
-        client_result = await query(client_sql, [id, user.golden_record_id])
+        client_result = await query(client_sql, [id, user.golden_record_id, user.accountable_institution_id])
         return client_result.rows[0] if client_result.rows else None
 
-    cross_tenant = is_cross_tenant(user)
-
-    if cross_tenant:
-        detail_sql = f"""
-            {SELECT_TRANSFER_COLUMNS}
-            FROM transfers t
-            WHERE t.id = $1
-        """
-        detail_params = [id]
-    else:
-        detail_sql = f"""
-            {SELECT_TRANSFER_COLUMNS}
-            FROM transfers t
-            WHERE t.id = $1 AND t.accountable_institution_id = $2
-        """
-        detail_params = [id, user.accountable_institution_id]
-
-    detail_result = await query(detail_sql, detail_params)
+    detail_sql = f"""
+        {SELECT_TRANSFER_COLUMNS}
+        FROM transfers t
+        WHERE t.id = $1 AND t.accountable_institution_id = $2
+    """
+    detail_result = await query(detail_sql, [id, user.accountable_institution_id])
     return detail_result.rows[0] if detail_result.rows else None
 
 
@@ -232,31 +225,18 @@ async def list_transfers(
 
     filters = _parse_pagination_params(request)
     offset = (filters["page"] - 1) * filters["limit"]
-    cross_tenant = is_cross_tenant(user)
 
-    if cross_tenant:
-        count_sql = "SELECT COUNT(*) AS total FROM transfers t"
-        count_params = []
-        data_sql = f"""
-            SELECT t.id, t.transfer_id, t.property_address, t.purchase_price, t.status,
-                   t.current_step, t.total_steps, t.progress, t.created_at, t.updated_at
-            FROM transfers t
-            ORDER BY t.{filters['sort_by']} {filters['sort_order'].upper()}
-            LIMIT $1 OFFSET $2
-        """
-        data_params = [filters["limit"], offset]
-    else:
-        count_sql = "SELECT COUNT(*) AS total FROM transfers t WHERE t.accountable_institution_id = $1"
-        count_params = [user.accountable_institution_id]
-        data_sql = f"""
-            SELECT t.id, t.transfer_id, t.property_address, t.purchase_price, t.status,
-                   t.current_step, t.total_steps, t.progress, t.created_at, t.updated_at
-            FROM transfers t
-            WHERE t.accountable_institution_id = $1
-            ORDER BY t.{filters['sort_by']} {filters['sort_order'].upper()}
-            LIMIT $2 OFFSET $3
-        """
-        data_params = [user.accountable_institution_id, filters["limit"], offset]
+    count_sql = "SELECT COUNT(*) AS total FROM transfers t WHERE t.accountable_institution_id = $1"
+    count_params = [user.accountable_institution_id]
+    data_sql = f"""
+        SELECT t.id, t.transfer_id, t.property_address, t.purchase_price, t.status,
+               t.current_step, t.total_steps, t.progress, t.created_at, t.updated_at
+        FROM transfers t
+        WHERE t.accountable_institution_id = $1
+        ORDER BY t.{filters['sort_by']} {filters['sort_order'].upper()}
+        LIMIT $2 OFFSET $3
+    """
+    data_params = [user.accountable_institution_id, filters["limit"], offset]
 
     count_result = await query(count_sql, count_params)
     total = int(count_result.rows[0]["total"])
@@ -306,39 +286,25 @@ async def get_transfer_parties(
             FROM transfer_parties
             WHERE transfer_id = $1
               AND golden_record_id = $2::uuid
+              AND accountable_institution_id = $3
               AND accountable_institution_id = (
-                SELECT accountable_institution_id FROM transfers WHERE id = $1
+                SELECT accountable_institution_id FROM transfers WHERE id = $1 AND accountable_institution_id = $3
               )
             ORDER BY cached_name
         """
-        client_parties_result = await query(client_parties_sql, [id, user.golden_record_id])
+        client_parties_result = await query(client_parties_sql, [id, user.golden_record_id, user.accountable_institution_id])
         parties = [_map_client_transfer_party(row) for row in client_parties_result.rows]
         return {"message": "OK", "data": {"parties": parties}}
 
-    cross_tenant = is_cross_tenant(user)
-
-    # Tenant-defence in depth: ordinary staff only see parties for their AI.
-    # Cross-tenant staff see all parties for the already-authorised transfer.
-    if cross_tenant:
-        parties_sql = """
-            SELECT id, transfer_id, golden_record_id, entity_type, role,
-                   accountable_institution_id, cached_name, cached_id_number, cached_email, synced_at
-            FROM transfer_parties
-            WHERE transfer_id = $1
-            ORDER BY cached_name
-        """
-        parties_params = [id]
-    else:
-        parties_sql = """
-            SELECT id, transfer_id, golden_record_id, entity_type, role,
-                   accountable_institution_id, cached_name, cached_id_number, cached_email, synced_at
-            FROM transfer_parties
-            WHERE transfer_id = $1 AND accountable_institution_id = $2
-            ORDER BY cached_name
-        """
-        parties_params = [id, user.accountable_institution_id]
-
-    parties_result = await query(parties_sql, parties_params)
+    # Tenant-defence in depth: all callers only see parties for their AI.
+    parties_sql = """
+        SELECT id, transfer_id, golden_record_id, entity_type, role,
+               accountable_institution_id, cached_name, cached_id_number, cached_email, synced_at
+        FROM transfer_parties
+        WHERE transfer_id = $1 AND accountable_institution_id = $2
+        ORDER BY cached_name
+    """
+    parties_result = await query(parties_sql, [id, user.accountable_institution_id])
     parties = [_map_transfer_party(row) for row in parties_result.rows]
 
     return {"message": "OK", "data": {"parties": parties}}
@@ -365,24 +331,9 @@ async def get_transfer_milestones(
 
     # The verified transfer-to-matter relationship is matters.source_record_id = transfers.id::text.
     # transfers.matter_id is not populated in the prototype dataset.
-    # matters.source_record_id has no DB UNIQUE constraint, so ordinary staff
-    # also anchor to m.accountable_institution_id as defence in depth.
-    cross_tenant = user.is_super_admin or user.user_roles_id == 6
-    if cross_tenant:
-        milestones_sql = """
-        SELECT mm.id, mm.matter_id, mm.definition_id, md.code,
-               md.name AS definition_name, mm.name, mm.status_label, mm.status,
-               mm.sequence_number, mm.due_date, mm.completed_date, mm.notes,
-               mm.created_at, mm.updated_at
-        FROM matter_milestones mm
-        JOIN matters m ON m.id = mm.matter_id
-        LEFT JOIN milestone_definitions md ON md.id = mm.definition_id
-        WHERE m.source_record_id = $1
-        ORDER BY mm.sequence_number
-        """
-        milestones_params = [id]
-    else:
-        milestones_sql = """
+    # matters.source_record_id has no DB UNIQUE constraint, so callers also
+    # anchor to m.accountable_institution_id as defence in depth.
+    milestones_sql = """
         SELECT mm.id, mm.matter_id, mm.definition_id, md.code,
                md.name AS definition_name, mm.name, mm.status_label, mm.status,
                mm.sequence_number, mm.due_date, mm.completed_date, mm.notes,
@@ -394,9 +345,7 @@ async def get_transfer_milestones(
           AND m.accountable_institution_id = $2
         ORDER BY mm.sequence_number
         """
-        milestones_params = [id, user.accountable_institution_id]
-
-    milestones_result = await query(milestones_sql, milestones_params)
+    milestones_result = await query(milestones_sql, [id, user.accountable_institution_id])
     milestones = [_map_milestone(row) for row in milestones_result.rows]
 
     return {"message": "OK", "data": {"milestones": milestones}}
@@ -591,27 +540,31 @@ def _specialist_error_response(exc: MatterSpecialistServiceError) -> JSONRespons
     )
 
 
+def _require_transfers_write(user: CurrentUser) -> None:
+    """transfers:write gate for staff write routes.
+
+    Clients (role 4) are denied explicitly: the upstream ability catalogue
+    excludes :write on staff surfaces, but a route must not depend on that
+    assignment alone.
+    """
+    if user.is_client or not user.has_ability("transfers:write"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+
 async def _authorize_transfer_party(
     user: CurrentUser,
     transfer_id: str,
     transfer_party_id: str,
 ) -> bool:
-    """Verify that transfer_party_id belongs to transfer_id and the user's tenant."""
-    cross_tenant = is_cross_tenant(user)
-
+    """Verify that transfer_party_id belongs to transfer_id and the user's verified tenant."""
     sql = """
         SELECT 1
         FROM transfer_parties
         WHERE id = $1
           AND transfer_id = $2
+          AND accountable_institution_id = $3
     """
-    params = [transfer_party_id, transfer_id]
-
-    if not cross_tenant:
-        sql += " AND accountable_institution_id = $3"
-        params.append(user.accountable_institution_id)
-
-    result = await query(sql, params)
+    result = await query(sql, [transfer_party_id, transfer_id, user.accountable_institution_id])
     return bool(result.rows)
 
 
@@ -633,21 +586,14 @@ async def get_transfer_estate_contexts(
     if not transfer:
         raise HTTPException(status_code=404, detail="Not found")
 
-    cross_tenant = is_cross_tenant(user)
-
     list_sql = """
         SELECT id, transfer_id, deceased_golden_record_id, masters_estate_reference,
                created_at, updated_at
         FROM matter_estate_contexts
-        WHERE transfer_id = $1
+        WHERE transfer_id = $1 AND accountable_institution_id = $2
+        ORDER BY created_at
     """
-    list_params = [id]
-    if not cross_tenant:
-        list_sql += " AND accountable_institution_id = $2"
-        list_params.append(user.accountable_institution_id)
-    list_sql += " ORDER BY created_at"
-
-    result = await query(list_sql, list_params)
+    result = await query(list_sql, [id, user.accountable_institution_id])
     contexts = [_map_estate_context(row) for row in result.rows]
 
     return {"message": "OK", "data": {"estateContexts": contexts}}
@@ -671,21 +617,15 @@ async def get_transfer_estate_context(
     if not transfer:
         raise HTTPException(status_code=404, detail="Not found")
 
-    cross_tenant = is_cross_tenant(user)
-
     detail_sql = """
         SELECT id, transfer_id, deceased_golden_record_id, masters_estate_reference,
                created_at, updated_at
         FROM matter_estate_contexts
         WHERE id = $1
           AND transfer_id = $2
+          AND accountable_institution_id = $3
     """
-    detail_params = [estate_context_id, id]
-    if not cross_tenant:
-        detail_sql += " AND accountable_institution_id = $3"
-        detail_params.append(user.accountable_institution_id)
-
-    result = await query(detail_sql, detail_params)
+    result = await query(detail_sql, [estate_context_id, id, user.accountable_institution_id])
     if not result.rows:
         raise HTTPException(status_code=404, detail="Not found")
 
@@ -734,8 +674,7 @@ async def create_transfer_party_relationship(
 ):
     """Assign a relationship code to a transfer party."""
 
-    if not user.has_ability("transfers:write"):
-        raise HTTPException(status_code=403, detail="Forbidden")
+    _require_transfers_write(user)
 
     if set(body.keys()) != {"relationship_code"}:
         raise HTTPException(status_code=422, detail="Only relationship_code is accepted")
@@ -819,22 +758,15 @@ async def get_transfer_representative_assignments(
     if not transfer:
         raise HTTPException(status_code=404, detail="Not found")
 
-    cross_tenant = is_cross_tenant(user)
-
     list_sql = """
         SELECT id, transfer_id, person_golden_record_id, capacity,
                represented_transfer_party_id, represented_estate_context_id,
                created_at, updated_at
         FROM representative_assignments
-        WHERE transfer_id = $1
+        WHERE transfer_id = $1 AND accountable_institution_id = $2
+        ORDER BY created_at
     """
-    list_params = [id]
-    if not cross_tenant:
-        list_sql += " AND accountable_institution_id = $2"
-        list_params.append(user.accountable_institution_id)
-    list_sql += " ORDER BY created_at"
-
-    result = await query(list_sql, list_params)
+    result = await query(list_sql, [id, user.accountable_institution_id])
     assignments = [_map_representative_assignment(row) for row in result.rows]
 
     return {"message": "OK", "data": {"representativeAssignments": assignments}}
@@ -858,8 +790,6 @@ async def get_transfer_representative_assignment(
     if not transfer:
         raise HTTPException(status_code=404, detail="Not found")
 
-    cross_tenant = is_cross_tenant(user)
-
     detail_sql = """
         SELECT id, transfer_id, person_golden_record_id, capacity,
                represented_transfer_party_id, represented_estate_context_id,
@@ -867,13 +797,9 @@ async def get_transfer_representative_assignment(
         FROM representative_assignments
         WHERE id = $1
           AND transfer_id = $2
+          AND accountable_institution_id = $3
     """
-    detail_params = [assignment_id, id]
-    if not cross_tenant:
-        detail_sql += " AND accountable_institution_id = $3"
-        detail_params.append(user.accountable_institution_id)
-
-    result = await query(detail_sql, detail_params)
+    result = await query(detail_sql, [assignment_id, id, user.accountable_institution_id])
     if not result.rows:
         raise HTTPException(status_code=404, detail="Not found")
 
@@ -889,8 +815,7 @@ async def post_transfer_estate_context(
 ):
     """Create an estate context for a transfer, deriving tenant from the transfer."""
 
-    if not user.has_ability("transfers:write"):
-        raise HTTPException(status_code=403, detail="Forbidden")
+    _require_transfers_write(user)
 
     transfer = await _authorize_transfer(user, id)
     if not transfer:
@@ -929,8 +854,7 @@ async def post_transfer_representative_assignment(
 ):
     """Assign a person, in a capacity, to represent an estate context or a trust party."""
 
-    if not user.has_ability("transfers:write"):
-        raise HTTPException(status_code=403, detail="Forbidden")
+    _require_transfers_write(user)
 
     transfer = await _authorize_transfer(user, id)
     if not transfer:

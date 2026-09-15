@@ -1,8 +1,8 @@
 import { Router, Request, Response } from 'express'
 import { query, withTransaction } from '../db'
 import { asyncHandler } from '../utils/asyncHandler'
-import { requireJwt } from '../auth/requireJwt'
-import { resolveEffectiveTenantId, isCrossTenant, authorizeRecordAccess, AuthorizationDecision } from '../auth/policy'
+import { quarantineLegacyRoute } from '../auth/requireJwt'
+import { resolveEffectiveTenantId, resolveWriteTenantId, authorizeRecordAccess, AuthorizationDecision } from '../auth/policy'
 import { CurrentUser } from '../auth/currentUser'
 import {
   DEFAULT_FIRM_SETTINGS,
@@ -23,6 +23,7 @@ import {
 } from '../utils/conveyancingAccounts'
 
 const router = Router()
+router.use(quarantineLegacyRoute)
 
 const isUuid = (value: unknown): value is string =>
   typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
@@ -146,18 +147,9 @@ async function getTenantSettings(aiId: number): Promise<FirmAccountSettings> {
 router.get(
   '/settings',
   asyncHandler(async (req: Request, res: Response) => {
-    // Optional auth token resolution or QA tenant fallback
-    let aiId = 5
-    if (req.currentUser) {
-      aiId = resolveEffectiveTenantId(req.currentUser)
-    } else if (req.headers.authorization) {
-      try {
-        requireJwt(req, res, () => {})
-        if (req.currentUser) aiId = resolveEffectiveTenantId(req.currentUser)
-      } catch {
-        // Continue with default tenant
-      }
-    }
+    // Institution resolution requires the authenticated context.
+    const aiId = resolveEffectiveTenantId(req.currentUser!)
+    // No default institution is accepted.
 
     const settings = await getTenantSettings(aiId)
     res.json({ success: true, data: settings })
@@ -170,10 +162,7 @@ router.get(
 router.put(
   '/settings',
   asyncHandler(async (req: Request, res: Response) => {
-    let aiId = 5
-    if (req.currentUser) {
-      aiId = resolveEffectiveTenantId(req.currentUser)
-    }
+    const aiId = resolveWriteTenantId(req.currentUser!)
 
     await ensureTablesExist()
     const body = req.body as Partial<FirmAccountSettings>
@@ -238,10 +227,7 @@ router.put(
 router.get(
   '/tariffs',
   asyncHandler(async (req: Request, res: Response) => {
-    let aiId = 5
-    if (req.currentUser) {
-      aiId = resolveEffectiveTenantId(req.currentUser)
-    }
+    const aiId = resolveEffectiveTenantId(req.currentUser!)
 
     await ensureTablesExist()
     const allTariffs = [...ALL_PRESET_TARIFFS]
@@ -292,10 +278,7 @@ router.get(
 router.post(
   '/tariffs',
   asyncHandler(async (req: Request, res: Response) => {
-    let aiId = 5
-    if (req.currentUser) {
-      aiId = resolveEffectiveTenantId(req.currentUser)
-    }
+    const aiId = resolveWriteTenantId(req.currentUser!)
 
     const schedule = req.body as TariffSchedule
     if (!schedule || !schedule.id || !schedule.name || !Array.isArray(schedule.brackets)) {
@@ -362,10 +345,7 @@ router.post(
 router.get(
   '/transfers/:transferId/proforma',
   asyncHandler(async (req: Request, res: Response) => {
-    let aiId = 5
-    if (req.currentUser) {
-      aiId = resolveEffectiveTenantId(req.currentUser)
-    }
+    const aiId = resolveEffectiveTenantId(req.currentUser!)
 
     await ensureTablesExist()
     const { transferId } = req.params
@@ -408,7 +388,7 @@ router.get(
         `SELECT t.id, t.transfer_id, t.property_address, t.purchase_price, t.accountable_institution_id
          FROM transfers.transfers t
          WHERE (t.id::text = $1 OR t.transfer_id = $1)
-           AND ($2 = 1 OR t.accountable_institution_id = $2)
+           AND (t.accountable_institution_id = $2)
          LIMIT 1`,
         [transferId, aiId]
       )
@@ -477,10 +457,7 @@ router.get(
 router.put(
   '/transfers/:transferId/proforma',
   asyncHandler(async (req: Request, res: Response) => {
-    let aiId = 5
-    if (req.currentUser) {
-      aiId = resolveEffectiveTenantId(req.currentUser)
-    }
+    const aiId = resolveWriteTenantId(req.currentUser!)
 
     await ensureTablesExist()
     const { transferId } = req.params
@@ -500,7 +477,7 @@ router.put(
         // Resolve canonical transfer UUID
         let canonicalUuid: string | null = null
         const tResult = await client.query<{ id: string }>(
-          `SELECT id FROM transfers.transfers WHERE (id::text = $1 OR transfer_id = $1) AND ($2 = 1 OR accountable_institution_id = $2) LIMIT 1`,
+          `SELECT id FROM transfers.transfers WHERE (id::text = $1 OR transfer_id = $1) AND (accountable_institution_id = $2) LIMIT 1`,
           [transferId, aiId]
         )
         if (tResult.rows.length > 0) {
@@ -702,10 +679,7 @@ router.post(
 router.post(
   '/reset',
   asyncHandler(async (req: Request, res: Response) => {
-    let aiId = 5
-    if (req.currentUser) {
-      aiId = resolveEffectiveTenantId(req.currentUser)
-    }
+    const aiId = resolveWriteTenantId(req.currentUser!)
 
     inMemoryTenantSettings[aiId] = {
       ...DEFAULT_FIRM_SETTINGS,

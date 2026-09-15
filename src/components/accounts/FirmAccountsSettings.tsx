@@ -11,7 +11,7 @@ import {
   AlertCircle,
   Layers
 } from 'lucide-react'
-import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui'
+import { Card, CardHeader, CardTitle, CardContent, UnavailableNotice } from '@/components/ui'
 import { Button } from '@/components/ui'
 import { Input } from '@/components/ui'
 import { Badge } from '@/components/ui'
@@ -200,12 +200,21 @@ export const FirmAccountsSettings: React.FC = () => {
     setNewDisbVat(true)
   }
 
-  if (isLoading || !settings) {
+  if (isLoading) {
     return (
       <div className="flex items-center justify-center p-12 text-gray-500 dark:text-gray-400">
         <RefreshCw className="h-6 w-6 animate-spin mr-3 text-teal-600" />
         <span>Loading firm accounts & tariff settings...</span>
       </div>
+    )
+  }
+
+  if (!settings) {
+    return (
+      <UnavailableNotice
+        message="Firm account settings are temporarily unavailable."
+        detail={error || 'VAT, tariff and trust account settings cannot be loaded or saved right now.'}
+      />
     )
   }
 

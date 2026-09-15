@@ -10,10 +10,11 @@ import {
   Calendar,
   User
 } from 'lucide-react'
-import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui'
+import { Card, CardHeader, CardTitle, CardContent, UnavailableNotice } from '@/components/ui'
 import { Button } from '@/components/ui'
 import { Input } from '@/components/ui'
 import { apiRequest } from '@/lib/api/http'
+import { serviceUnavailableMessage } from '@/lib/api/serviceStatus'
 
 interface DocumentEntry {
   id: string
@@ -31,6 +32,7 @@ const Documents: React.FC = () => {
   const [documents, setDocuments] = useState<DocumentEntry[]>([])
   const [total, setTotal] = useState(0)
   const [isLoading, setIsLoading] = useState(true)
+  const [loadError, setLoadError] = useState<unknown>(null)
   const [searchTerm, setSearchTerm] = useState('')
 
   const loadDocuments = async (search = '') => {
@@ -41,9 +43,11 @@ const Documents: React.FC = () => {
       const result = await apiRequest<{ success: boolean; data: DocumentEntry[]; total: number }>(`/api/documents${params.toString() ? `?${params}` : ''}`)
       setDocuments(result.data || [])
       setTotal(result.total || 0)
-    } catch {
+      setLoadError(null)
+    } catch (err) {
       setDocuments([])
       setTotal(0)
+      setLoadError(err)
     } finally {
       setIsLoading(false)
     }
@@ -80,11 +84,18 @@ const Documents: React.FC = () => {
           <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">Documents</h1>
           <p className="text-gray-600 dark:text-gray-400">Manage and organize all legal documents</p>
         </div>
-        <Button>
+        <Button disabled={loadError !== null} title={loadError !== null ? 'Document upload is unavailable' : undefined}>
           <Upload className="h-4 w-4 mr-2" />
           Upload Document
         </Button>
       </div>
+
+      {loadError !== null && (
+        <UnavailableNotice
+          message={serviceUnavailableMessage('Documents', loadError)}
+          detail="Documents cannot be listed, uploaded or downloaded right now."
+        />
+      )}
 
       {/* Filters */}
       <Card>
@@ -117,7 +128,7 @@ const Documents: React.FC = () => {
       {/* Documents Grid */}
       {isLoading ? (
         <p className="text-center text-gray-500 py-8">Loading documents...</p>
-      ) : documents.length === 0 ? (
+      ) : loadError !== null ? null : documents.length === 0 ? (
         <p className="text-center text-gray-500 py-8">No documents found.</p>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -191,7 +202,7 @@ const Documents: React.FC = () => {
         <CardContent>
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
             <div className="text-center">
-              <div className="text-2xl font-bold text-gray-900 dark:text-gray-100">{total}</div>
+              <div className="text-2xl font-bold text-gray-900 dark:text-gray-100">{loadError !== null ? '—' : total}</div>
               <div className="text-sm text-gray-500 dark:text-gray-400">Total Documents</div>
             </div>
           </div>

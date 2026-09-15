@@ -1,12 +1,13 @@
 import time
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
+from auth.dependencies import quarantine_legacy_route
 from db import query, with_transaction
 from utils.validate import is_non_empty_string
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(quarantine_legacy_route)])
 
 VALID_MODULES = ["Transfers", "Bonds", "Cancellations", "General"]
 VALID_STATUSES = ["Active", "Draft", "Retired"]

@@ -1,8 +1,10 @@
 import { Router, Request, Response } from 'express'
+import { quarantineLegacyRoute } from '../auth/requireJwt'
 import { query } from '../db'
 import { asyncHandler } from '../utils/asyncHandler'
 
 const router = Router()
+router.use(quarantineLegacyRoute)
 
 function mapUserRow(row: any) {
   return {

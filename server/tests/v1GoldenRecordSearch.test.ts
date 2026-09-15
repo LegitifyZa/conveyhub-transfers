@@ -27,7 +27,7 @@ let upstream: Server
 let upstreamBaseUrl: string
 let captured: CapturedRequest[]
 let upstreamResponse: { status: number; body: unknown } | null
-let upstreamMode: 'normal' | 'broken-body' | 'stalled-headers' | 'stalled-body' = 'normal'
+let upstreamMode: 'normal' | 'broken-body' | 'stalled-headers' | 'stalled-body' | 'redirect' = 'normal'
 
 const personCandidate = {
   goldenRecordId: '4a472877-dc13-46fa-a827-6f1b18d073e3',
@@ -91,6 +91,10 @@ before(async () => {
         headers: req.headers,
         body: Buffer.concat(chunks).toString('utf8'),
       })
+      if (upstreamMode === 'redirect' && req.url?.endsWith('/search')) {
+        res.writeHead(307, { Location: '/unexpected-redirect-target' }).end()
+        return
+      }
       if (upstreamMode === 'stalled-headers') return
       if (upstreamMode === 'stalled-body' || upstreamMode === 'broken-body') {
         res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': '9999' })
@@ -150,6 +154,18 @@ describe('Golden Record search BFF proxy', async () => {
       searchBody()
     )
     assert.equal(status, 401)
+    assert.equal(captured.length, 0)
+  })
+
+  it('rejects invalid institution claims before either Golden Record proxy can forward', async () => {
+    for (const ai of [0, -1, 5.5]) {
+      const authorization = { Authorization: `Bearer ${makeToken(1, ai)}`, 'X-Accountable-Institution-Id': '5' }
+      const search = await httpPost('/api/v1/golden-records/search', authorization, searchBody())
+      assert.equal(search.status, 401)
+      const detail = await fetch(`${baseUrl}/api/v1/golden-records/${personCandidate.goldenRecordId}?entity_type=person`, { headers: authorization })
+      assert.equal(detail.status, 401)
+      await detail.arrayBuffer()
+    }
     assert.equal(captured.length, 0)
   })
 
@@ -213,6 +229,32 @@ describe('Golden Record search BFF proxy', async () => {
     )
     assert.equal(status, 503)
     assert.deepEqual(body, upstreamResponse.body)
+  })
+
+  it('redacts server errors from Search rather than relaying private upstream data', async () => {
+    upstreamResponse = { status: 500, body: { error: 'private-upstream-fixture', token: 'secret-fixture' } }
+    const result = await httpPost('/api/v1/golden-records/search', { Authorization: `Bearer ${makeToken(3, 5)}` }, searchBody())
+    assert.equal(result.status, 503)
+    assert.deepEqual(result.body, { success: false, error: 'Golden Record service unavailable' })
+  })
+
+  it('does not follow a Search redirect carrying the caller JWT or query', async () => {
+    upstreamMode = 'redirect'
+    const result = await httpPost('/api/v1/golden-records/search', { Authorization: `Bearer ${makeToken(3, 5)}` }, searchBody())
+    assert.equal(result.status, 503)
+    assert.equal(captured.length, 1)
+    assert.deepEqual(result.body, { success: false, error: 'Golden Record service unavailable' })
+  })
+
+  it('marks Search results and authentication errors no-store', async () => {
+    for (const token of ['', makeToken(3, 5)]) {
+      const result = await fetch(`${baseUrl}/api/v1/golden-records/search`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify(searchBody()),
+      })
+      assert.equal(result.headers.get('cache-control'), 'no-store')
+      await result.arrayBuffer()
+    }
   })
 
   it('relays company matches, trust ambiguity and normalized not-found without changing metadata', async () => {

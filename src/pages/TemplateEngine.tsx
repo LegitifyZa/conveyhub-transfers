@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { AlertCircle, Braces, CheckCircle2, Code2, FileText } from 'lucide-react'
-import { Badge, Card, CardContent, CardHeader, CardTitle } from '@/components/ui'
+import { Badge, Card, CardContent, CardHeader, CardTitle, UnavailableNotice } from '@/components/ui'
 import { INITIAL_CLAUSES, LegalClause } from '@/lib/clauseLibrary'
 import { MatterTemplateData, resolveTemplate } from '@/lib/templateEngine'
 import { apiRequest } from '@/lib/api/http'
@@ -30,6 +30,7 @@ const TemplateEngine: React.FC = () => {
   const [clauses, setClauses] = useState<LegalClause[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState('')
+  const [offline, setOffline] = useState(false)
   const [dataError, setDataError] = useState('')
 
   useEffect(() => {
@@ -40,12 +41,14 @@ const TemplateEngine: React.FC = () => {
       try {
         const data = await apiRequest<LegalClause[]>('/api/clauses')
         if (!cancelled) {
-          setClauses(data.length > 0 ? data : INITIAL_CLAUSES)
+          setClauses(data)
+          setOffline(false)
         }
       } catch (err) {
         if (!cancelled) {
           setError(err instanceof Error ? err.message : 'Failed to load clause library')
           setClauses(INITIAL_CLAUSES)
+          setOffline(true)
         }
       } finally {
         if (!cancelled) {
@@ -84,11 +87,16 @@ const TemplateEngine: React.FC = () => {
         <p className="text-gray-600 dark:text-gray-400">Resolve Data Dictionary placeholders against a matter’s data model.</p>
       </div>
 
-      {error && (
+      {offline ? (
+        <UnavailableNotice
+          message="The clause library is temporarily unavailable."
+          detail="Bundled sample clauses are shown for reference only and used in a local preview — they are not live data and nothing is saved."
+        />
+      ) : error ? (
         <p className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-900/20 dark:text-red-300">
           {error}
         </p>
-      )}
+      ) : null}
 
       {isLoading ? (
         <p className="py-8 text-center text-sm text-gray-500 dark:text-gray-400">Loading clauses…</p>
