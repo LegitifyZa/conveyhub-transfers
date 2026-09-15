@@ -191,6 +191,20 @@ python -m mypy --follow-imports=silent --ignore-missing-imports --no-incremental
 
 ## P0 review handover: discovery, authority and restoration
 
+- **Party-branch BFF verification (fresh, 2026-09-15):** on exact HEAD
+  `2b57f97257cf808f429d54c20f66dbe7944208a5` — clean working tree and local HEAD
+  confirmed equal to `origin/deedly/mvp0/parties/manual-and-gr-sources` after
+  fetch — fresh runs pass: `npx tsx --test server/tests/v1MatterParties.test.ts
+  server/tests/aiTenantSecurity.test.ts server/tests/v1GoldenRecordSearch.test.ts`
+  (103/103). Coverage includes the corrected awaited `POST /api/v1/transfers/`
+  proxy handler and client-role write denial (matter create and party attach
+  denied before any upstream call even with `transfers:write`), plus the GR
+  search/retrieval proxy suite. `npx tsc -p server/tsconfig.tests.json --noEmit
+  --rootDir .` is clean. `v1SpecialistRoutes.test.ts` was deliberately not run
+  (unapproved DB seeding; see the guard above). Python and component results
+  from prior sessions are reused evidence, not re-run. Merge order remains the
+  corrected `security/review-fixes` first, then the party branch; no merge to
+  main, deployment or migrations yet.
 - **P0 discovery-contract blocker:** the available upstream snapshot's
   `docs/deedly_external_integration.md` section 4 explicitly requires the clients
   linkage check on each search candidate before exposing it. Current DEEDLY search
@@ -206,12 +220,30 @@ python -m mypy --follow-imports=silent --ignore-missing-imports --no-incremental
   `docs/transfers_golden_record_providers_auth.md` sections 4.3 and 5.5 describe a
   six-role model; the newer `docs/rbac.md` describes four roles (1 Super Admin,
   2 AI Admin, 3 Agent, 4 Client) with roles 5/6 retired — the role-name mapping
-  needs Clive's confirmation. Per approved product policy, DEEDLY applies
-  same-institution isolation to every caller regardless of role: abilities and
-  GR party membership still apply, and standalone GR linkage checks are
-  unchanged. Scoping never consults `user_roles_id` for privileged exceptions.
-  `test_policy.py`, `test_ai_tenant_security.py` and `aiTenantSecurity.test.ts`
-  cover privileged roles and ordinary/client users, including ID/scope tampering.
+  needs Clive's confirmation. The received
+  `DEEDLY_Role_CRUD_Permissions.xlsx` estimate matrix supports the six-role
+  model (1 Super Admin, 2 Manager [Compliance Officer], 3 User [General Staff],
+  4 Client, 5 Executive Compliance Officer, 6 Admin Agent), grants roles 1/6
+  cross-tenant reads, and marks roles 5/6 write cells only "Likely … confirm",
+  but it self-describes as a provisional best-current-estimate pending the
+  platform's canonical ability/role contract. It does not resolve the
+  four↔six-role mapping, the Client role ID, or the firm-Admin mapping
+  (whether `rbac.md` "AI Admin"/"Agent" correspond to "Manager [Compliance
+  Officer]"/"User [General Staff]"). The question stays open pending Clive; do
+  not infer or renumber roles. Per approved product policy, DEEDLY applies
+  same-institution isolation to every caller regardless of role — deliberately
+  stricter than the matrix's cross-tenant read allowance for roles 1/6:
+  abilities and GR party membership still apply, and standalone GR linkage
+  checks are unchanged. Scoping never consults `user_roles_id` for privileged
+  exceptions. `test_policy.py`, `test_ai_tenant_security.py` and
+  `aiTenantSecurity.test.ts` cover privileged roles and ordinary/client users,
+  including ID/scope tampering.
+- **Test tenant identifiers received** (`Documentation/test data/Test platform
+  identifiers.txt`): AI 1 Legitify, 2 Remax Evolve, 3 Rockstar Realty, 4 Kruger
+  Attorneys & Conveyancers Inc, 5 QA Sandbox; Legitify and QA Sandbox are
+  offered for test use. These are platform test tenants only — they do not
+  change the approved same-institution isolation policy or certify any
+  production AI assignment.
 - **P0 legacy restoration:** authenticated matter saving and durable GR attachment,
   documents, profiles, templates, Accounts and address-provider controls remain
   separate work. Do not restore handlers merely by removing quarantine.
