@@ -1,13 +1,17 @@
 import { createContext, useContext, useState, useCallback, useEffect, ReactNode } from 'react'
 import { apiRequest } from '@/lib/api/http'
 import {
+  authEnvironmentSupported,
   enqueueAuthOp,
+  getLogoutEpoch,
   getSession,
   getSessionUser,
   logoutSession,
+  noteLandedSid,
   onSessionChange,
   refreshSession,
   setSession,
+  UnsupportedAuthEnvironmentError,
 } from '@/lib/api/session'
 
 // Authenticated session backed by the upstream staff login flow:
@@ -126,6 +130,10 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   }, [])
 
   const completeLogin = useCallback(async (userId: number, otp: number): Promise<void> => {
+    if (!authEnvironmentSupported()) throw new UnsupportedAuthEnvironmentError()
+    // Captured at call time: a logout requested while this login is queued or
+    // in flight discards its result — logout always wins over a pending login.
+    const logoutEpochAtCall = getLogoutEpoch()
     // Queued with refresh/logout so a login response is never in flight while
     // another auth operation is applying cookies.
     await enqueueAuthOp(async () => {
@@ -142,9 +150,15 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         || typeof data.sid !== 'string' || !data.sid) {
         throw new Error('Unexpected authentication response')
       }
-      // A session appeared or changed during the login round-trip — discard
-      // this response rather than displacing it.
-      if ((getSession()?.sid ?? null) !== sidAtStart) return
+      // A logout was requested since this login began, or a session appeared
+      // or changed during the login round-trip — discard this response rather
+      // than resurrecting or displacing state. The response's Set-Cookie has
+      // still landed in the jar, so record the sid: the serialized logout
+      // that follows must be able to clear it instead of leaving an orphan.
+      if (getLogoutEpoch() !== logoutEpochAtCall || (getSession()?.sid ?? null) !== sidAtStart) {
+        noteLandedSid(data.sid)
+        return
+      }
       setSession({
         accessToken: data.token,
         expires: data.expires,

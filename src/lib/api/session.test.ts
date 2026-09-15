@@ -3,13 +3,16 @@ import { afterEach, beforeEach, describe, it, mock } from 'node:test'
 
 import { apiRequest, ApiRequestError } from './httpClient'
 import {
+  authEnvironmentSupported,
   clearSession,
+  enqueueAuthOp,
   getAccessToken,
   getSession,
   logoutSession,
   onSessionChange,
   refreshSession,
   setSession,
+  UnsupportedAuthEnvironmentError,
 } from './session'
 
 // Mocked transport only — no upstream or BFF is contacted. The fetch stub
@@ -57,12 +60,46 @@ const fakeDocument = {
   },
 }
 
+// Node's global navigator has no LockManager; install one with real mutex
+// semantics so the default environment is a *supported* browser.
+const realNavigatorDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator')
+const lockRecords: string[] = []
+let lockHeld = 0
+let lockChain: Promise<unknown> = Promise.resolve()
+const fakeNavigator = {
+  locks: {
+    request<T>(name: string, cb: () => Promise<T>): Promise<T> {
+      assert.equal(name, 'deedly-auth')
+      lockRecords.push(name)
+      const run = lockChain.then(async () => {
+        if (lockHeld !== 0) throw new Error('lock overlap')
+        lockHeld++
+        try {
+          return await cb()
+        } finally {
+          lockHeld--
+        }
+      })
+      lockChain = run.then(() => undefined, () => undefined)
+      return run
+    },
+  },
+}
+
+function installNavigator(value: unknown) {
+  Object.defineProperty(globalThis, 'navigator', { value, configurable: true, writable: true })
+}
+
 beforeEach(() => {
   clearSession()
   fakeStorage.data.clear()
   fakeDocument.jar.clear()
+  lockRecords.length = 0
+  lockHeld = 0
+  lockChain = Promise.resolve()
   ;(globalThis as { localStorage?: unknown }).localStorage = fakeStorage
   ;(globalThis as { document?: unknown }).document = fakeDocument
+  installNavigator(fakeNavigator)
   fetchMock.mock.resetCalls()
   handler = () => Promise.resolve(jsonResponse({ success: true }))
 })
@@ -71,6 +108,8 @@ afterEach(() => {
   clearSession()
   delete (globalThis as { localStorage?: unknown }).localStorage
   delete (globalThis as { document?: unknown }).document
+  if (realNavigatorDescriptor) Object.defineProperty(globalThis, 'navigator', realNavigatorDescriptor)
+  else delete (globalThis as { navigator?: unknown }).navigator
 })
 
 function makeSession(token = 'access-token-1', sid = 'sid-1') {
@@ -332,66 +371,94 @@ describe('stale-response invalidation', () => {
       return Promise.resolve(jsonResponse({ success: true }))
     }
     const refresh = refreshSession()
-    const logout = logoutSession()
     await tick()
-    // Logout is queued behind the in-flight refresh — nothing sent yet.
+    // The refresh is genuinely in flight before logout is requested.
     assert.deepEqual(order, ['/api/auth/refresh'])
+    const logout = logoutSession()
     resolveRefresh(jsonResponse({ data: { token: 'new', expires: 1 } }))
     await Promise.all([refresh, logout])
+    // The in-flight refresh result is discarded by the logout tombstone, then
+    // the serialized logout request runs.
+    assert.equal(await refresh, false)
     assert.deepEqual(order, ['/api/auth/refresh', '/api/auth/logout'])
     assert.equal(getSession(), null)
-    // The queued logout tears down whatever session exists when it runs —
-    // after the refresh landed, that is the refreshed token under the same sid.
+    // Logout clears local state immediately at call time and forwards the
+    // session's call-time token upstream (best-effort OTP burn); the sid is
+    // the call-time session's — a foreign jar sid is never presented.
     assert.equal(logoutHeaders[0].get('X-Deedly-Session'), 'sid-A')
-    assert.equal(logoutHeaders[0].get('Authorization'), 'Bearer new')
+    assert.equal(logoutHeaders[0].get('Authorization'), 'Bearer old-token')
   })
 
   it('routes auth operations through the cross-tab Web Lock when available', async () => {
-    // A fake LockManager that enforces the real contract: one holder at a
-    // time. Proves both refresh and logout go through 'deedly-auth' rather
-    // than only the per-page queue — the property that makes the BFF's
-    // request-time sid check effective across tabs.
-    const acquisitions: string[] = []
-    let inside = 0
-    const fakeLocks = {
-      request: async (name: string, cb: () => Promise<unknown>) => {
-        acquisitions.push(name)
-        inside++
-        assert.equal(inside, 1, 'overlapping auth operations under the lock')
-        try { return await cb() } finally { inside-- }
-      },
-    }
-    const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator')
-    Object.defineProperty(globalThis, 'navigator', {
-      value: { locks: fakeLocks },
-      configurable: true,
-      writable: true,
-    })
-    try {
-      makeSession('old-token', 'sid-A')
-      fakeDocument.jar.set('deedly_sid', 'sid-A')
-      let resolveRefresh: (r: Response) => void = () => {}
-      const order: string[] = []
-      handler = (url) => {
-        order.push(url)
-        if (url === '/api/auth/refresh') {
-          return new Promise<Response>((resolve) => { resolveRefresh = resolve })
-        }
-        return Promise.resolve(jsonResponse({ success: true }))
+    // Proves refresh and logout both run inside the 'deedly-auth' Web Lock —
+    // the property that makes the BFF's request-time sid check effective
+    // across tabs. The default fake navigator enforces single-holder
+    // semantics and would throw on overlap.
+    makeSession('old-token', 'sid-A')
+    fakeDocument.jar.set('deedly_sid', 'sid-A')
+    let resolveRefresh: (r: Response) => void = () => {}
+    const order: string[] = []
+    handler = (url) => {
+      order.push(url)
+      if (url === '/api/auth/refresh') {
+        return new Promise<Response>((resolve) => { resolveRefresh = resolve })
       }
-      const refresh = refreshSession()
-      const logout = logoutSession()
-      await tick()
-      assert.deepEqual(order, ['/api/auth/refresh'])
-      resolveRefresh(jsonResponse({ data: { token: 'new', expires: 1 } }))
-      await Promise.all([refresh, logout])
-      assert.deepEqual(order, ['/api/auth/refresh', '/api/auth/logout'])
-      assert.deepEqual(acquisitions, ['deedly-auth', 'deedly-auth'])
-      assert.equal(getSession(), null)
-    } finally {
-      if (descriptor) Object.defineProperty(globalThis, 'navigator', descriptor)
-      else delete (globalThis as { navigator?: unknown }).navigator
+      return Promise.resolve(jsonResponse({ success: true }))
     }
+    const refresh = refreshSession()
+    await tick()
+    assert.deepEqual(order, ['/api/auth/refresh'])
+    const logout = logoutSession()
+    resolveRefresh(jsonResponse({ data: { token: 'new', expires: 1 } }))
+    await Promise.all([refresh, logout])
+    assert.deepEqual(order, ['/api/auth/refresh', '/api/auth/logout'])
+    assert.deepEqual(lockRecords, ['deedly-auth', 'deedly-auth'])
+    assert.equal(getSession(), null)
+  })
+
+  it('refuses cookie-changing auth requests when Web Locks is unavailable, but still clears local state', async () => {
+    // An environment without navigator.locks: the whole auth surface fails
+    // closed — no login/refresh/logout request may fire — while local session
+    // teardown remains immediate.
+    installNavigator({})
+    assert.equal(authEnvironmentSupported(), false)
+
+    makeSession('token-1', 'sid-A')
+    fakeDocument.jar.set('deedly_sid', 'sid-A')
+    assert.equal(await refreshSession(), false)
+    assert.equal(getSession(), null)
+    assert.equal(fetchMock.mock.calls.length, 0)
+
+    await assert.rejects(
+      enqueueAuthOp(() => Promise.resolve(1)),
+      UnsupportedAuthEnvironmentError,
+    )
+    assert.equal(fetchMock.mock.calls.length, 0)
+
+    makeSession('token-2', 'sid-B')
+    fakeDocument.jar.set('deedly_sid', 'sid-B')
+    await logoutSession()
+    assert.equal(getSession(), null)
+    assert.equal(fakeDocument.jar.has('deedly_sid'), false)
+    assert.equal(fetchMock.mock.calls.length, 0)
+  })
+
+  it('discards a refresh that was still queued when logout was requested', async () => {
+    makeSession('old-token', 'sid-A')
+    fakeDocument.jar.set('deedly_sid', 'sid-A')
+    // Occupy the queue so the refresh op cannot start before the logout call.
+    let release: () => void = () => {}
+    const gate = new Promise<void>((r) => { release = r })
+    const blocker = enqueueAuthOp(() => gate)
+    const refresh = refreshSession()
+    const logout = logoutSession()
+    release()
+    assert.equal(await refresh, false)
+    await Promise.all([blocker, logout])
+    // The queued refresh saw the logout epoch bump and never reached the wire.
+    assert.equal(callsTo('/api/auth/refresh').length, 0)
+    assert.equal(callsTo('/api/auth/logout').length, 1)
+    assert.equal(getSession(), null)
   })
 
   it('a retried write repeats the identical body so client_request_id deduplicates upstream', async () => {

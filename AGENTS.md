@@ -208,23 +208,30 @@ errors?}` — no `success` field.
   session A cannot strip session B's cookie, and it responds without waiting
   on upstream (upstream logout is fire-and-forget) to keep the in-flight
   clear window small.
-- **Serialized auth operations, including across tabs.** Login-complete,
-  refresh and logout run through one promise queue (`enqueueAuthOp`) wrapped
-  in the Web Locks mutex `deedly-auth`: a tab holds the lock for its whole
-  request/response window, so a delayed logout/login Set-Cookie in one tab
-  cannot interleave with another tab's auth operation — the BFF's
-  request-time sid check stays effective and Set-Cookie ordering follows
-  operation order. The sid is also the session-generation token — async flows
-  discard results when it changed mid-flight (stale refresh/login responses
-  cannot resurrect a cleared or superseded session). Limits: where
-  `navigator.locks` is unavailable the guarantee degrades to per-page
-  ordering, and it does not cover code outside the app's auth path (any
-  same-origin page can issue uncoordinated requests; same-origin JS is
-  already trusted with the in-memory token). Verified locally with
-  Playwright/Chromium against a mocked upstream: delayed logout clear
-  correctly preceded a second tab's login (zero auth requests fired while
-  the lock was held), and an uncoordinated raw fetch demonstrated the
-  documented residual.
+- **Serialized auth operations, including across tabs — Web Locks required.**
+  Login-complete, refresh and logout run through one promise queue
+  (`enqueueAuthOp`) wrapped in the Web Locks mutex `deedly-auth`: a tab holds
+  the lock for its whole request/response window, so a delayed logout/login
+  Set-Cookie in one tab cannot interleave with another tab's auth operation —
+  the BFF's request-time sid check stays effective and Set-Cookie ordering
+  follows operation order. **Without `navigator.locks` the browser is
+  unsupported**: `enqueueAuthOp` rejects, refresh fails closed (clears the
+  session, fires no request), login cannot be completed, and the Login page
+  shows an unsupported-browser message. `logoutSession` still performs
+  immediate local teardown (memory clear + readable-cookie hygiene) but sends
+  no cookie-changing request.
+- **Logout semantics under interleaving.** `logoutSession` clears local state
+  immediately and bumps a `logoutEpoch` tombstone: refresh/login ops capture
+  the epoch at call time and discard their result if a logout was requested
+  while they were queued or in flight — logout always wins over a pending
+  login/refresh. The logout's BFF request presents the sid it may
+  legitimately end: the call-time session sid, or the jar sid when this tab's
+  own auth pipeline installed it (`tabSessionSids`, including login responses
+  discarded by the tombstone whose Set-Cookie still landed). A foreign sid —
+  a newer login from another tab — is never presented and survives. Limit:
+  the guarantee covers cooperating app tabs; code outside the app's auth path
+  (any same-origin page can issue uncoordinated requests) is outside it —
+  same-origin JS is already trusted with the in-memory token.
 - **BFF auth proxy** (`server/routes/auth.ts`, mounted at `/api/auth`):
   `initiate-login`, `otp`, `login`, `refresh`, `logout`. `login` strips
   `refresh_token`/`refresh_expires`/`dev_otp` from the browser-visible body
@@ -284,23 +291,35 @@ errors?}` — no `success` field.
   policy (cookie-bearing requests with no origin evidence → 403;
   credential-free probes and `same-origin` metadata pass),
   `AUTH_ALLOWED_ORIGINS` allowlist behaviour incl. same-site entries.
-- `src/lib/api/session.test.ts` — 27 tests: Bearer attachment (and its
+- `src/lib/api/session.test.ts` — 28 tests: Bearer attachment (and its
   exclusion on auth-ingress paths), one-shot refresh+retry on 401, no retry
   loop, failed-refresh session clearing, refresh single-flight, sid-echo on
   refresh incl. post-reload cookie restore, serialized auth-op ordering
-  (logout waits for in-flight refresh) and routing through the `deedly-auth`
-  cross-tab Web Lock, stale refresh/login responses discarded after logout or
-  a newer login, pending writes never replayed under a changed session,
-  identical-body write retry preserving `client_request_id`, logout
-  Bearer+sid/cleanup under transport failure, match-only sid-cookie deletion,
-  session-change notification, legacy flag removal, no token persistence to
-  storage.
-- Local browser verification (Playwright/Chromium + mocked upstream, not
-  committed): full OTP login through the real UI, `deedly_sid` readable via
-  `document.cookie` on `/transfers`, reload at an SPA route restores the
-  session, two-tab delayed-logout-vs-newer-login ordering under the Web Lock
-  (zero auth requests fired while held; final cookies belong to the newer
-  session), and the uncoordinated-caller residual demonstrated.
+  (logout while refresh in flight discards the refresh result, then runs),
+  routing through the `deedly-auth` Web Lock, unsupported-browser fail-closed
+  (no auth requests fire; local teardown still immediate), logout-epoch
+  discard of still-queued refreshes, stale refresh/login responses discarded
+  after logout or a newer login, pending writes never replayed under a
+  changed session, identical-body write retry preserving
+  `client_request_id`, logout Bearer+sid/cleanup under transport failure,
+  foreign-sid cookie preservation, session-change notification, legacy flag
+  removal, no token persistence to storage.
+- **Local browser verification** (Playwright/Chromium + mocked upstream, run
+  locally, harness not committed): three processes — mock upstream on :8000
+  (minting test JWTs signed with the BFF's `JWT_SECRET`), the real BFF on
+  :3001 (`LEGITIFY_API_BASE_URL` → mock), Vite dev server on :5173 proxying
+  `/api` same-origin. Scenarios verified: (1) real-UI OTP login →
+  `deedly_sid` readable via `document.cookie` on `/transfers` → reload at the
+  SPA route restores the session; (2) two tabs sharing one browser context —
+  tab1 logout with its **response** held at the network layer (Playwright
+  `route.fetch()` then delayed `route.fulfill()`, i.e. a delayed
+  Set-Cookie-bearing response, not a delayed request) → tab2 fired zero auth
+  requests while the `deedly-auth` lock was held → on release the stale clear
+  landed first, tab2's login then established sid-B → reload under sid-B
+  restored; (3) uncoordinated raw `fetch` (outside `enqueueAuthOp`) issuing a
+  sid-B logout whose held response landed after a sid-C login → sid-C's
+  refresh cookie was cleared — the documented residual outside the
+  cooperating-tabs guarantee.
 - `src/lib/api/accountsApi.test.ts` — updated to the new retry contract (a 401
   may trigger one `/api/auth/refresh` call; auth-flag cleanup is excluded from
   the institution-storage assertions).

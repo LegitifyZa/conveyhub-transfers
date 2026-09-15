@@ -2,6 +2,7 @@ import React, { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth, AccountOption, OtpChallenge } from '@/hooks/useAuth'
 import { ApiRequestError } from '@/lib/api/http'
+import { authEnvironmentSupported } from '@/lib/api/session'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/Card'
@@ -43,6 +44,26 @@ const Login: React.FC = () => {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-navy-900">
         <p className="text-gray-700 dark:text-gray-300">Restoring session…</p>
+      </div>
+    )
+  }
+
+  if (!authEnvironmentSupported()) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-navy-900 p-4">
+        <Card className="w-full max-w-md">
+          <CardHeader>
+            <CardTitle>DEEDLY</CardTitle>
+            <CardDescription>Unsupported browser</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <p className="text-sm text-gray-700 dark:text-gray-300">
+              This browser cannot keep your sign-in session safe. DEEDLY requires the Web Locks API
+              to coordinate authentication across tabs. Please use a current version of Chrome,
+              Edge, Firefox or Safari.
+            </p>
+          </CardContent>
+        </Card>
       </div>
     )
   }

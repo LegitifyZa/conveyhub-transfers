@@ -22,9 +22,15 @@
 //   additionally wrapped in a Web Locks cross-tab mutex ('deedly-auth') so the
 //   same guarantee holds between tabs: a tab holds the lock for its whole
 //   request/response window, keeping the BFF's request-time sid check
-//   effective against delayed responses from other tabs. Where
-//   navigator.locks is unavailable the guarantee degrades to per-page
-//   ordering only.
+//   effective against delayed responses from other tabs. Web Locks support is
+//   REQUIRED — where navigator.locks is unavailable, login/refresh and other
+//   cookie-changing auth requests are refused entirely (the Login page shows
+//   an unsupported-browser message); local session teardown still runs
+//   immediately.
+// - logoutSession additionally bumps a logout epoch at call time. Refresh and
+//   login-complete capture it before enqueuing and discard their result when
+//   it changed — a logout requested while an op was still queued wins over
+//   that op even though the op's own network request runs afterwards.
 // - Session expiry is handled by one refresh-and-retry pass in apiRequest;
 //   the retry is refused when the session's sid changed mid-flight, so a
 //   pending write is never replayed under a different user or institution.
@@ -47,6 +53,16 @@ export type SessionListener = (session: AuthSession | null) => void
 
 let session: AuthSession | null = null
 let refreshInFlight: Promise<boolean> | null = null
+// Bumped by every logoutSession call: a tombstone that lets ops enqueued
+// before the logout discard themselves even though their request runs after.
+let logoutEpoch = 0
+// Sids whose cookies this tab's auth pipeline caused (a login response this
+// tab received, or a session it installed). A logout may clear a newer
+// login's cookie only when that login happened through this tab — a foreign
+// sid in the jar (another tab's session) is never presented, so the BFF's
+// match-before-clear rule preserves it. Emptied by clearSession: dead sids
+// are per-login UUIDs and can never legitimately reappear in the jar.
+const tabSessionSids = new Set<string>()
 // Serializes login/refresh/logout so overlapping auth operations can never
 // reorder their HTTP requests or the browser's application of Set-Cookie.
 let authQueue: Promise<unknown> = Promise.resolve()
@@ -54,15 +70,37 @@ const listeners = new Set<SessionListener>()
 
 const AUTH_LOCK = 'deedly-auth'
 
+export class UnsupportedAuthEnvironmentError extends Error {
+  constructor() {
+    super('This browser does not support the Web Locks API required for secure sign-in')
+    this.name = 'UnsupportedAuthEnvironmentError'
+  }
+}
+
+// Web Locks are mandatory for cookie-changing auth requests: without a
+// cross-tab mutex the BFF's request-time sid check cannot be made effective
+// against delayed responses from other tabs.
+export function authEnvironmentSupported(): boolean {
+  const locks = typeof navigator !== 'undefined'
+    ? (navigator as { locks?: { request?: unknown } }).locks
+    : undefined
+  return typeof locks?.request === 'function'
+}
+
+export function getLogoutEpoch(): number {
+  return logoutEpoch
+}
+
 // Cross-tab mutex via Web Locks: the lock is held across the operation's full
 // fetch round-trip, so a delayed response in one tab cannot interleave its
-// Set-Cookie with another tab's login/logout. Falls back to per-page ordering
-// where the API is unavailable.
+// Set-Cookie with another tab's login/logout.
 function withCrossTabLock<T>(op: () => Promise<T>): Promise<T> {
   const locks = typeof navigator !== 'undefined'
     ? (navigator as { locks?: { request: (name: string, cb: () => Promise<T>) => Promise<T> } }).locks
     : undefined
-  if (!locks || typeof locks.request !== 'function') return op()
+  if (!locks || typeof locks.request !== 'function') {
+    return Promise.reject(new UnsupportedAuthEnvironmentError())
+  }
   return locks.request(AUTH_LOCK, () => op())
 }
 
@@ -138,13 +176,24 @@ export function getSessionUser(): Record<string, unknown> | null {
 
 export function setSession(next: AuthSession): void {
   session = next
+  if (next.sid) tabSessionSids.add(next.sid)
   dropLegacyFlag()
   notify()
+}
+
+// Records that a Set-Cookie for this sid landed in this tab even though the
+// login result was discarded (e.g. a logout was requested first). The cookie
+// exists in the jar regardless, so the logout that follows must be allowed to
+// clear it rather than leaving an orphaned refresh credential that would
+// resurrect the session on reload.
+export function noteLandedSid(sid: string): void {
+  if (sid) tabSessionSids.add(sid)
 }
 
 export function clearSession(): void {
   const hadSession = session !== null
   session = null
+  tabSessionSids.clear()
   dropLegacyFlag()
   if (hadSession) notify()
 }
@@ -153,17 +202,31 @@ export function clearSession(): void {
 // one upstream exchange, and a logout can never start while a refresh is mid-
 // flight (it queues behind it). Any failure (no cookie, sid mismatch, upstream
 // rejection, malformed body, transport error) clears the session — a refresh
-// we cannot prove succeeded is not a session.
+// we cannot prove succeeded is not a session. Without Web Locks the refresh
+// request is refused entirely and the session is cleared.
 export function refreshSession(): Promise<boolean> {
+  if (!authEnvironmentSupported()) {
+    clearSession()
+    return Promise.resolve(false)
+  }
+  const callLogoutEpoch = logoutEpoch
   if (!refreshInFlight) {
-    refreshInFlight = enqueueAuthOp(doRefresh).finally(() => {
-      refreshInFlight = null
+    const pending = enqueueAuthOp(() => doRefresh(callLogoutEpoch)).then(
+      (ok) => ok,
+      () => false,
+    )
+    refreshInFlight = pending
+    void pending.finally(() => {
+      if (refreshInFlight === pending) refreshInFlight = null
     })
   }
   return refreshInFlight
 }
 
-async function doRefresh(): Promise<boolean> {
+async function doRefresh(callLogoutEpoch: number): Promise<boolean> {
+  // A logout was requested while this op sat in the queue — discard without
+  // firing the request.
+  if (logoutEpoch !== callLogoutEpoch) return false
   const startSid = session?.sid ?? null
   const sid = getSessionSid()
   let envelope: { data?: { token?: unknown; expires?: unknown } }
@@ -180,12 +243,12 @@ async function doRefresh(): Promise<boolean> {
     })
     envelope = response.ok ? await response.json() : {}
   } catch {
-    if ((session?.sid ?? null) === startSid) clearSession()
+    if (logoutEpoch === callLogoutEpoch && (session?.sid ?? null) === startSid) clearSession()
     return false
   }
-  // The session was cleared or replaced while the exchange was in flight —
-  // this response is stale and must not touch it.
-  if ((session?.sid ?? null) !== startSid) return false
+  // The session was cleared, logged out or replaced while the exchange was in
+  // flight — this response is stale and must not touch it.
+  if (logoutEpoch !== callLogoutEpoch || (session?.sid ?? null) !== startSid) return false
   const token = envelope.data?.token
   const expires = envelope.data?.expires
   if (typeof token !== 'string' || !token || typeof expires !== 'number' || !Number.isFinite(expires)) {
@@ -196,16 +259,31 @@ async function doRefresh(): Promise<boolean> {
   return true
 }
 
-// Ends the session. Memory is cleared first so the sid guard invalidates any
-// exchange still queued behind this call; the BFF clears the cookie pair only
-// when the presented sid matches, and forwards the Bearer token to upstream
-// logout when one is held. Upstream access/refresh tokens are stateless and
-// expire naturally — this is local teardown, not upstream revocation.
+// Ends the session. Memory is cleared immediately — it does not wait for the
+// lock or queued ops — and the logout epoch invalidates any exchange still
+// queued or in flight. The BFF request runs serialized under the lock and
+// presents the sid this logout can legitimately end: the call-time session
+// sid, or the jar's sid when it was installed by this tab's own login
+// (a login that merely completed earlier in the same queue). A foreign sid —
+// e.g. a newer login from another tab — is never presented, so its cookie
+// survives. Without Web Locks only local teardown runs — the cookie-changing
+// request is refused like every other auth mutation. Upstream access/refresh
+// tokens are stateless and expire naturally — this is local teardown, not
+// upstream revocation.
 export function logoutSession(): Promise<void> {
+  const token = session?.accessToken
+  const sidAtCall = getSessionSid()
+  clearSession()
+  logoutEpoch++
+  deleteSidCookieIfOurs(sidAtCall)
+  if (!authEnvironmentSupported()) {
+    // Local teardown only; the HttpOnly pair stays for upstream expiry — no
+    // cookie-changing request is made without coordination.
+    return Promise.resolve()
+  }
   return enqueueAuthOp(async () => {
-    const token = session?.accessToken
-    const sid = getSessionSid()
-    clearSession()
+    const jarSid = readSidCookie()
+    const sid = jarSid !== null && tabSessionSids.has(jarSid) ? jarSid : sidAtCall
     deleteSidCookieIfOurs(sid)
     try {
       await fetch('/api/auth/logout', {
@@ -218,7 +296,7 @@ export function logoutSession(): Promise<void> {
         },
       })
     } catch {
-      // Local teardown proceeds regardless of transport failure.
+      // Local teardown already done; transport failure cannot undo it.
     }
-  })
+  }).catch(() => undefined)
 }
