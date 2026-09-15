@@ -17,8 +17,26 @@ const RELATIONSHIP_CODE_A = 'test_spc_surviving_spouse'
 const RELATIONSHIP_CODE_B = 'test_spc_co_heir'
 const RELATIONSHIP_CODE_INACTIVE = 'test_spc_inactive'
 
-const { default: app } = await import('../index')
-const { pool, query } = await import('../db')
+// This suite writes and deletes real rows. It is authorized only when BOTH
+// TEST_DATABASE_URL (an explicitly approved isolated database) and the
+// opt-in RUN_SPECIALIST_DB_TESTS=1 are present. When authorized it redirects
+// the whole process — app included — at TEST_DATABASE_URL before any server
+// module is imported, so it can never resolve to the ordinary DB_*
+// configuration. When unauthorized, neither the app nor the pool is imported
+// at all: no connection is opened, and no setup or cleanup runs.
+const SKIP_REASON =
+  'requires TEST_DATABASE_URL plus RUN_SPECIALIST_DB_TESTS=1 (approved isolated database)'
+const AUTHORIZED =
+  Boolean(process.env.TEST_DATABASE_URL) && process.env.RUN_SPECIALIST_DB_TESTS === '1'
+
+let app!: (typeof import('../index'))['default']
+let pool!: (typeof import('../db'))['pool']
+let query!: (typeof import('../db'))['query']
+if (AUTHORIZED) {
+  process.env.SPECIALIST_TEST_DATABASE_URL = process.env.TEST_DATABASE_URL
+  ;({ default: app } = await import('../index'))
+  ;({ pool, query } = await import('../db'))
+}
 
 interface FixtureIds {
   transferId: string
@@ -32,7 +50,7 @@ interface FixtureIds {
   representativePartyId: string
 }
 
-let server: Server
+let server: Server | undefined
 let baseUrl: string
 let fixtures: FixtureIds
 
@@ -198,11 +216,12 @@ async function cleanup() {
 }
 
 before(async () => {
+  if (!AUTHORIZED) return
   await preClean()
   fixtures = await seedFixtures()
   await new Promise<void>((resolve) => {
     server = app.listen(0, '127.0.0.1', () => {
-      const address = server.address()
+      const address = server?.address()
       if (address && typeof address !== 'string') {
         baseUrl = `http://127.0.0.1:${address.port}`
       }
@@ -211,15 +230,24 @@ before(async () => {
   })
 })
 
+// Teardown must release resources even when setup or cleanup fails partway:
+// cleanup is attempted (its deletes are prefix-scoped and idempotent), then
+// the listener and pool are closed unconditionally in the finally block.
 after(async () => {
-  await cleanup()
-  await new Promise<void>((resolve, reject) => {
-    server.close((err) => (err ? reject(err) : resolve()))
-  })
-  await pool.end()
+  if (!AUTHORIZED) return
+  try {
+    await cleanup()
+  } finally {
+    if (server?.listening) {
+      await new Promise<void>((resolve, reject) => {
+        server!.close((err) => (err ? reject(err) : resolve()))
+      })
+    }
+    await pool.end()
+  }
 })
 
-describe('Estate contexts', async () => {
+describe('Estate contexts', { skip: AUTHORIZED ? false : SKIP_REASON }, async () => {
   it('lists estate contexts for an authorised tenant', async () => {
     const { status, body } = await httpGet(`/api/v1/transfers/${fixtures.transferId}/estate-contexts`, authHeader(3, 5))
     assert.equal(status, 200)
@@ -269,7 +297,7 @@ describe('Estate contexts', async () => {
   })
 })
 
-describe('Representative assignments', async () => {
+describe('Representative assignments', { skip: AUTHORIZED ? false : SKIP_REASON }, async () => {
   it('lists representative assignments for an authorised tenant', async () => {
     const { status, body } = await httpGet(
       `/api/v1/transfers/${fixtures.transferId}/representative-assignments`,
@@ -329,7 +357,7 @@ describe('Representative assignments', async () => {
   })
 })
 
-describe('Party relationships', async () => {
+describe('Party relationships', { skip: AUTHORIZED ? false : SKIP_REASON }, async () => {
   it('lists relationships for an authorised tenant', async () => {
     const { status, body } = await httpGet(
       `/api/v1/transfers/${fixtures.transferId}/parties/${fixtures.partyId}/relationships`,
@@ -447,7 +475,7 @@ describe('Party relationships', async () => {
   })
 })
 
-describe('Deferred routes', async () => {
+describe('Deferred routes', { skip: AUTHORIZED ? false : SKIP_REASON }, async () => {
   it('does not register POST /estate-contexts', async () => {
     const { status } = await httpPost(
       `/api/v1/transfers/${fixtures.transferId}/estate-contexts`,

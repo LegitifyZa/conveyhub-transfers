@@ -364,9 +364,26 @@ errors?}` — no `success` field.
   fallbacks or claim offline saves succeeded. Existing legacy browser storage is
   not automatically deleted; restoration/data recovery needs an approved decision.
 - `server/tests/aiTenantSecurity.test.ts` uses guarded DB mocks and loopback HTTP.
-  Do not run `server/tests/v1SpecialistRoutes.test.ts` against ordinary environment
-  configuration: it seeds/deletes rows and does not guard on `TEST_DATABASE_URL`.
-  It needs an explicitly approved isolated database.
+  `server/tests/v1SpecialistRoutes.test.ts` seeds/deletes real rows and is
+  authorized only when BOTH `TEST_DATABASE_URL` (an explicitly approved
+  isolated database) and `RUN_SPECIALIST_DB_TESTS=1` are set. Without them the
+  suite self-skips before importing the app or pool — no connection, setup or
+  cleanup can run — and when authorized it redirects the whole process at
+  `TEST_DATABASE_URL` via `SPECIALIST_TEST_DATABASE_URL`, never the ordinary
+  `DB_*` config. `server/tests/specialistDbGuard.test.ts` proves ordinary
+  discovery opens no database connection (honeypot listener, zero sockets).
+  Incident note (this branch): before the guard existed, the suite ran three
+  times under ordinary discovery against local `DB_*` config. Per run, the
+  `before`-hook preClean issued two `DELETE FROM transfers` statements scoped
+  to test prefixes (`TX-SPEC-%`, `TX-OTHER-%`) that were **observed** to
+  commit with zero rows affected; a third DELETE on
+  `party_relationship_definitions` failed at parse time (relation absent), so
+  `seedFixtures` never ran and no INSERT was issued. The `after`-hook cleanup
+  demonstrably reached its failing third statement, so its two prefix-scoped
+  `transfers` DELETEs also executed — but their affected-row counts were not
+  captured in the logs. Established: zero observed row changes, no seeds, no
+  schema changes. Not established: an exhaustive proof that no row changed —
+  cleanup row counts were uncaptured.
 - The standard server type check retains the existing TS6059 shared-source
   `rootDir` issue. A non-emitting check with `--rootDir .` covers those sources
   without changing project configuration. Baseline `84c0269` also has 11 mypy

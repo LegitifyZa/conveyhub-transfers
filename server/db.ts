@@ -8,7 +8,19 @@ interface DatabaseConfig extends PoolConfig {
   max?: number
 }
 
-const connectionString = process.env.ConveyHub_Transfers_POSTGRES_URL_NON_POOLING || process.env.POSTGRES_URL_NON_POOLING || process.env.ConveyHub_Transfers_POSTGRES_URL || process.env.POSTGRES_URL || process.env.DATABASE_URL
+// The specialist DB suite may redirect this whole process — including the
+// Express app — at an explicitly approved test database. The override is
+// honoured only alongside the suite opt-in, and a missing URL then fails
+// fast rather than silently falling back to the ordinary configuration.
+let specialistTestUrl: string | undefined
+if (process.env.RUN_SPECIALIST_DB_TESTS === '1') {
+  specialistTestUrl = process.env.SPECIALIST_TEST_DATABASE_URL
+  if (!specialistTestUrl) {
+    throw new Error('RUN_SPECIALIST_DB_TESTS requires SPECIALIST_TEST_DATABASE_URL to be set')
+  }
+}
+
+const connectionString = specialistTestUrl || process.env.ConveyHub_Transfers_POSTGRES_URL_NON_POOLING || process.env.POSTGRES_URL_NON_POOLING || process.env.ConveyHub_Transfers_POSTGRES_URL || process.env.POSTGRES_URL || process.env.DATABASE_URL
 
 const config: DatabaseConfig = connectionString
   ? {
