@@ -132,6 +132,7 @@ function detailsToAggregate(base: TransferAggregate, details: TransferDetails): 
     const existing = base.parties?.find(p => p.type === type)
     return {
       id: existing?.id || crypto.randomUUID(),
+      source: existing?.source ?? 'golden_record',
       type,
       name: detailsParty.fullName,
       idNumber: detailsParty.idNumber,

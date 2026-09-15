@@ -77,14 +77,25 @@ unittest discovery, pytest executes the function-based landed-source contracts.
 DB-dependent tests require `TEST_DATABASE_URL`; an unset value means skipped
 DB integration coverage, not a successful database certification.
 
-## Create Golden Record foundation — slices A/B only
+## Create Golden Record foundation — superseded by product decision
+
+**Product decision:** DEEDLY does not create Golden Records and does not
+register clients in Legitify. DEEDLY supports only (a) searching/retrieving
+and linking existing institution-authorised Golden Records and (b) capturing
+firm-private manual parties with no Golden Record link. Central Create Golden
+Record is cancelled/superseded — it is not blocked awaiting implementation.
+The adapter foundation below is completed historical work: the
+`entity_submissions.py` adapters are unused by the product flow, while
+`clients/entity_protocol.py` remains in live use by the runtime client through
+the prior extraction — it is not unused and must not be removed.
 
 - `python_server/clients/entity_submissions.py` contains typed, side-effect-free
   request adapters and a response-reference parser. They are not wired into
-  `EntitiesClient.submit_person`, a route, or the UI. Runtime submit payloads,
+  `EntitiesClient.submit_person`, a route, or the UI, and no wiring is planned
+  under the cancelled create scope. Runtime submit payloads,
   returns, timeouts and retries remain unchanged.
-- Shared definitions/decoding live in configuration-free `clients.entity_protocol`.
-  Adapters do not import the runtime client or configuration. The client re-exports
+- Shared definitions/decoding live in configuration-free `clients.entity_protocol`,
+  which the runtime client actively uses: it re-exports
   the same exception/type objects and delegates decoding, retaining its existing
   configuration bootstrap. Fresh-process tests install import/dotenv/HTTP-client
   guards before importing adapters; call-time no-I/O guards remain in place.
@@ -100,10 +111,25 @@ DB integration coverage, not a successful database certification.
   and passport limitations are exercised through the existing landed-source
   test harness using `ENTITIES_SOURCE_ROOT`. No upstream service is called.
   This snapshot has no Git metadata and is not deployed-contract evidence.
-- Parent Create Golden Record remains blocked/incomplete: D1 registration and
-  relationship eligibility; D2 AI-to-tenant resolution and write authorization;
-  D3 non-prod ingress/credentials/deployed evidence; D4 passport uniqueness;
-  D5 deadlines/recovery/verification/billing; D6 approved P0 fields and types.
+- Parent Create Golden Record is closed by the product decision above, not by
+  resolution of its blockers. Each D-item's create-specific half is superseded;
+  its surviving concerns are renamed as follow-ups so nothing is lost:
+  - D1 → **Relationship eligibility** — registration orchestration is
+    superseded; eligibility of existing firm/client relationships still
+    governs Search/Retrieve/Link.
+  - D2 → **Institution context** — create-specific context is superseded;
+    trusted institution context and read/write authorization remain.
+  - D3 → **Live read/link ingress** — submit-specific access is superseded;
+    live read/link ingress, credentials and deployed evidence remain (the
+    external-ingress/key-rotation HOLD below).
+  - D4 → **Passport search concerns** — new-record uniqueness is superseded;
+    passport ambiguity, country and changed-number search concerns remain
+    tracked.
+  - D5 → **Existing-record entitlement** — create-specific submission/recovery
+    is superseded; existing-record entitlement, charging and
+    verification-display questions remain.
+  - D6 → **Manual-party fields** — central-create fields are superseded;
+    manual-party field requirements continue in their own workstream.
   Durable matter attachment and authenticated matter saving remain separate P0 work.
 
 Focused Python type checks from `python_server/` (Windows; `nul` disables cache):
@@ -168,6 +194,20 @@ python -m mypy --follow-imports=silent --ignore-missing-imports --no-incremental
 
 ## P0 review handover: discovery, authority and restoration
 
+- **Party-branch BFF verification (fresh, 2026-09-15):** on exact HEAD
+  `2b57f97257cf808f429d54c20f66dbe7944208a5` — clean working tree and local HEAD
+  confirmed equal to `origin/deedly/mvp0/parties/manual-and-gr-sources` after
+  fetch — fresh runs pass: `npx tsx --test server/tests/v1MatterParties.test.ts
+  server/tests/aiTenantSecurity.test.ts server/tests/v1GoldenRecordSearch.test.ts`
+  (103/103). Coverage includes the corrected awaited `POST /api/v1/transfers/`
+  proxy handler and client-role write denial (matter create and party attach
+  denied before any upstream call even with `transfers:write`), plus the GR
+  search/retrieval proxy suite. `npx tsc -p server/tsconfig.tests.json --noEmit
+  --rootDir .` is clean. `v1SpecialistRoutes.test.ts` was deliberately not run
+  (unapproved DB seeding; see the guard above). Python and component results
+  from prior sessions are reused evidence, not re-run. Merge order remains the
+  corrected `security/review-fixes` first, then the party branch; no merge to
+  main, deployment or migrations yet.
 - **P0 discovery-contract blocker:** the available upstream snapshot's
   `docs/deedly_external_integration.md` section 4 explicitly requires the clients
   linkage check on each search candidate before exposing it. Current DEEDLY search
@@ -200,6 +240,12 @@ python -m mypy --follow-imports=silent --ignore-missing-imports --no-incremental
   `test_ai_tenant_security.py` and `aiTenantSecurity.test.ts` cover deployed,
   retired and unknown roles and ordinary/client users, including ID/scope
   tampering.
+- **Test tenant identifiers received** (`Documentation/test data/Test platform
+  identifiers.txt`): AI 1 Legitify, 2 Remax Evolve, 3 Rockstar Realty, 4 Kruger
+  Attorneys & Conveyancers Inc, 5 QA Sandbox; Legitify and QA Sandbox are
+  offered for test use. These are platform test tenants only — they do not
+  change the approved same-institution isolation policy or certify any
+  production AI assignment.
 - **P0 legacy restoration:** authenticated matter saving and durable GR attachment,
   documents, profiles, templates, Accounts and address-provider controls remain
   separate work. Do not restore handlers merely by removing quarantine.
@@ -210,9 +256,12 @@ python -m mypy --follow-imports=silent --ignore-missing-imports --no-incremental
 - **P1 baseline typing debt:** the existing TS6059 server `rootDir` failure and 11
   mypy errors in `db.py`/`routers/v1/transfers.py` are separate from introduced
   issues. Do not relax checks or change security controls to hide them.
-- Parent Create remains **P0 blocked/incomplete pending D1–D6**. Louis's charging
-  decision, name/DOB decisions and matter/file-reference lookup are not implemented
-  by this security branch.
+- Parent Create Golden Record is **cancelled by product decision** (DEEDLY does
+  not create Golden Records or register clients); D1–D6 are closed as
+  superseded, with their surviving concerns carried forward as the named
+  follow-ups in the reassessment above. Louis's charging decision, name/DOB
+  decisions and matter/file-reference lookup remain open and are not
+  implemented by this security branch.
 
 ### Quarantine UI handling — P0 functional states applied
 

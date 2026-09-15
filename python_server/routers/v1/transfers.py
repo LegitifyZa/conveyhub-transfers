@@ -1,3 +1,5 @@
+import hashlib
+import json
 import re
 import uuid
 from typing import AbstractSet, Any, Optional
@@ -8,14 +10,28 @@ from fastapi.responses import JSONResponse
 
 from auth.current_user import CurrentUser
 from auth.dependencies import require_jwt
-
+from auth.policy import TenantBoundaryError, resolve_write_tenant_id
 from clients.dependencies import get_entities_client
 from db import query, with_transaction
 from services.golden_record_visibility import GoldenRecordVisibilityError
+from services.matter_service import (
+    MatterIdempotencyConflictError,
+    MatterServiceError,
+    MatterValidationError,
+    create_transfer_matter,
+)
 from services.matter_specialist_service import (
     MatterSpecialistServiceError,
     create_estate_context,
     create_representative_assignment,
+)
+from services.transfer_party_service import (
+    IdempotencyConflictError,
+    PartyConflictError,
+    PartyValidationError,
+    TransferPartyServiceError,
+    attach_manual_party_to_transfer,
+    link_party_to_transfer,
 )
 
 router = APIRouter()
@@ -46,6 +62,7 @@ def _map_transfer(row: dict) -> dict:
 
 
 def _map_transfer_party(row: dict) -> dict:
+    row = dict(row)
     return {
         "id": row["id"],
         "transferId": row["transfer_id"],
@@ -57,6 +74,17 @@ def _map_transfer_party(row: dict) -> dict:
         "cachedIdNumber": row["cached_id_number"],
         "cachedEmail": row["cached_email"],
         "syncedAt": row["synced_at"],
+        "partySource": row.get("party_source"),
+        "manualName": row.get("manual_name"),
+        "manualIdNumber": row.get("manual_id_number"),
+        "manualIdType": row.get("manual_id_type"),
+        "manualPassportCountry": row.get("manual_passport_country"),
+        "manualEmail": row.get("manual_email"),
+        "manualPhone": row.get("manual_phone"),
+        "manualAddress": row.get("manual_address"),
+        "isPrimaryContact": bool(row.get("is_primary_contact")),
+        "clientRequestId": str(row["client_request_id"]) if row.get("client_request_id") else None,
+        "acknowledgedDuplicate": bool(row.get("acknowledged_duplicate")),
     }
 
 
@@ -299,10 +327,12 @@ async def get_transfer_parties(
     # Tenant-defence in depth: all callers only see parties for their AI.
     parties_sql = """
         SELECT id, transfer_id, golden_record_id, entity_type, role,
-               accountable_institution_id, cached_name, cached_id_number, cached_email, synced_at
+               accountable_institution_id, cached_name, cached_id_number, cached_email, synced_at,
+               party_source, manual_name, manual_id_number, manual_email, manual_phone,
+               manual_address, is_primary_contact, client_request_id, acknowledged_duplicate
         FROM transfer_parties
         WHERE transfer_id = $1 AND accountable_institution_id = $2
-        ORDER BY cached_name
+        ORDER BY cached_name NULLS LAST, manual_name NULLS LAST
     """
     parties_result = await query(parties_sql, [id, user.accountable_institution_id])
     parties = [_map_transfer_party(row) for row in parties_result.rows]
@@ -479,6 +509,17 @@ def _map_representative_assignment(row: dict) -> dict:
     }
 
 
+def _require_transfers_write(user: CurrentUser) -> None:
+    """transfers:write gate for staff write routes.
+
+    Clients (role 4) are denied explicitly: the upstream ability catalogue
+    excludes :write on staff surfaces, but a route must not depend on that
+    assignment alone.
+    """
+    if user.is_client or not user.has_ability("transfers:write"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+
 def _require_body_keys(body: Any, *, required: AbstractSet[str], optional: AbstractSet[str] = frozenset()) -> None:
     """Reject anything not explicitly allowed.
 
@@ -538,17 +579,6 @@ def _specialist_error_response(exc: MatterSpecialistServiceError) -> JSONRespons
         status_code=exc.status_code,
         content={"success": False, "error": exc.public_message},
     )
-
-
-def _require_transfers_write(user: CurrentUser) -> None:
-    """transfers:write gate for staff write routes.
-
-    Clients (role 4) are denied explicitly: the upstream ability catalogue
-    excludes :write on staff surfaces, but a route must not depend on that
-    assignment alone.
-    """
-    if user.is_client or not user.has_ability("transfers:write"):
-        raise HTTPException(status_code=403, detail="Forbidden")
 
 
 async def _authorize_transfer_party(
@@ -891,3 +921,287 @@ async def post_transfer_representative_assignment(
         )
 
     return {"message": "Created", "data": _map_representative_assignment(row)}
+
+
+def _request_fingerprint(payload: dict) -> str:
+    """Stable fingerprint of the validated request payload for idempotency."""
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
+
+
+_ORDINARY_PARTY_ROLES = ("transferor", "transferee")
+_MANUAL_PARTY_FIELDS = (
+    "name",
+    "id_number",
+    "id_type",
+    "passport_country",
+    "email",
+    "phone",
+    "address",
+)
+
+
+@router.post("/", status_code=201)
+async def create_transfer(
+    body: dict,
+    user: CurrentUser = Depends(require_jwt),
+):
+    """Create a DEEDLY transfer matter under the caller's institution.
+
+    The accountable institution is derived from the verified caller; a supplied
+    value is honoured only for the documented cross-tenant roles (policy §5.5).
+    client_request_id makes creation idempotent per institution.
+    """
+    _require_transfers_write(user)
+
+    _require_body_keys(
+        body,
+        required={"property_address", "purchase_price"},
+        optional={
+            "firm_reference",
+            "classification_code",
+            "client_request_id",
+            "accountable_institution_id",
+        },
+    )
+
+    requested_ai = body.get("accountable_institution_id")
+    if requested_ai is not None and (
+        not isinstance(requested_ai, int) or isinstance(requested_ai, bool)
+    ):
+        raise HTTPException(status_code=422, detail="accountable_institution_id must be an integer")
+    try:
+        accountable_institution_id = resolve_write_tenant_id(user, requested_ai)
+    except TenantBoundaryError:
+        raise HTTPException(status_code=403, detail="Forbidden") from None
+
+    purchase_price = body.get("purchase_price")
+    if isinstance(purchase_price, bool) or not isinstance(purchase_price, (int, float)):
+        raise HTTPException(status_code=422, detail="purchase_price must be a number")
+
+    firm_reference = body.get("firm_reference")
+    if firm_reference is not None and not isinstance(firm_reference, str):
+        raise HTTPException(status_code=422, detail="firm_reference must be a string")
+
+    classification_code = body.get("classification_code")
+    if classification_code is not None:
+        if not isinstance(classification_code, str) or not classification_code.strip():
+            raise HTTPException(status_code=422, detail="classification_code must be a string")
+        classification_result = await query(
+            """
+            SELECT 1 FROM matter_classification_options
+            WHERE canonical_code = $1 AND category = 'transfer'
+              AND is_selectable = TRUE AND is_active = TRUE
+            """,
+            [classification_code],
+        )
+        if not classification_result.rows:
+            return JSONResponse(
+                status_code=400,
+                content={"success": False, "error": "Unknown or inactive transfer classification"},
+            )
+
+    client_request_id = _optional_uuid_field(body, "client_request_id")
+    fingerprint = _request_fingerprint(
+        {
+            "property_address": body["property_address"],
+            "purchase_price": purchase_price,
+            "firm_reference": firm_reference,
+            "classification_code": classification_code,
+            "accountable_institution_id": accountable_institution_id,
+        }
+    )
+
+    try:
+        row, created = await create_transfer_matter(
+            property_address=body["property_address"],
+            purchase_price=purchase_price,
+            accountable_institution_id=accountable_institution_id,
+            actor_user_id=user.user_id,
+            firm_reference=firm_reference,
+            classification_code=classification_code,
+            client_request_id=uuid.UUID(client_request_id) if client_request_id else None,
+            request_fingerprint=fingerprint,
+        )
+    except MatterValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    except MatterIdempotencyConflictError:
+        return JSONResponse(
+            status_code=409,
+            content={"success": False, "error": "client_request_id was already used with a different payload"},
+        )
+    except MatterServiceError:
+        raise HTTPException(status_code=404, detail="Not found") from None
+
+    data = _map_transfer(row)
+    data["created"] = created
+    if not created:
+        return JSONResponse(status_code=200, content={"message": "OK", "data": data})
+    return {"message": "Created", "data": data}
+
+
+def _require_code_field(code: Any, label: str) -> str:
+    """Validate shape only; the existence check is a query the caller awaits."""
+    if not isinstance(code, str) or not code.strip():
+        raise HTTPException(status_code=422, detail=f"{label} is required")
+    return code.strip()
+
+
+@router.post("/{id}/parties", status_code=201)
+async def attach_transfer_party(
+    id: str,
+    body: dict,
+    user: CurrentUser = Depends(require_jwt),
+    entities_client=Depends(get_entities_client),
+):
+    """Attach a party to a transfer: Golden Record-linked or manual.
+
+    party_source is explicit and immutable. Golden Record parties go through
+    the existing institution-linkage visibility recipe; manual parties persist
+    institution-owned capture fields and never call upstream.
+    """
+    _require_transfers_write(user)
+
+    transfer = await _authorize_transfer(user, id)
+    if not transfer:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    _require_body_keys(
+        body,
+        required={"party_source", "entity_type", "role"},
+        optional={
+            "golden_record_id",
+            "manual",
+            "is_primary_contact",
+            "client_request_id",
+            "acknowledged_duplicate",
+        },
+    )
+
+    party_source = body["party_source"]
+    if party_source not in ("golden_record", "manual"):
+        raise HTTPException(status_code=422, detail="party_source must be 'golden_record' or 'manual'")
+
+    entity_type = _require_code_field(body["entity_type"], "entity_type")
+    role = _require_code_field(body["role"], "role")
+
+    entity_result = await query(
+        "SELECT code FROM entity_type_definitions WHERE code = $1 AND is_active = TRUE",
+        [entity_type],
+    )
+    if not entity_result.rows:
+        return JSONResponse(
+            status_code=400,
+            content={"success": False, "error": "Unknown or inactive entity type"},
+        )
+
+    role_result = await query(
+        "SELECT code FROM party_role_definitions WHERE code = $1 AND is_active = TRUE",
+        [role],
+    )
+    if not role_result.rows or role not in _ORDINARY_PARTY_ROLES:
+        return JSONResponse(
+            status_code=400,
+            content={"success": False, "error": "Unknown or inactive party role"},
+        )
+
+    is_primary_contact = body.get("is_primary_contact")
+    if is_primary_contact is not None and not isinstance(is_primary_contact, bool):
+        raise HTTPException(status_code=422, detail="is_primary_contact must be a boolean")
+
+    acknowledged_duplicate = body.get("acknowledged_duplicate")
+    if acknowledged_duplicate is not None and not isinstance(acknowledged_duplicate, bool):
+        raise HTTPException(status_code=422, detail="acknowledged_duplicate must be a boolean")
+
+    client_request_id = _optional_uuid_field(body, "client_request_id")
+
+    fingerprint = _request_fingerprint(
+        {
+            "transfer_id": id,
+            "party_source": party_source,
+            "entity_type": entity_type,
+            "role": role,
+            "golden_record_id": body.get("golden_record_id"),
+            "manual": body.get("manual"),
+            "is_primary_contact": is_primary_contact,
+            "acknowledged_duplicate": acknowledged_duplicate,
+        }
+    )
+
+    try:
+        if party_source == "golden_record":
+            if "manual" in body:
+                raise HTTPException(
+                    status_code=422,
+                    detail="manual fields are not accepted for a golden_record party",
+                )
+            row = await link_party_to_transfer(
+                uuid.UUID(id),
+                _require_uuid_field(body, "golden_record_id"),
+                entity_type,
+                role,
+                entities_client=entities_client,
+                is_primary_contact=bool(is_primary_contact),
+                client_request_id=uuid.UUID(client_request_id) if client_request_id else None,
+                request_fingerprint=fingerprint,
+                acknowledged_duplicate=bool(acknowledged_duplicate),
+            )
+        else:
+            if "golden_record_id" in body:
+                raise HTTPException(
+                    status_code=422,
+                    detail="golden_record_id is not accepted for a manual party",
+                )
+            manual = body.get("manual")
+            if not isinstance(manual, dict):
+                raise HTTPException(status_code=422, detail="manual details are required for a manual party")
+            unexpected = set(manual.keys()) - set(_MANUAL_PARTY_FIELDS)
+            if unexpected:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Unexpected manual field(s): {', '.join(sorted(unexpected))}",
+                )
+            for field in _MANUAL_PARTY_FIELDS:
+                if field in manual and manual[field] is not None and not isinstance(manual[field], str):
+                    raise HTTPException(status_code=422, detail=f"manual.{field} must be a string")
+            manual_name = manual.get("name")
+            if not isinstance(manual_name, str) or not manual_name.strip():
+                raise HTTPException(status_code=422, detail="manual.name is required")
+            row = await attach_manual_party_to_transfer(
+                uuid.UUID(id),
+                entity_type=entity_type,
+                role=role,
+                manual_name=manual_name,
+                manual_id_number=manual.get("id_number"),
+                manual_id_type=manual.get("id_type"),
+                manual_passport_country=manual.get("passport_country"),
+                manual_email=manual.get("email"),
+                manual_phone=manual.get("phone"),
+                manual_address=manual.get("address"),
+                is_primary_contact=bool(is_primary_contact),
+                acknowledged_duplicate=bool(acknowledged_duplicate),
+                client_request_id=uuid.UUID(client_request_id) if client_request_id else None,
+                request_fingerprint=fingerprint,
+            )
+    except GoldenRecordVisibilityError as exc:
+        return _visibility_error_response(exc)
+    except PartyValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    except IdempotencyConflictError:
+        return JSONResponse(
+            status_code=409,
+            content={"success": False, "error": "client_request_id was already used with a different payload"},
+        )
+    except PartyConflictError as exc:
+        return JSONResponse(
+            status_code=409,
+            content={"success": False, "error": str(exc)},
+        )
+    except TransferPartyServiceError:
+        raise HTTPException(status_code=404, detail="Not found") from None
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    return {"message": "Created", "data": _map_transfer_party(row)}

@@ -368,7 +368,7 @@ An externally-hosted Deedly cannot consume the platform's Redis Streams event bu
 | Item | Status |
 |------|--------|
 | `POST /v1/transfers/{id}/estate-contexts` and `POST /v1/transfers/{id}/representative-assignments` (§2.6, §6) | Not implemented. They must call `resolve_visible_golden_record` with `expected_entity_type="person"` after `_authorize_transfer`, following §8.5's ordering. |
-| Company / trust submit (120–180 s budget) | **Source contracts confirmed; runtime remains blocked.** The available Entities source snapshot contains `SubmitClientRequest`, submit dispatch, serializers and trust normalization, supported by `transfers_golden_record_providers_auth.md` §2.5–§2.6. Side-effect-free adapters are covered in §8.9; they do not enable submission or reconciliation. This is source evidence, not deployed support. |
+| Company / trust submit (120–180 s budget) | **Source contracts confirmed; runtime out of product scope.** The available Entities source snapshot contains `SubmitClientRequest`, submit dispatch, serializers and trust normalization, supported by `transfers_golden_record_providers_auth.md` §2.5–§2.6. Side-effect-free adapters are covered in §8.9; they do not enable submission or reconciliation, and no submit runtime is planned under the cancelled create scope. This is source evidence, not deployed support. |
 | `X-Correlation-Id` | Not sent. Guide §3.7: upstream neither echoes nor logs it, so this is optional rather than outstanding. |
 | Route-level staleness policy (TTL on `synced_at`) | Not defined; see §8.6. |
 | `entity.*` events | Unavailable to an externally-hosted Deedly. If prompt reaction to `entity.screening_completed` / `entity.vital_status_deceased` becomes necessary, request that the notifications service add them to partner-webhook `SUPPORTED_EVENTS` rather than building a workaround. |
@@ -381,12 +381,20 @@ Unit coverage lives in `python_server/tests/`: `test_s2s_integration_contract.py
 
 The DB-backed suites (`test_v1_transfers.py`, `test_v1_specialist_contexts.py`, `test_migrations_0xx.py`) require `TEST_DATABASE_URL` pointing at a migration-020 baseline and are skipped otherwise.
 
-### 8.9 Create Golden Record foundation — source evidence only
+### 8.9 Create Golden Record foundation — superseded by product decision
+
+**Product decision:** DEEDLY does not create Golden Records and does not
+register clients in Legitify. Supported party flows are (a) searching/retrieving
+and linking existing institution-authorised Golden Records and (b) firm-private
+manual party capture with no Golden Record link. Central Create Golden Record is
+cancelled — it is not blocked awaiting implementation.
 
 Search and Retrieve remain completed on `main` at checkpoint
-`7d8101c4928238d555b9c958241adbac6a6c3b24`. Create Golden Record remains blocked and
-incomplete. Only source-contract foundation and missing read-side regression
-protections are implemented here; this is not a create workflow or live certification.
+`7d8101c4928238d555b9c958241adbac6a6c3b24`. The material below describes the
+completed source-contract adapter foundation: the `entity_submissions.py`
+adapters are unused by the product flow, while `entity_protocol.py` remains in
+live use by the runtime client through the prior extraction and must not be
+removed.
 
 **Evidence:** the Entities snapshot selected by `ENTITIES_SOURCE_ROOT`, specifically
 `services/entities/src/api/v1/schemas.py::SubmitClientRequest`, the `/submit` route,
@@ -411,7 +419,8 @@ executing selected bodies does not establish a deployed SHA or migration state.
 These checks validate structure, not product approval or legal identity: no required
 name/contact policy, company jurisdiction pattern, office catalogue, or new-record SA
 checksum rule is invented. The source applies the checksum conditionally after identity
-resolution. Approved P0 fields and entity coverage remain D6 decisions.
+resolution. Approved P0 fields and entity coverage for create are moot — the
+D6 decision is superseded by the cancelled create scope.
 
 `parse_submission_response` accepts the source-confirmed HTTP 201 envelope and validates
 the returned UUID and expected logical type. A person may omit the upstream type marker;
@@ -445,9 +454,25 @@ and passport limitations (number-only identity and skipped SA-keyed orchestratio
 Its repositories/providers are synthetic or mocked and its SQL fixtures use in-memory
 SQLite; this is not deployed PostgreSQL, registration, billing or live S2S certification.
 
-All external decisions remain open: **D1** registration/relationship eligibility;
-**D2** trusted AI-to-tenant resolution and write authorization; **D3** ingress,
-credentials and deployed evidence; **D4** passport identity; **D5** deadlines,
-uncertain outcomes, verification and billing; **D6** approved P0 fields/types.
-Durable matter attachment and authenticated new-matter persistence remain separate
-P0 dependencies; the legacy save path is not a fallback.
+With create cancelled, each D-item's create-specific half is closed as
+superseded; its surviving concerns are renamed as follow-ups so nothing is
+lost:
+
+- **D1 → Relationship eligibility** — registration orchestration is superseded;
+  eligibility of existing firm/client relationships still governs
+  Search/Retrieve/Link.
+- **D2 → Institution context** — create-specific context is superseded; trusted
+  institution context and read/write authorization remain.
+- **D3 → Live read/link ingress** — submit-specific access is superseded; live
+  read/link ingress, credentials and deployed evidence remain open.
+- **D4 → Passport search concerns** — new-record uniqueness is superseded;
+  passport ambiguity, country and changed-number search concerns remain
+  tracked.
+- **D5 → Existing-record entitlement** — create-specific submission/recovery is
+  superseded; existing-record entitlement, charging and verification-display
+  questions remain.
+- **D6 → Manual-party fields** — central-create fields are superseded;
+  manual-party field requirements continue in their own workstream.
+
+Durable matter attachment and authenticated new-matter persistence remain
+separate P0 dependencies; the legacy save path is not a fallback.

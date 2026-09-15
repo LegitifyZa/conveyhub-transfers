@@ -8,6 +8,44 @@ const router = Router()
 
 const DEFAULT_SORT_COLUMNS = ['created_at', 'updated_at', 'property_address', 'status', 'purchase_price']
 
+const DEEDLY_UNAVAILABLE = { success: false, error: 'Matter service temporarily unavailable' }
+
+// Auth-forwarding proxy for write routes owned by the FastAPI DEEDLY service
+// (it holds the Entities client needed for Golden Record visibility checks).
+// The caller's JWT is verified by requireJwt, then forwarded unchanged.
+async function proxyDeedly(req: Request, res: Response, path: string, method: 'GET' | 'POST') {
+  const baseUrl = process.env.DEEDLY_API_BASE_URL
+  if (!baseUrl) {
+    res.status(503).json(DEEDLY_UNAVAILABLE)
+    return
+  }
+
+  try {
+    const upstream = await fetch(`${baseUrl.replace(/\/+$/, '')}/api/v1/transfers${path}`, {
+      method,
+      headers: {
+        Authorization: req.headers.authorization as string,
+        ...(method === 'POST' ? { 'Content-Type': 'application/json' } : {}),
+      },
+      ...(method === 'POST' ? { body: JSON.stringify(req.body ?? {}) } : {}),
+      redirect: 'error',
+      signal: AbortSignal.timeout(35_000),
+    })
+    const body = await upstream.text()
+    if (upstream.status >= 500) {
+      res.status(503).json(DEEDLY_UNAVAILABLE)
+      return
+    }
+    const contentType = upstream.headers.get('content-type')
+    if (contentType) {
+      res.setHeader('Content-Type', contentType)
+    }
+    res.status(upstream.status).send(body)
+  } catch {
+    res.status(503).json(DEEDLY_UNAVAILABLE)
+  }
+}
+
 interface TransferFilters {
   page: number
   limit: number
@@ -51,6 +89,17 @@ function mapTransferParty(row: any) {
     cachedIdNumber: row.cached_id_number,
     cachedEmail: row.cached_email,
     syncedAt: row.synced_at,
+    partySource: row.party_source,
+    manualName: row.manual_name,
+    manualIdNumber: row.manual_id_number,
+    manualIdType: row.manual_id_type,
+    manualPassportCountry: row.manual_passport_country,
+    manualEmail: row.manual_email,
+    manualPhone: row.manual_phone,
+    manualAddress: row.manual_address,
+    isPrimaryContact: Boolean(row.is_primary_contact),
+    clientRequestId: row.client_request_id ? String(row.client_request_id) : null,
+    acknowledgedDuplicate: Boolean(row.acknowledged_duplicate),
   }
 }
 
@@ -290,10 +339,13 @@ router.get(
     // Tenant-defence in depth: all callers only see parties for their AI.
     const partiesQuery = `
       SELECT id, transfer_id, golden_record_id, entity_type, role,
-             accountable_institution_id, cached_name, cached_id_number, cached_email, synced_at
+             accountable_institution_id, cached_name, cached_id_number, cached_email, synced_at,
+             party_source, manual_name, manual_id_number, manual_id_type,
+             manual_passport_country, manual_email, manual_phone,
+             manual_address, is_primary_contact, client_request_id, acknowledged_duplicate
       FROM transfer_parties
       WHERE transfer_id = $1 AND accountable_institution_id = $2
-      ORDER BY cached_name
+      ORDER BY cached_name NULLS LAST, manual_name NULLS LAST
     `
 
     const partiesResult = await query(partiesQuery, [id, user.accountable_institution_id])
@@ -834,6 +886,38 @@ router.get(
       message: 'OK',
       data: mapRepresentativeAssignment(result.rows[0]),
     })
+  })
+)
+
+// Write routes are owned by the FastAPI service: party attach may need the
+// Golden Record visibility recipe (Entities S2S lane), and matter create shares
+// the same transaction semantics. The JWT is verified locally, then forwarded.
+// Clients are denied here as well so a forwarded client write can never be
+// attempted: FastAPI applies the same explicit denial authoritatively.
+function denyClientWrite(req: Request, res: Response): boolean {
+  if (req.currentUser!.isClient) {
+    res.status(403).json({ success: false, error: 'Forbidden' })
+    return true
+  }
+  return false
+}
+
+router.post('/', requireJwt, asyncHandler(async (req, res) => {
+  if (denyClientWrite(req, res)) return
+  await proxyDeedly(req, res, '/', 'POST')
+}))
+
+router.post(
+  '/:id/parties',
+  requireJwt,
+  asyncHandler(async (req: Request, res: Response) => {
+    if (denyClientWrite(req, res)) return
+    const { id } = req.params
+    if (!isUuid(id)) {
+      res.status(404).json({ success: false, error: 'Not found' })
+      return
+    }
+    await proxyDeedly(req, res, `/${id}/parties`, 'POST')
   })
 )
 

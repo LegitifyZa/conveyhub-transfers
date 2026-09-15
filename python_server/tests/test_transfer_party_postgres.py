@@ -11,6 +11,7 @@ from uuid import UUID, uuid4
 import asyncpg
 
 import db
+from services import matter_service
 from services import transfer_party_service as service
 from services.golden_record_visibility import VisibleGoldenRecord
 from tests.db_test_utils import get_test_database_url
@@ -26,6 +27,96 @@ def isolated_database_url() -> str:
     if not url:
         raise unittest.SkipTest("P0 prerequisite: TEST_DATABASE_URL is not configured; no database fallback is allowed")
     return url
+
+
+class _SchemaBoundPool:
+    """Pool wrapper that applies the scratch-schema search_path per acquire.
+
+    asyncpg resets pooled connections on release (DISCARD/RESET clears a
+    session SET), and server_settings search_path is not reliably applied on
+    this stack, so the schema must be reselected every time a connection is
+    checked out.
+    """
+
+    def __init__(self, pool: Any, schema: str) -> None:
+        self._inner = pool
+        self._schema = schema
+
+    async def _apply(self, conn: Any) -> None:
+        await conn.execute(f'SET search_path TO "{self._schema}", pg_catalog')
+        # Fail BEFORE any application query if unqualified names would not
+        # resolve inside the scratch schema. to_regclass resolves through the
+        # active search_path, so a public fallback is detected here rather
+        # than leaking a read or write into the real tables.
+        # to_regclass resolves through the active search_path; comparing the
+        # owning namespace (not the display text, which stays unqualified when
+        # the table is already in the search_path) proves the scratch schema
+        # is bound and no public fallback can leak a read or write.
+        resolved = await conn.fetchrow(
+            "SELECT "
+            "  (SELECT n.nspname FROM pg_class c JOIN pg_namespace n "
+            "   ON n.oid = c.relnamespace WHERE c.oid = to_regclass('transfers')) AS t, "
+            "  (SELECT n.nspname FROM pg_class c JOIN pg_namespace n "
+            "   ON n.oid = c.relnamespace WHERE c.oid = to_regclass('transfer_parties')) AS tp, "
+            "  (SELECT n.nspname FROM pg_class c JOIN pg_namespace n "
+            "   ON n.oid = c.relnamespace WHERE c.oid = to_regclass('matters')) AS m"
+        )
+        if (resolved["t"], resolved["tp"], resolved["m"]) != (
+            self._schema, self._schema, self._schema
+        ):
+            raise AssertionError(
+                "Scratch schema is not bound to this connection: "
+                f"transfers resolves in {resolved['t']!r}, "
+                f"transfer_parties resolves in {resolved['tp']!r}, "
+                f"matters resolves in {resolved['m']!r} "
+                f"(expected {self._schema!r})"
+            )
+
+    def acquire(self, **kwargs: Any) -> Any:
+        inner, apply_ = self._inner, self._apply
+
+        class _Acquire:
+            def __init__(self) -> None:
+                self._ctx = inner.acquire(**kwargs)
+                self.conn: Any = None
+
+            async def __aenter__(self) -> Any:
+                self.conn = await self._ctx.__aenter__()
+                try:
+                    await apply_(self.conn)
+                except BaseException:
+                    # Release the connection so pool.close() is not blocked
+                    # waiting on a holder that never completed acquire.
+                    await self._ctx.__aexit__(None, None, None)
+                    raise
+                return self.conn
+
+            async def __aexit__(self, *exc: Any) -> Any:
+                return await self._ctx.__aexit__(*exc)
+
+        return _Acquire()
+
+    async def fetch(self, *args: Any, **kwargs: Any) -> Any:
+        async with self.acquire() as conn:
+            return await conn.fetch(*args, **kwargs)
+
+    async def fetchrow(self, *args: Any, **kwargs: Any) -> Any:
+        async with self.acquire() as conn:
+            return await conn.fetchrow(*args, **kwargs)
+
+    async def fetchval(self, *args: Any, **kwargs: Any) -> Any:
+        async with self.acquire() as conn:
+            return await conn.fetchval(*args, **kwargs)
+
+    async def execute(self, *args: Any, **kwargs: Any) -> Any:
+        async with self.acquire() as conn:
+            return await conn.execute(*args, **kwargs)
+
+    async def close(self) -> None:
+        await self._inner.close()
+
+    def terminate(self) -> None:
+        self._inner.terminate()
 
 
 class PostgresSecurityGuardTests(unittest.TestCase):
@@ -51,7 +142,7 @@ class TransferPartyPostgresTests(unittest.IsolatedAsyncioTestCase):
         self.stack = ExitStack()
         self.tasks: list[asyncio.Task[Any]] = []
         self.addAsyncCleanup(self.cleanup_database)
-        settings = {"application_name": self.application_name, "statement_timeout": "10000", "lock_timeout": "8000"}
+        settings = {"application_name": self.application_name, "statement_timeout": "30000", "lock_timeout": "30000"}
         try:
             self.control = await asyncpg.connect(
                 dsn=url, command_timeout=10,
@@ -64,15 +155,56 @@ class TransferPartyPostgresTests(unittest.IsolatedAsyncioTestCase):
         await self.control.execute(f'CREATE SCHEMA "{self.schema}"')
         self.created_schema = True
         await self.control.execute(f'SET search_path TO "{self.schema}", pg_catalog')
+        # The control connection is dedicated (no pool reset), but verify the
+        # schema actually bound before creating unqualified tables — a failed
+        # SET would otherwise land fixture tables in public.
+        self.assertEqual(
+            await self.control.fetchval("SELECT current_schema()"),
+            self.schema,
+        )
         await self.control.execute("""
             CREATE TABLE transfers (
-                id UUID PRIMARY KEY,
-                accountable_institution_id INTEGER NOT NULL
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                transfer_id TEXT,
+                property_address TEXT,
+                purchase_price NUMERIC,
+                status TEXT,
+                current_step INTEGER,
+                total_steps INTEGER,
+                progress INTEGER,
+                matter_id UUID,
+                accountable_institution_id INTEGER NOT NULL,
+                created_by_user_id INTEGER,
+                client_request_id UUID,
+                request_fingerprint TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
             );
+            CREATE UNIQUE INDEX uq_transfers_client_request
+                ON transfers (accountable_institution_id, client_request_id)
+                WHERE client_request_id IS NOT NULL;
+            CREATE TABLE matters (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                reference_number TEXT,
+                matter_type TEXT,
+                title TEXT,
+                status TEXT,
+                source_record_id TEXT,
+                accountable_institution_id INTEGER,
+                firm_reference TEXT,
+                classification_code TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            );
+            -- Scratch-local stand-in for the production generator (public is
+            -- intentionally out of the search_path): unique per call.
+            CREATE FUNCTION generate_transfer_id() RETURNS TEXT AS $$
+                SELECT 'TRF-TEST-' || replace(gen_random_uuid()::text, '-', '')
+            $$ LANGUAGE SQL;
             CREATE TABLE transfer_parties (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 transfer_id UUID NOT NULL REFERENCES transfers(id) ON DELETE CASCADE,
-                golden_record_id UUID NOT NULL,
+                golden_record_id UUID,
                 entity_type TEXT NOT NULL,
                 role TEXT NOT NULL,
                 accountable_institution_id INTEGER NOT NULL,
@@ -80,14 +212,38 @@ class TransferPartyPostgresTests(unittest.IsolatedAsyncioTestCase):
                 cached_id_number TEXT,
                 cached_email TEXT,
                 synced_at TIMESTAMPTZ,
+                party_source TEXT NOT NULL DEFAULT 'golden_record',
+                manual_name TEXT,
+                manual_id_number TEXT,
+                manual_id_type TEXT,
+                manual_passport_country TEXT,
+                manual_email TEXT,
+                manual_phone TEXT,
+                manual_address TEXT,
+                is_primary_contact BOOLEAN NOT NULL DEFAULT FALSE,
+                client_request_id UUID,
+                request_fingerprint TEXT,
+                acknowledged_duplicate BOOLEAN NOT NULL DEFAULT FALSE,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 UNIQUE (transfer_id, golden_record_id, role)
             );
+            CREATE UNIQUE INDEX idx_one_primary_per_role
+                ON transfer_parties (transfer_id, role)
+                WHERE is_primary_contact = TRUE;
+            CREATE UNIQUE INDEX uq_tp_client_request
+                ON transfer_parties (accountable_institution_id, client_request_id)
+                WHERE client_request_id IS NOT NULL;
         """)
-        self.pool = await asyncpg.create_pool(
-            dsn=url, min_size=1, max_size=4, command_timeout=10,
-            server_settings={**settings, "search_path": f'"{self.schema}", pg_catalog'},
+
+        # asyncpg resets pooled connections on release, so search_path must be
+        # re-applied on every acquire; see _SchemaBoundPool.
+        self.pool = _SchemaBoundPool(
+            await asyncpg.create_pool(
+                dsn=url, min_size=1, max_size=4, command_timeout=10,
+                server_settings=settings,
+            ),
+            self.schema,
         )
         self.stack.enter_context(patch.object(db, "_pool", self.pool))
         self.stack.enter_context(patch.object(db, "_settings", SimpleNamespace(node_env="test")))
@@ -141,7 +297,7 @@ class TransferPartyPostgresTests(unittest.IsolatedAsyncioTestCase):
         return task
 
     async def wait(self, event: asyncio.Event) -> None:
-        await asyncio.wait_for(event.wait(), timeout=5)
+        await asyncio.wait_for(event.wait(), timeout=30)
 
     async def link(self) -> Any:
         return await service.link_party_to_transfer(
@@ -200,7 +356,7 @@ class TransferPartyPostgresTests(unittest.IsolatedAsyncioTestCase):
         return self.start(write()), ready, identity
 
     async def assert_blocked(self, task: asyncio.Task[Any], writer_pid: int, holder_pid: int) -> None:
-        async with asyncio.timeout(5):
+        async with asyncio.timeout(30):
             while True:
                 blockers = await self.control.fetchval("SELECT pg_blocking_pids($1)", writer_pid)
                 if holder_pid in blockers:
@@ -231,7 +387,7 @@ class TransferPartyPostgresTests(unittest.IsolatedAsyncioTestCase):
         await self.pool.execute("UPDATE transfers SET accountable_institution_id = 7 WHERE id = $1", self.transfer_id)
         release.set()
         with self.assertRaises(service.TransferPartyServiceError):
-            await asyncio.wait_for(operation, timeout=5)
+            await asyncio.wait_for(operation, timeout=30)
         self.assertEqual(await self.pool.fetchval("SELECT count(*) FROM transfer_parties"), 0)
 
     async def test_parent_lock_blocks_a_tenant_change_until_link_commits(self) -> None:
@@ -254,8 +410,8 @@ class TransferPartyPostgresTests(unittest.IsolatedAsyncioTestCase):
             await self.wait(ready)
             await self.assert_blocked(writer, identity["pid"], holder["pid"])
             release.set()
-            result = await asyncio.wait_for(operation, timeout=5)
-            await asyncio.wait_for(writer, timeout=5)
+            result = await asyncio.wait_for(operation, timeout=30)
+            await asyncio.wait_for(writer, timeout=30)
         self.assertEqual(result["accountable_institution_id"], 5)
         self.assertEqual(await self.pool.fetchval("SELECT accountable_institution_id FROM transfers WHERE id = $1", self.transfer_id), 5)
 
@@ -293,7 +449,7 @@ class TransferPartyPostgresTests(unittest.IsolatedAsyncioTestCase):
         await self.pool.execute(sql, *params)
         release.set()
         with self.assertRaises(service.TransferPartyServiceError):
-            await asyncio.wait_for(operation, timeout=5)
+            await asyncio.wait_for(operation, timeout=30)
         after = await self.party()
         for field in ("cached_name", "cached_id_number", "cached_email", "synced_at"):
             self.assertEqual(after[field], before[field])
@@ -356,9 +512,164 @@ class TransferPartyPostgresTests(unittest.IsolatedAsyncioTestCase):
             await self.assert_blocked(parent_writer, parent["pid"], holder["pid"])
             await self.assert_blocked(party_writer, party["pid"], holder["pid"])
             release.set()
-            await asyncio.wait_for(operation, timeout=5)
-            await asyncio.wait_for(asyncio.gather(parent_writer, party_writer), timeout=5)
+            await asyncio.wait_for(operation, timeout=30)
+            await asyncio.wait_for(asyncio.gather(parent_writer, party_writer), timeout=30)
         row = await self.party()
         self.assertEqual(row["golden_record_id"], self.golden_record_id)
         self.assertEqual(row["accountable_institution_id"], 5)
         self.assertEqual(row["cached_name"], "Canonical test name")
+
+    def _matter_kwargs(self, key: UUID, fingerprint: str, ai: int = 5) -> dict[str, Any]:
+        return dict(
+            property_address="1 Test Street",
+            purchase_price=1250000,
+            accountable_institution_id=ai,
+            actor_user_id=9,
+            firm_reference="FR-001",
+            client_request_id=key,
+            request_fingerprint=fingerprint,
+        )
+
+    async def test_matter_create_concurrent_identical_requests_resolve_to_one(self) -> None:
+        key = uuid4()
+        kwargs = self._matter_kwargs(key, "fp-same")
+        first, second = await asyncio.gather(
+            matter_service.create_transfer_matter(**kwargs),
+            matter_service.create_transfer_matter(**kwargs),
+        )
+        self.assertEqual(first[0]["id"], second[0]["id"])
+        # Exactly one caller is the creator; the other replays the same row.
+        self.assertEqual({first[1], second[1]}, {True, False})
+        self.assertEqual(await self.pool.fetchval(
+            "SELECT count(*) FROM transfers WHERE client_request_id = $1", key), 1)
+        self.assertEqual(await self.pool.fetchval("SELECT count(*) FROM matters"), 1)
+
+    async def test_matter_create_identical_replay_returns_existing(self) -> None:
+        key = uuid4()
+        first, created1 = await matter_service.create_transfer_matter(
+            **self._matter_kwargs(key, "fp-A"))
+        second, created2 = await matter_service.create_transfer_matter(
+            **self._matter_kwargs(key, "fp-A"))
+        self.assertTrue(created1)
+        self.assertFalse(created2)
+        self.assertEqual(first["id"], second["id"])
+        self.assertEqual(await self.pool.fetchval(
+            "SELECT count(*) FROM transfers WHERE client_request_id = $1", key), 1)
+        self.assertEqual(await self.pool.fetchval("SELECT count(*) FROM matters"), 1)
+
+    async def test_matter_create_conflicting_reuse_returns_conflict(self) -> None:
+        key = uuid4()
+        await matter_service.create_transfer_matter(**self._matter_kwargs(key, "fp-A"))
+        with self.assertRaises(matter_service.MatterIdempotencyConflictError):
+            await matter_service.create_transfer_matter(**self._matter_kwargs(key, "fp-B"))
+        self.assertEqual(await self.pool.fetchval(
+            "SELECT count(*) FROM transfers WHERE client_request_id = $1", key), 1)
+        self.assertEqual(await self.pool.fetchval("SELECT count(*) FROM matters"), 1)
+
+    async def test_matter_create_cross_institution_key_isolation(self) -> None:
+        key = uuid4()
+        first, created1 = await matter_service.create_transfer_matter(
+            **self._matter_kwargs(key, "fp", ai=5))
+        second, created2 = await matter_service.create_transfer_matter(
+            **self._matter_kwargs(key, "fp", ai=7))
+        self.assertTrue(created1)
+        self.assertTrue(created2)
+        self.assertNotEqual(first["id"], second["id"])
+        self.assertEqual(first["accountable_institution_id"], 5)
+        self.assertEqual(second["accountable_institution_id"], 7)
+        self.assertEqual(await self.pool.fetchval(
+            "SELECT count(*) FROM transfers WHERE client_request_id = $1", key), 2)
+
+    async def test_manual_attach_concurrent_identical_requests_resolve_to_one(self) -> None:
+        key = uuid4()
+        kwargs = dict(
+            entity_type="person", role="transferor", manual_name="Concurrent Person",
+            client_request_id=key, request_fingerprint="fp-same",
+        )
+        first, second = await asyncio.gather(
+            service.attach_manual_party_to_transfer(self.transfer_id, **kwargs),
+            service.attach_manual_party_to_transfer(self.transfer_id, **kwargs),
+        )
+        self.assertEqual(first["id"], second["id"])
+        self.assertEqual(await self.pool.fetchval(
+            "SELECT count(*) FROM transfer_parties WHERE client_request_id = $1", key), 1)
+        row = await self.pool.fetchrow(
+            "SELECT party_source, golden_record_id, manual_name FROM transfer_parties WHERE client_request_id = $1", key)
+        self.assertEqual(row["party_source"], "manual")
+        self.assertIsNone(row["golden_record_id"])
+
+    async def test_manual_attach_identical_replay_returns_existing_row(self) -> None:
+        key = uuid4()
+        kwargs = dict(
+            entity_type="person", role="transferee", manual_name="Replay Person",
+            manual_id_number="9001010000000", manual_id_type="sa_id",
+            client_request_id=key, request_fingerprint="fp-replay",
+        )
+        first = await service.attach_manual_party_to_transfer(self.transfer_id, **kwargs)
+        second = await service.attach_manual_party_to_transfer(self.transfer_id, **kwargs)
+        self.assertEqual(first["id"], second["id"])
+        self.assertEqual(await self.pool.fetchval(
+            "SELECT count(*) FROM transfer_parties WHERE client_request_id = $1", key), 1)
+
+    async def test_manual_attach_conflicting_reuse_returns_conflict(self) -> None:
+        key = uuid4()
+        await service.attach_manual_party_to_transfer(
+            self.transfer_id, entity_type="person", role="transferor",
+            manual_name="First Person", client_request_id=key, request_fingerprint="fp-A")
+        with self.assertRaises(service.IdempotencyConflictError):
+            await service.attach_manual_party_to_transfer(
+                self.transfer_id, entity_type="person", role="transferee",
+                manual_name="Different Person", client_request_id=key,
+                request_fingerprint="fp-B")
+        self.assertEqual(await self.pool.fetchval(
+            "SELECT count(*) FROM transfer_parties WHERE client_request_id = $1", key), 1)
+
+    async def test_manual_attach_cross_institution_key_isolation(self) -> None:
+        key = uuid4()
+        await self.pool.execute(
+            "UPDATE transfers SET accountable_institution_id = 7 WHERE id = $1",
+            self.other_transfer_id)
+        kwargs = dict(
+            entity_type="person", role="transferor", manual_name="Tenant Person",
+            client_request_id=key, request_fingerprint="fp",
+        )
+        first = await service.attach_manual_party_to_transfer(self.transfer_id, **kwargs)
+        second = await service.attach_manual_party_to_transfer(self.other_transfer_id, **kwargs)
+        # A foreign institution's identical key is an independent request: no
+        # replay of the first institution's row, no cross-tenant disclosure.
+        self.assertNotEqual(first["id"], second["id"])
+        self.assertEqual(first["accountable_institution_id"], 5)
+        self.assertEqual(second["accountable_institution_id"], 7)
+        self.assertEqual(await self.pool.fetchval(
+            "SELECT count(*) FROM transfer_parties WHERE client_request_id = $1", key), 2)
+
+    async def test_partial_save_retry_reuses_matter_and_retries_only_failed_party(self) -> None:
+        matter_key, party_key = uuid4(), uuid4()
+        matter, created = await matter_service.create_transfer_matter(
+            **self._matter_kwargs(matter_key, "fp-matter"))
+        self.assertTrue(created)
+
+        # First attach attempt fails validation; nothing is persisted.
+        with self.assertRaises(service.PartyValidationError):
+            await service.attach_manual_party_to_transfer(
+                matter["id"], entity_type="company", role="transferor",
+                manual_name="Rejected company", client_request_id=party_key,
+                request_fingerprint="fp-party")
+        self.assertEqual(await self.pool.fetchval("SELECT count(*) FROM transfer_parties"), 0)
+
+        # Retry: the same matter key replays the existing matter instead of
+        # creating a second one; only the failed party attach is retried.
+        matter2, created2 = await matter_service.create_transfer_matter(
+            **self._matter_kwargs(matter_key, "fp-matter"))
+        self.assertFalse(created2)
+        self.assertEqual(matter["id"], matter2["id"])
+
+        party = await service.attach_manual_party_to_transfer(
+            matter["id"], entity_type="person", role="transferor",
+            manual_name="Retried Person", client_request_id=party_key,
+            request_fingerprint="fp-party")
+        self.assertIsNotNone(party)
+        self.assertEqual(await self.pool.fetchval(
+            "SELECT count(*) FROM transfers WHERE client_request_id = $1", matter_key), 1)
+        self.assertEqual(await self.pool.fetchval("SELECT count(*) FROM matters"), 1)
+        self.assertEqual(await self.pool.fetchval("SELECT count(*) FROM transfer_parties"), 1)

@@ -1,5 +1,5 @@
-import { ApiRequestError } from './httpClient'
-import { TransferApi } from './transferApi'
+import { apiRequest, ApiRequestError } from './httpClient'
+import type { ApiResponse } from '../types'
 
 export function serviceUnavailableMessage(service: string, error?: unknown): string {
   const status = error instanceof ApiRequestError ? ` (HTTP ${error.status})` : ''
@@ -7,13 +7,13 @@ export function serviceUnavailableMessage(service: string, error?: unknown): str
 }
 
 /**
- * A successful probe only means the list endpoint answered — it is NOT proof of
- * write permission or save availability. Actual saves must still surface their
- * own failures.
+ * A successful probe only means the authenticated v1 list endpoint answered —
+ * it is NOT proof of write permission or save availability. Actual saves must
+ * still surface their own failures.
  */
 export async function probeMatterPersistence(): Promise<Error | null> {
   try {
-    const response = await TransferApi.getTransfers({ limit: 1 })
+    const response = await apiRequest<ApiResponse<unknown>>('/api/v1/transfers/?limit=1')
     return response.success ? null : new Error(response.error || 'Matter persistence unavailable')
   } catch (err) {
     return err instanceof Error ? err : new Error('Matter persistence unavailable')

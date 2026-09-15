@@ -85,8 +85,9 @@ const NewTransfer: React.FC = () => {
     }
   }
 
+  // Manual capture is a peer path, not a fallback: it stays available whether
+  // the user never searched, found no match, or the search failed.
   const handleContinueWithoutRecord = () => {
-    if (!notFound) return
     resetSearch()
     navigate('/transfers/workflow', {
       state: {
@@ -318,16 +319,6 @@ const NewTransfer: React.FC = () => {
                           {error}
                         </p>
                         {canRetryRetrieval && <Button onClick={retryRetrieval} variant="outline">Retry retrieval</Button>}
-                        {notFound && (
-                          <Button
-                            onClick={handleContinueWithoutRecord}
-                            variant="outline"
-                            className="w-full flex items-center justify-center space-x-2"
-                          >
-                            <span>Continue to Create Matter</span>
-                            <ArrowRight className="w-4 h-4" />
-                          </Button>
-                        )}
                       </div>
                     </div>
                   </div>
@@ -358,6 +349,18 @@ const NewTransfer: React.FC = () => {
                     </Button>
                   </div>
                 )}
+
+                {/* Independent manual path — always offered, search or not */}
+                <div className="pt-4 border-t border-gray-200 dark:border-navy-700">
+                  <Button
+                    onClick={handleContinueWithoutRecord}
+                    variant="outline"
+                    className="w-full flex items-center justify-center space-x-2"
+                  >
+                    <span>Add parties manually instead</span>
+                    <ArrowRight className="w-4 h-4" />
+                  </Button>
+                </div>
               </CardContent>
             </Card>
           )}
