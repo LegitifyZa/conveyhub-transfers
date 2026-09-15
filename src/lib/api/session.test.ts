@@ -204,6 +204,74 @@ describe('refreshSession', () => {
   })
 })
 
+describe('stale-response invalidation', () => {
+  const tick = () => new Promise<void>((resolve) => setImmediate(resolve))
+
+  it('a refresh resolving after logout cannot restore the cleared session', async () => {
+    makeSession('old-token')
+    let resolveRefresh: (r: Response) => void = () => {}
+    handler = (url) =>
+      url === '/api/auth/refresh'
+        ? new Promise<Response>((resolve) => { resolveRefresh = resolve })
+        : Promise.resolve(jsonResponse({ error: 'expired' }, 401))
+    const request = apiRequest('/api/v1/transfers/')
+    await tick() // let the refresh exchange start
+    await logoutSession()
+    resolveRefresh(jsonResponse({ data: { token: 'stale-token', expires: 1 } }))
+    await assert.rejects(request, ApiRequestError)
+    assert.equal(getSession(), null)
+    assert.equal(getAccessToken(), null)
+  })
+
+  it('a refresh resolving after a newer login cannot overwrite the new session', async () => {
+    let resolveRefresh: (r: Response) => void = () => {}
+    handler = (url) =>
+      url === '/api/auth/refresh'
+        ? new Promise<Response>((resolve) => { resolveRefresh = resolve })
+        : Promise.resolve(jsonResponse({ success: true }))
+    const pending = refreshSession()
+    await tick()
+    setSession({ accessToken: 'new-login-token', expires: 2, user: { id: 7 } })
+    resolveRefresh(jsonResponse({ data: { token: 'old-refresh-token', expires: 1 } }))
+    assert.equal(await pending, false)
+    assert.equal(getAccessToken(), 'new-login-token')
+    assert.deepEqual(getSession()?.user, { id: 7 })
+  })
+
+  it('a failed refresh resolving after a session change does not clear the new session', async () => {
+    let resolveRefresh: (r: Response) => void = () => {}
+    handler = (url) =>
+      url === '/api/auth/refresh'
+        ? new Promise<Response>((resolve) => { resolveRefresh = resolve })
+        : Promise.resolve(jsonResponse({ success: true }))
+    const pending = refreshSession()
+    await tick()
+    setSession({ accessToken: 'new-login-token', expires: 2, user: { id: 7 } })
+    resolveRefresh(jsonResponse({ message: 'Invalid refresh token' }, 401))
+    assert.equal(await pending, false)
+    assert.equal(getAccessToken(), 'new-login-token')
+  })
+
+  it('a retried write repeats the identical body so client_request_id deduplicates upstream', async () => {
+    makeSession('expired')
+    const bodies: string[] = []
+    handler = (url, init) => {
+      if (url === '/api/auth/refresh') {
+        return Promise.resolve(jsonResponse({ data: { token: 'fresh', expires: 1 } }))
+      }
+      bodies.push(String(init?.body))
+      return Promise.resolve(
+        bodies.length === 1 ? jsonResponse({ error: 'expired' }, 401) : jsonResponse({ success: true })
+      )
+    }
+    const payload = { propertyAddress: '1 Main St', client_request_id: 'b6f0c0f0-1111-4222-8333-444455556666' }
+    await apiRequest('/api/v1/transfers/', { method: 'POST', body: payload })
+    assert.equal(bodies.length, 2)
+    assert.equal(bodies[0], bodies[1])
+    assert.match(bodies[1], /client_request_id/)
+  })
+})
+
 describe('logout and session transitions', () => {
   it('sends the Bearer token to the BFF logout and clears the session', async () => {
     makeSession('token-logout')

@@ -221,6 +221,15 @@ describe('BFF auth proxy: otp', () => {
     assert.equal(body.data.confirmation_pin, '12345')
     assert.deepEqual(JSON.parse(captured[0].body), { user_id: 42, delivery_method: 'EMAIL' })
   })
+
+  it('never exposes upstream dev_otp through DEEDLY', async () => {
+    respond = () => ({ status: 200, body: { message: 'OTP sent successfully', data: { confirmation_pin: '12345', dev_otp: 654321 } } })
+    const { status, body } = await post('/api/auth/otp', { user_id: 42 })
+    assert.equal(status, 200)
+    assert.equal(body.data.confirmation_pin, '12345')
+    assert.equal(body.data.dev_otp, undefined)
+    assert.doesNotMatch(JSON.stringify(body), /654321|dev_otp/)
+  })
 })
 
 describe('BFF auth proxy: login', () => {
@@ -240,7 +249,7 @@ describe('BFF auth proxy: login', () => {
 
   it('moves the refresh token into an HttpOnly cookie and strips it from the body', async () => {
     const token = makeAccessToken()
-    respond = () => ({ status: 200, body: { ...loginResponse, data: { ...loginResponse.data, token } } })
+    respond = () => ({ status: 200, body: { ...loginResponse, data: { ...loginResponse.data, token, dev_otp: 999999 } } })
     const { status, body, cookies } = await post('/api/auth/login', { user_id: 42, otp: 123456 })
     assert.equal(status, 200)
     assert.equal(body.data.token, token)
@@ -248,7 +257,8 @@ describe('BFF auth proxy: login', () => {
     assert.equal(body.data.user.id, 42)
     assert.deepEqual(body.data.refresh_token, undefined)
     assert.deepEqual(body.data.refresh_expires, undefined)
-    assert.doesNotMatch(JSON.stringify(body), /r{64}/)
+    assert.deepEqual(body.data.dev_otp, undefined)
+    assert.doesNotMatch(JSON.stringify(body), /r{64}|dev_otp|999999/)
     const cookie = cookies.find((c) => c.startsWith('deedly_refresh='))
     assert.ok(cookie, 'refresh cookie must be set')
     assert.match(cookie, /HttpOnly/)
@@ -314,6 +324,31 @@ describe('BFF auth proxy: refresh', () => {
     const cleared = cookies.find((c) => c.startsWith('deedly_refresh='))
     assert.ok(cleared)
     assert.match(cleared, /Max-Age=0/)
+  })
+
+  it('applies the same claim checks as login before returning a refreshed token', async () => {
+    // Retired-role token: a session must not be formed, so the refresh cookie
+    // is cleared — retrying would only mint the same unusable token.
+    respond = () => ({ status: 200, body: { message: 'Token refreshed', data: { token: makeAccessToken(5), expires: 999999 } } })
+    const retired = await post('/api/auth/refresh', {}, { Cookie: 'deedly_refresh=abc123refresh' })
+    assert.equal(retired.status, 401)
+    assert.equal(retired.body.success, false)
+    assert.match(retired.cookies.find((c) => c.startsWith('deedly_refresh=')) ?? '', /Max-Age=0/)
+    assert.doesNotMatch(JSON.stringify(retired.body), /token/)
+
+    const foreign = jwt.sign({ type: 'access' }, 'a-different-secret')
+    respond = () => ({ status: 200, body: { message: 'Token refreshed', data: { token: foreign, expires: 999999 } } })
+    const wrongSignature = await post('/api/auth/refresh', {}, { Cookie: 'deedly_refresh=abc123refresh' })
+    assert.equal(wrongSignature.status, 401)
+    assert.match(wrongSignature.cookies.find((c) => c.startsWith('deedly_refresh=')) ?? '', /Max-Age=0/)
+  })
+
+  it('returns 503 without a cookie change when the refresh body violates the token contract', async () => {
+    respond = () => ({ status: 200, body: { message: 'Token refreshed', data: { token: 123 } } })
+    const { status, body, cookies } = await post('/api/auth/refresh', {}, { Cookie: 'deedly_refresh=abc123refresh' })
+    assert.equal(status, 503)
+    assert.equal(body.success, false)
+    assert.equal(cookies.length, 0)
   })
 })
 

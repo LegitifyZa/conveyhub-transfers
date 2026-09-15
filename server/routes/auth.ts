@@ -146,7 +146,22 @@ router.post('/otp', asyncHandler(async (req: Request, res: Response) => {
     payload.delivery_method = deliveryMethod
   }
   const result = await callUpstream(res, 'otp', payload)
-  if (result) relay(res, result)
+  if (!result) return
+  if (!result.ok) {
+    relay(res, result)
+    return
+  }
+  // dev_otp (upstream debug builds) is never exposed through DEEDLY.
+  let envelope: { message?: unknown; data?: Record<string, unknown> }
+  try {
+    envelope = JSON.parse(result.body)
+  } catch {
+    res.status(503).json(AUTH_UNAVAILABLE)
+    return
+  }
+  const data = typeof envelope?.data === 'object' && envelope.data !== null ? { ...envelope.data } : {}
+  delete data.dev_otp
+  res.status(result.status).json({ message: envelope?.message, data })
 }))
 
 // Step 3: exchange the OTP for tokens. On success the refresh token is moved
@@ -192,7 +207,10 @@ router.post('/login', asyncHandler(async (req: Request, res: Response) => {
     res.status(401).json({ success: false, error: 'Authentication failed' })
     return
   }
-  const { refresh_token: _refreshToken, refresh_expires: _refreshExpires, ...clientData } = data
+  const clientData = { ...data }
+  delete clientData.refresh_token
+  delete clientData.refresh_expires
+  delete clientData.dev_otp
   res.setHeader('Set-Cookie', refreshCookieHeader(data.refresh_token as string))
   res.setHeader('Cache-Control', 'no-store')
   res.status(result.status).json({ message: envelope.message, data: clientData })
@@ -212,8 +230,42 @@ router.post('/refresh', asyncHandler(async (req: Request, res: Response) => {
   if (!result) return
   if (result.status === 401 || result.status === 403) {
     res.setHeader('Set-Cookie', clearRefreshCookieHeader())
+    relay(res, result)
+    return
   }
-  relay(res, result)
+  if (!result.ok) {
+    relay(res, result)
+    return
+  }
+  // The returned access token gets the same claim checks as login before it
+  // reaches the browser: signature, expiry, type=access, deployed role 1-4 and
+  // institution claim. A token this boundary rejects cannot form a session,
+  // so the refresh cookie is cleared as well.
+  let envelope: { message?: unknown; data?: Record<string, unknown> }
+  try {
+    envelope = JSON.parse(result.body)
+  } catch {
+    res.status(503).json(AUTH_UNAVAILABLE)
+    return
+  }
+  const data = envelope?.data
+  if (typeof envelope?.message !== 'string' || !data
+    || typeof data.token !== 'string' || !data.token
+    || typeof data.expires !== 'number' || !Number.isFinite(data.expires)) {
+    res.status(503).json(AUTH_UNAVAILABLE)
+    return
+  }
+  try {
+    verifyJwt(data.token as string, process.env.JWT_SECRET)
+  } catch {
+    res.setHeader('Set-Cookie', clearRefreshCookieHeader())
+    res.status(401).json({ success: false, error: 'Authentication required' })
+    return
+  }
+  res.status(result.status).json({
+    message: envelope.message,
+    data: { token: data.token, expires: data.expires },
+  })
 }))
 
 // Logout is best-effort upstream (it requires the Bearer `api` ability) but

@@ -200,31 +200,59 @@ errors?}` — no `success` field.
   the BFF to exchange it via `POST /api/auth/refresh`.
 - **BFF auth proxy** (`server/routes/auth.ts`, mounted at `/api/auth`):
   `initiate-login`, `otp`, `login`, `refresh`, `logout`. `login` strips
-  `refresh_token`/`refresh_expires` from the browser-visible body and verifies
-  the issued access token against the BFF's own JWT checks (so retired/unknown
-  roles fail closed at session creation). `logout` always clears the cookie
-  and forwards the Bearer token upstream best-effort. `refresh` clears the
-  cookie when upstream rejects the token. Input is validated at the BFF before
-  any upstream call; upstream 5xx/unreachable/unset `LEGITIFY_API_BASE_URL`
-  → generic 503.
+  `refresh_token`/`refresh_expires`/`dev_otp` from the browser-visible body
+  and verifies the issued access token against the BFF's own JWT checks (so
+  retired/unknown roles fail closed at session creation). `refresh` applies
+  the same claim verification to the returned access token before relaying it;
+  a token the boundary rejects yields 401 and clears the refresh cookie.
+  `otp` strips `dev_otp` — upstream debug OTPs are never exposed through
+  DEEDLY. `logout` always clears the cookie and forwards the Bearer token
+  upstream best-effort. Input is validated at the BFF before any upstream
+  call; upstream 5xx/unreachable/unset `LEGITIFY_API_BASE_URL` → generic 503.
 - **Session transitions** clear the legacy `legitify_auth` prototype flag and
   notify `onSessionChange` listeners; the app holds no other user/institution-
   scoped caches (accounts reads are `no-store`; `darkMode` is cosmetic).
+  A session epoch counter invalidates async results: a refresh or login
+  response resolving after logout/session-change is discarded and cannot
+  resurrect the cleared session.
 - `RequireAuth` waits for the silent refresh attempt (`isRestoring`) before
   redirecting, so a page reload with a valid cookie restores the session
   instead of bouncing to `/login`.
 
+### Cookie / CSRF / hosting requirements
+
+- CSRF protection for cookie endpoints rests on `SameSite=Strict`: cross-site
+  requests never carry `deedly_refresh`. The Express `cors()` default does not
+  enable credentialed CORS (`Access-Control-Allow-Credentials` unset), so
+  cross-origin credentialed XHR is also blocked by the browser.
+- The cookie is scoped `Path=/api/auth` and marked `Secure`. Deployment
+  requirement: the BFF must be reachable **same-origin (or at minimum
+  same-site)** under `/api` from the SPA — same as the Vite dev proxy — and
+  served over HTTPS; a cross-site BFF host would silently break refresh. Do
+  not weaken `Secure`/`SameSite` to accommodate a cross-site deployment.
+- The 401 refresh-and-retry reissues the identical serialized request body, so
+  `client_request_id` idempotency keys on matter/party creates are preserved
+  and replays deduplicate upstream (`(accountable_institution_id,
+  client_request_id)` unique index). Our 401s are additionally always raised
+  before any handler or upstream call, so no partial write can have occurred.
+- Passwords, OTPs and tokens are not logged; BFF 503/400 responses carry no
+  upstream detail. Logout clears only the local session — upstream tokens are
+  stateless and expire naturally; it is NOT upstream revocation.
+
 ### Test evidence (focused, mocked — no upstream contacted)
 
-- `server/tests/authProxy.test.ts` — 19 tests: input validation without
+- `server/tests/authProxy.test.ts` — 22 tests: input validation without
   upstream calls, contract forwarding, account-picker relay, refresh-cookie
-  extraction, token stripping, local verification of the issued token
-  (retired role / wrong signature rejected, no cookie set), refresh success/
-  failure/cookie clearing, logout forwarding and unconditional local teardown,
-  503 without upstream details.
-- `src/lib/api/session.test.ts` — 16 tests: Bearer attachment (and its
+  extraction, token stripping, `dev_otp` stripping on `otp`/`login`, local
+  verification of issued and refreshed tokens (retired role / wrong signature
+  rejected; refresh also clears the cookie), refresh success/failure/cookie
+  clearing, refresh contract-violation 503, logout forwarding and
+  unconditional local teardown, 503 without upstream details.
+- `src/lib/api/session.test.ts` — 20 tests: Bearer attachment (and its
   exclusion on auth-ingress paths), one-shot refresh+retry on 401, no retry
-  loop, failed-refresh session clearing, refresh single-flight, logout
+  loop, failed-refresh session clearing, refresh single-flight, stale
+  refresh/login responses discarded after logout or a newer login (epoch
+  guard), identical-body write retry preserving `client_request_id`, logout
   Bearer/cleanup under transport failure, session-change notification, legacy
   flag removal, no token persistence to storage.
 - `src/lib/api/accountsApi.test.ts` — updated to the new retry contract (a 401

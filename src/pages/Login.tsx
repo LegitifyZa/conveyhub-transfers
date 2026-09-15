@@ -251,9 +251,7 @@ const Login: React.FC = () => {
                   autoComplete="one-time-code"
                 />
               </div>
-              {challenge.devOtp !== undefined && (
-                <p className="text-xs text-amber-600">Development OTP: {challenge.devOtp}</p>
-              )}
+
               {error && (
                 <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
               )}

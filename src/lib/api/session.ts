@@ -29,6 +29,11 @@ export type SessionListener = (session: AuthSession | null) => void
 
 let session: AuthSession | null = null
 let refreshInFlight: Promise<boolean> | null = null
+// Incremented on every session transition. Async flows (refresh exchange,
+// login round-trip) capture it before awaiting and discard their result if
+// it changed — a late response must not resurrect a session that logout or a
+// newer login replaced.
+let epoch = 0
 const listeners = new Set<SessionListener>()
 
 function dropLegacyFlag(): void {
@@ -60,8 +65,13 @@ export function getSessionUser(): Record<string, unknown> | null {
   return session?.user ?? null
 }
 
+export function sessionEpoch(): number {
+  return epoch
+}
+
 export function setSession(next: AuthSession): void {
   session = next
+  epoch += 1
   dropLegacyFlag()
   notify()
 }
@@ -69,6 +79,7 @@ export function setSession(next: AuthSession): void {
 export function clearSession(): void {
   const hadSession = session !== null
   session = null
+  epoch += 1
   dropLegacyFlag()
   if (hadSession) notify()
 }
@@ -87,6 +98,8 @@ export function refreshSession(): Promise<boolean> {
 }
 
 async function doRefresh(): Promise<boolean> {
+  const startEpoch = epoch
+  let envelope: { data?: { token?: unknown; expires?: unknown } }
   try {
     const response = await fetch('/api/auth/refresh', {
       method: 'POST',
@@ -95,24 +108,26 @@ async function doRefresh(): Promise<boolean> {
       headers: { 'Content-Type': 'application/json' },
       body: '{}',
     })
-    if (!response.ok) {
-      clearSession()
-      return false
+    if (response.ok) {
+      envelope = await response.json()
+    } else {
+      envelope = {}
     }
-    const envelope = await response.json()
-    const token = envelope?.data?.token
-    const expires = envelope?.data?.expires
-    if (typeof token !== 'string' || !token || typeof expires !== 'number' || !Number.isFinite(expires)) {
-      clearSession()
-      return false
-    }
-    session = { accessToken: token, expires, user: session?.user ?? null }
-    notify()
-    return true
   } catch {
+    if (epoch === startEpoch) clearSession()
+    return false
+  }
+  // The session was cleared or replaced while the exchange was in flight —
+  // this response is stale and must not touch it.
+  if (epoch !== startEpoch) return false
+  const token = envelope.data?.token
+  const expires = envelope.data?.expires
+  if (typeof token !== 'string' || !token || typeof expires !== 'number' || !Number.isFinite(expires)) {
     clearSession()
     return false
   }
+  setSession({ accessToken: token, expires, user: session?.user ?? null })
+  return true
 }
 
 // Ends the session. The BFF clears the refresh cookie unconditionally and
@@ -120,6 +135,9 @@ async function doRefresh(): Promise<boolean> {
 // access/refresh tokens are stateless and expire naturally.
 export async function logoutSession(): Promise<void> {
   const token = session?.accessToken
+  // Clear first: the epoch bump invalidates any refresh/login exchange still
+  // in flight, so a late upstream response cannot restore the session.
+  clearSession()
   try {
     await fetch('/api/auth/logout', {
       method: 'POST',
@@ -130,5 +148,4 @@ export async function logoutSession(): Promise<void> {
   } catch {
     // Local teardown proceeds regardless of transport failure.
   }
-  clearSession()
 }

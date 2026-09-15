@@ -6,6 +6,7 @@ import {
   logoutSession,
   onSessionChange,
   refreshSession,
+  sessionEpoch,
   setSession,
 } from '@/lib/api/session'
 
@@ -29,7 +30,6 @@ export type InitiateLoginResult =
 
 export interface OtpChallenge {
   confirmationPin?: string
-  devOtp?: number
 }
 
 interface AuthContextValue {
@@ -122,11 +122,11 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     const data = response?.data
     return {
       confirmationPin: typeof data?.confirmation_pin === 'string' ? data.confirmation_pin : undefined,
-      devOtp: typeof data?.dev_otp === 'number' ? data.dev_otp : undefined,
     }
   }, [])
 
   const completeLogin = useCallback(async (userId: number, otp: number): Promise<void> => {
+    const epochBefore = sessionEpoch()
     const response = await apiRequest<UpstreamEnvelope>('/api/auth/login', {
       method: 'POST',
       body: { user_id: userId, otp },
@@ -138,6 +138,9 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       || typeof data.expires !== 'number' || !Number.isFinite(data.expires)) {
       throw new Error('Unexpected authentication response')
     }
+    // The session was cleared or replaced during the login round-trip —
+    // discard this response rather than resurrecting the old session.
+    if (sessionEpoch() !== epochBefore) return
     setSession({
       accessToken: data.token,
       expires: data.expires,

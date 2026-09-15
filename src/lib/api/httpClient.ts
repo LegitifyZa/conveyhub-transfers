@@ -73,6 +73,13 @@ export async function apiRequest<T>(path: string, options: ApiRequestOptions = {
   // One refresh-and-retry pass on an expired session. A failed refresh clears
   // the session (see session.ts), so the 401 surfaces and the app returns to
   // the login screen. Failed requests stay visibly failed — no swallowing.
+  //
+  // Retry safety for writes: our 401s are raised before any handler or
+  // upstream call (BFF requireJwt / FastAPI auth dependencies reject first),
+  // so no partial write can have occurred. The retry reissues the identical
+  // options object — the same serialized body — so client_request_id
+  // idempotency keys on matter/party creates are preserved and a replay is
+  // deduplicated upstream rather than duplicating a row.
   if (response.status === 401 && allowRefreshRetry && !isAuthPath(path)) {
     if (await refreshSession()) {
       return apiRequest<T>(path, options, false)
