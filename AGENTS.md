@@ -219,22 +219,24 @@ python -m mypy --follow-imports=silent --ignore-missing-imports --no-incremental
 - **Documented role authority:** upstream
   `docs/transfers_golden_record_providers_auth.md` sections 4.3 and 5.5 describe a
   six-role model; the newer `docs/rbac.md` describes four roles (1 Super Admin,
-  2 AI Admin, 3 Agent, 4 Client) with roles 5/6 retired — the role-name mapping
-  needs Clive's confirmation. The received
-  `DEEDLY_Role_CRUD_Permissions.xlsx` estimate matrix supports the six-role
-  model (1 Super Admin, 2 Manager [Compliance Officer], 3 User [General Staff],
-  4 Client, 5 Executive Compliance Officer, 6 Admin Agent), grants roles 1/6
-  cross-tenant reads, and marks roles 5/6 write cells only "Likely … confirm",
-  but it self-describes as a provisional best-current-estimate pending the
-  platform's canonical ability/role contract. It does not resolve the
-  four↔six-role mapping, the Client role ID, or the firm-Admin mapping
-  (whether `rbac.md` "AI Admin"/"Agent" correspond to "Manager [Compliance
-  Officer]"/"User [General Staff]"). The question stays open pending Clive; do
-  not infer or renumber roles. Per approved product policy, DEEDLY applies
-  same-institution isolation to every caller regardless of role — deliberately
-  stricter than the matrix's cross-tenant read allowance for roles 1/6:
-  abilities and GR party membership still apply, and standalone GR linkage
-  checks are unchanged. Scoping never consults `user_roles_id` for privileged
+  2 AI Admin, 3 Agent, 4 Client) with roles 5/6 retired. The supplied
+  `DEEDLY_Role_CRUD_Permissions` workbook ("Role Permissions" sheet) now
+  supports the intended four-role model: XML inspection of the current copy
+  shows the former roles 5 (Executive Compliance Officer) and 6 (Admin Agent)
+  rows removed outright — rows 9–10 are empty `<row>` elements with no cells,
+  no `hidden` attribute and no strikethrough formatting, and their shared
+  strings are gone. Remaining roles: 1 Super Admin, 2 Manager [Compliance
+  Officer], 3 User [General Staff], 4 Client (Client denied all transfer
+  writes). Its provisional disclaimer still stands — it is a
+  best-current-estimate pending the platform's canonical ability/role
+  contract — so deployed role IDs, the four↔six correspondence (e.g. whether
+  "AI Admin"/"Agent" map to "Manager [Compliance Officer]"/"User [General
+  Staff]") and handling of the retired roles still need Clive's confirmation.
+  Do not infer or renumber roles. Per approved product policy, DEEDLY applies
+  same-institution isolation to every caller regardless of role — including
+  the roles the matrix describes as cross-tenant for reads: abilities and GR
+  party membership still apply, and standalone GR linkage checks are
+  unchanged. Scoping never consults `user_roles_id` for privileged
   exceptions. `test_policy.py`, `test_ai_tenant_security.py` and
   `aiTenantSecurity.test.ts` cover privileged roles and ordinary/client users,
   including ID/scope tampering.
