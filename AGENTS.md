@@ -32,9 +32,12 @@ browser authentication or a deployed upstream contract.
 - DEEDLY sends the upstream generic `query` payload and `entity_type:
   person|company|trust`; trust search uses `entity_type=trust` and canonical
   trust retrieval uses `entity_type=company`.
-- Browser-side JWT issuance/storage/`Authorization` header wiring is deferred
-  to the separate **Authentication, RBAC & Tenant Security** project. No fake
-  tokens, service keys, or auth bypasses may be added in the interim.
+- Browser JWT issuance/storage/`Authorization` header wiring is implemented on
+  `deedly/mvp0/auth/production-authentication` (see "Production Authentication"
+  below): upstream OTP login via the BFF, in-memory access token, HttpOnly
+  refresh cookie. This is mock-tested wiring only — live browser/S2S
+  certification still requires the deployed upstream contract evidence below.
+  No fake tokens, service keys, or auth bypasses may be added.
 
 ## Useful commands
 
@@ -64,10 +67,11 @@ npm run typecheck:server
   retrieval remains company-style upstream with strict trust classification.
   The detail projection is transient; retrieval performs no DB writes and does
   not expand the persistent display cache.
-- Browser JWT wiring remains an external Authentication-project blocker. The
-  upstream `docs/deedly_external_integration.md` also contains an unresolved
-  external-ingress/key-rotation HOLD. Do not bypass either dependency or claim
-  live browser/S2S certification from mock-transport tests.
+- Browser JWT wiring is implemented on the auth branch (see below); live use
+  remains blocked on the deployed upstream contract and the unresolved
+  external-ingress/key-rotation HOLD in upstream
+  `docs/deedly_external_integration.md`. Do not bypass either dependency or
+  claim live browser/S2S certification from mock-transport tests.
 - The configured Entities source directory is a snapshot without Git metadata;
   executing its contract tests does not attest an upstream or deployed SHA.
 
@@ -144,6 +148,199 @@ Adapter/client checks use `tests/test_entity_submissions.py` and
 with `ENTITIES_SOURCE_ROOT` set for executable source-contract coverage. Its SQL
 fixtures are synthetic in-memory SQLite, not PostgreSQL migration certification.
 
+## Production Authentication / Browser JWT Integration
+
+Implemented on `deedly/mvp0/auth/production-authentication` (based on
+`c94074ea12f0090ebd6d1c77d524d54ec5396964`). Mock-tested wiring only — live
+certification needs the deployed upstream evidence listed below.
+
+### Upstream contract (legitify-be-main snapshot, `services/auth`)
+
+Staff login is OTP-based — never a direct password→token exchange:
+
+1. `POST /api/v1/auth/initiate-login` — `{id_number | passport_number,
+   password, user_id?}`. Exactly one identifier; `user_id` disambiguates
+   multiple accounts (including two accounts at the same institution). On
+   success returns `{message, data:{user_id, requires_otp:true}}`; when several
+   accounts match it returns `data.accounts[]` (each with `user_id`,
+   `accountable_institution_id/_name`, `role_id/_name`) and
+   `requires_otp:false`. It does NOT send the OTP.
+2. `POST /api/v1/auth/otp` — `{user_id, delivery_method?: CELL|EMAIL|BOTH}`
+   generates+sends the OTP; returns `data:{confirmation_pin}` (anti-phishing;
+   `dev_otp` is included only when upstream `app_debug` is on).
+3. `POST /api/v1/auth/login` — `{user_id, otp:int 6-digit}` →
+   `data:{user, client, popia_consent, answered_onboarding_questions, token,
+   expires:int unix ts, refresh_token}`.
+4. `POST /api/v1/auth/refresh` — `{refresh_token}` → `data:{token, expires}`.
+   Refresh tokens are stateless and NOT rotated; no server-side revocation
+   exists (upstream issue notes a blacklist may come later). Logout does not
+   revoke the refresh token upstream.
+5. `POST /api/v1/auth/logout` — requires Bearer with `api` ability; burns any
+   active OTP. Client login (`/client-login`, role 4 OTP-only, no password) is
+   a separate upstream flow and out of scope for the staff slice.
+
+Token claims: access JWT `HS256` shared `JWT_SECRET`, `type=access`, `iat`,
+`exp` (default 24h), `user_id`, `golden_record_id`, `abilities`,
+`accountable_institution_id`, `user_roles_id`, `tenant_id`. Refresh JWT
+`type=refresh`, `user_id` only, 30-day default. No `iss`/`aud` validation in
+the inspected shared JWT helper. Envelope everywhere: `{message, data,
+errors?}` — no `success` field.
+
+### Session design
+
+- **Access token: browser memory only** (`src/lib/api/session.ts`) — never
+  localStorage/sessionStorage. `apiRequest` attaches it as
+  `Authorization: Bearer` on BFF routes; the BFF verifies it and forwards it
+  unchanged to FastAPI on proxied routes, so claims are server-verified per
+  request. On 401, `apiRequest` makes one refresh attempt and retries once —
+  and only while the session's sid is unchanged, so an in-flight write is
+  never replayed under a different user/institution (institution-scoped
+  `client_request_id` keys alone would not catch that).
+- **Refresh credential: sid-bound cookie pair.** On login the BFF generates a
+  per-login session id and sets `deedly_refresh=<sid>.<refresh_token>`
+  (HttpOnly, `Path=/api/auth`) plus `deedly_sid=<sid>` (readable, `Path=/` —
+  `document.cookie` is only visible under the cookie's path, and every SPA
+  route must read it for post-reload restore). Both `Secure; SameSite=Strict`.
+  `/refresh` requires the client to echo the sid via `X-Deedly-Session`
+  (double-submit); it **never emits Set-Cookie**, so a late refresh response
+  can never create, overwrite or clear a cookie. `/logout` clears the pair
+  **only when the presented sid matches the cookie's**, so a logout for
+  session A cannot strip session B's cookie, and it responds without waiting
+  on upstream (upstream logout is fire-and-forget) to keep the in-flight
+  clear window small.
+- **Serialized auth operations, including across tabs — Web Locks required.**
+  Login-complete, refresh and logout run through one promise queue
+  (`enqueueAuthOp`) wrapped in the Web Locks mutex `deedly-auth`: a tab holds
+  the lock for its whole request/response window, so a delayed logout/login
+  Set-Cookie in one tab cannot interleave with another tab's auth operation —
+  the BFF's request-time sid check stays effective and Set-Cookie ordering
+  follows operation order. **Without `navigator.locks` the browser is
+  unsupported**: `enqueueAuthOp` rejects, refresh fails closed (clears the
+  session, fires no request), login cannot be completed, and the Login page
+  shows an unsupported-browser message. `logoutSession` still performs
+  immediate local teardown (memory clear + readable-cookie hygiene) but sends
+  no cookie-changing request.
+- **Logout semantics under interleaving.** `logoutSession` clears local state
+  immediately and bumps a `logoutEpoch` tombstone: refresh/login ops capture
+  the epoch at call time and discard their result if a logout was requested
+  while they were queued or in flight — logout always wins over a pending
+  login/refresh. The logout's BFF request presents the sid it may
+  legitimately end: the call-time session sid, or the jar sid when this tab's
+  own auth pipeline installed it (`tabSessionSids`, including login responses
+  discarded by the tombstone whose Set-Cookie still landed). A foreign sid —
+  a newer login from another tab — is never presented and survives. Limit:
+  the guarantee covers cooperating app tabs; code outside the app's auth path
+  (any same-origin page can issue uncoordinated requests) is outside it —
+  same-origin JS is already trusted with the in-memory token.
+- **BFF auth proxy** (`server/routes/auth.ts`, mounted at `/api/auth`):
+  `initiate-login`, `otp`, `login`, `refresh`, `logout`. `login` strips
+  `refresh_token`/`refresh_expires`/`dev_otp` from the browser-visible body
+  and verifies the issued access token against the BFF's own JWT checks (so
+  retired/unknown roles fail closed at session creation). `refresh` applies
+  the same claim verification to the returned access token before relaying it.
+  `otp` strips `dev_otp` — upstream debug OTPs are never exposed through
+  DEEDLY. `logout` forwards the Bearer token upstream best-effort. Input is
+  validated at the BFF before any upstream call; upstream 5xx/unreachable/
+  unset `LEGITIFY_API_BASE_URL` → generic 503.
+- **Session transitions** clear the legacy `legitify_auth` prototype flag and
+  notify `onSessionChange` listeners; the app holds no other user/institution-
+  scoped caches (accounts reads are `no-store`; `darkMode` is cosmetic).
+- `RequireAuth` waits for the silent refresh attempt (`isRestoring`) before
+  redirecting, so a page reload with a valid cookie pair restores the session
+  instead of bouncing to `/login`.
+
+### Cookie / CSRF / hosting requirements
+
+- **Explicit origin guard before any upstream activity** (router-level
+  middleware): `Sec-Fetch-Site: cross-site` → 403; a present `Origin` must
+  match `AUTH_ALLOWED_ORIGINS` (comma-separated exact list) when configured,
+  else the request `Host` — the supported same-origin `/api` deployment — or
+  a loopback origin outside production (Vite dev proxy). A **missing** Origin
+  does not establish trust: `Sec-Fetch-Site: same-origin`/`none` attests
+  provenance on its own; otherwise only requests carrying no `Cookie` header
+  (non-browser probes with no ambient authority) pass — a cookie-bearing
+  request with no origin evidence is an ambiguous browser and gets 403. This
+  does not rely on CORS or SameSite alone; on top of it sit
+  `SameSite=Strict`, no credentialed CORS, and the sid double-submit header.
+- Deployment requirement: the BFF must be reachable **same-origin under
+  `/api`** from the SPA (as the Vite dev proxy does) and served over HTTPS —
+  `Secure` requires it and a cross-site BFF host would break refresh. Do not
+  weaken `Secure`/`SameSite`/`Path` or broaden `AUTH_ALLOWED_ORIGINS` to
+  accommodate a cross-site deployment.
+- The 401 refresh-and-retry reissues the identical serialized request body, so
+  `client_request_id` idempotency keys on matter/party creates are preserved
+  and replays deduplicate upstream (`(accountable_institution_id,
+  client_request_id)` unique index). Our 401s are additionally always raised
+  before any handler or upstream call, so no partial write can have occurred,
+  and the sid-unchanged gate prevents replay under a newer session entirely.
+- Passwords, OTPs and tokens are not logged; BFF 503/400 responses carry no
+  upstream detail. Logout clears only the local session — upstream tokens are
+  stateless and expire naturally; it is NOT upstream revocation.
+
+### Test evidence (focused, mocked — no upstream contacted)
+
+- `server/tests/authProxy.test.ts` — 31 tests: input validation without
+  upstream calls, contract forwarding, account-picker relay, sid-bound cookie
+  pair on login (`deedly_refresh` HttpOnly `Path=/api/auth`; `deedly_sid`
+  readable `Path=/`), `dev_otp` stripping on `otp`/`login`, local verification
+  of issued and refreshed tokens (retired role / wrong signature rejected),
+  sid double-submit enforcement and refresh's no-Set-Cookie invariant,
+  logout's match-before-clear cookie rule and fire-and-forget upstream
+  forwarding, refresh contract-violation 503, explicit
+  origin/Sec-Fetch-Site rejection before upstream activity, missing-Origin
+  policy (cookie-bearing requests with no origin evidence → 403;
+  credential-free probes and `same-origin` metadata pass),
+  `AUTH_ALLOWED_ORIGINS` allowlist behaviour incl. same-site entries.
+- `src/lib/api/session.test.ts` — 28 tests: Bearer attachment (and its
+  exclusion on auth-ingress paths), one-shot refresh+retry on 401, no retry
+  loop, failed-refresh session clearing, refresh single-flight, sid-echo on
+  refresh incl. post-reload cookie restore, serialized auth-op ordering
+  (logout while refresh in flight discards the refresh result, then runs),
+  routing through the `deedly-auth` Web Lock, unsupported-browser fail-closed
+  (no auth requests fire; local teardown still immediate), logout-epoch
+  discard of still-queued refreshes, stale refresh/login responses discarded
+  after logout or a newer login, pending writes never replayed under a
+  changed session, identical-body write retry preserving
+  `client_request_id`, logout Bearer+sid/cleanup under transport failure,
+  foreign-sid cookie preservation, session-change notification, legacy flag
+  removal, no token persistence to storage.
+- **Local browser verification** (Playwright/Chromium + mocked upstream, run
+  locally, harness not committed): three processes — mock upstream on :8000
+  (minting test JWTs signed with the BFF's `JWT_SECRET`), the real BFF on
+  :3001 (`LEGITIFY_API_BASE_URL` → mock), Vite dev server on :5173 proxying
+  `/api` same-origin. Scenarios verified: (1) real-UI OTP login →
+  `deedly_sid` readable via `document.cookie` on `/transfers` → reload at the
+  SPA route restores the session; (2) two tabs sharing one browser context —
+  tab1 logout with its **response** held at the network layer (Playwright
+  `route.fetch()` then delayed `route.fulfill()`, i.e. a delayed
+  Set-Cookie-bearing response, not a delayed request) → tab2 fired zero auth
+  requests while the `deedly-auth` lock was held → on release the stale clear
+  landed first, tab2's login then established sid-B → reload under sid-B
+  restored; (3) uncoordinated raw `fetch` (outside `enqueueAuthOp`) issuing a
+  sid-B logout whose held response landed after a sid-C login → sid-C's
+  refresh cookie was cleared — the documented residual outside the
+  cooperating-tabs guarantee.
+- `src/lib/api/accountsApi.test.ts` — updated to the new retry contract (a 401
+  may trigger one `/api/auth/refresh` call; auth-flag cleanup is excluded from
+  the institution-storage assertions).
+
+### Remaining live-certification dependencies / open questions
+
+- `LEGITIFY_API_BASE_URL` must point at the deployed nginx gateway per
+  environment; `JWT_SECRET` must equal the platform's shared signing secret.
+  Both are deployment config — unverified here.
+- The snapshot has no Git metadata; the deployed auth service's actual
+  contract/SHA is unverified. External-ingress/key-rotation HOLD stands.
+- OTP delivery requires configured upstream SendGrid/Twilio and an approved
+  test account; no live provider calls were made.
+- Upstream refresh tokens are non-rotating and non-revoked on logout (upstream
+  tracks a blacklist as future work) — accepted limitation of the current
+  contract; confirm whether production policy requires revocation.
+- `iss`/`aud` claims are neither issued (beyond defaults) nor validated by the
+  inspected code — confirm production expectations.
+- The upstream `/otp` response shape is `{data:{confirmation_pin,dev_otp?}}`;
+  OTP resend rate-limiting upstream is unverified.
+
 ## AI/institution security boundaries and safe verification
 
 - Legacy transfer, milestone, document, document-template, local-profile and address
@@ -167,9 +364,26 @@ fixtures are synthetic in-memory SQLite, not PostgreSQL migration certification.
   fallbacks or claim offline saves succeeded. Existing legacy browser storage is
   not automatically deleted; restoration/data recovery needs an approved decision.
 - `server/tests/aiTenantSecurity.test.ts` uses guarded DB mocks and loopback HTTP.
-  Do not run `server/tests/v1SpecialistRoutes.test.ts` against ordinary environment
-  configuration: it seeds/deletes rows and does not guard on `TEST_DATABASE_URL`.
-  It needs an explicitly approved isolated database.
+  `server/tests/v1SpecialistRoutes.test.ts` seeds/deletes real rows and is
+  authorized only when BOTH `TEST_DATABASE_URL` (an explicitly approved
+  isolated database) and `RUN_SPECIALIST_DB_TESTS=1` are set. Without them the
+  suite self-skips before importing the app or pool — no connection, setup or
+  cleanup can run — and when authorized it redirects the whole process at
+  `TEST_DATABASE_URL` via `SPECIALIST_TEST_DATABASE_URL`, never the ordinary
+  `DB_*` config. `server/tests/specialistDbGuard.test.ts` proves ordinary
+  discovery opens no database connection (honeypot listener, zero sockets).
+  Incident note (this branch): before the guard existed, the suite ran three
+  times under ordinary discovery against local `DB_*` config. Per run, the
+  `before`-hook preClean issued two `DELETE FROM transfers` statements scoped
+  to test prefixes (`TX-SPEC-%`, `TX-OTHER-%`) that were **observed** to
+  commit with zero rows affected; a third DELETE on
+  `party_relationship_definitions` failed at parse time (relation absent), so
+  `seedFixtures` never ran and no INSERT was issued. The `after`-hook cleanup
+  demonstrably reached its failing third statement, so its two prefix-scoped
+  `transfers` DELETEs also executed — but their affected-row counts were not
+  captured in the logs. Established: zero observed row changes, no seeds, no
+  schema changes. Not established: an exhaustive proof that no row changed —
+  cleanup row counts were uncaptured.
 - The standard server type check retains the existing TS6059 shared-source
   `rootDir` issue. A non-emitting check with `--rootDir .` covers those sources
   without changing project configuration. Baseline `84c0269` also has 11 mypy
@@ -249,10 +463,12 @@ python -m mypy --follow-imports=silent --ignore-missing-imports --no-incremental
 - **P0 legacy restoration:** authenticated matter saving and durable GR attachment,
   documents, profiles, templates, Accounts and address-provider controls remain
   separate work. Do not restore handlers merely by removing quarantine.
-- **P0 infrastructure:** browser JWT integration, external-ingress/key-rotation
-  HOLD, verified DB TLS/CA configuration, isolated PostgreSQL verification and
-  deployment proxy/artifact/logging checks remain open. The current DB clients
-  still disable certificate verification; this branch does not change that config.
+- **P0 infrastructure:** browser JWT integration is implemented on
+  `deedly/mvp0/auth/production-authentication` pending live certification;
+  external-ingress/key-rotation HOLD, verified DB TLS/CA configuration,
+  isolated PostgreSQL verification and deployment proxy/artifact/logging
+  checks remain open. The current DB clients still disable certificate
+  verification; this branch does not change that config.
 - **P1 baseline typing debt:** the existing TS6059 server `rootDir` failure and 11
   mypy errors in `db.py`/`routers/v1/transfers.py` are separate from introduced
   issues. Do not relax checks or change security controls to hide them.
@@ -287,7 +503,7 @@ Functional failure states are P0 release requirements; the shared
 | `/document-catalogue`, `/clause-library` | Load failure shows an unavailable notice and bundled sample entries are labeled as non-live reference data; add forms are disabled while offline. |
 | `/data-dictionary`, `/template-engine` | Same labeled sample-data fallback; generation stays a local-only preview with a notice that nothing is saved. |
 | `/document-generator` | Clause-library failure shows a labeled sample-data notice; history failures surface as unavailable; generated files are stated to be local-only and audit-record save failures are reported. |
-| `/transfers/new` | GR APIs are not quarantined; browser JWT integration blocks live use and downstream saving is quarantined (Save/Submit disabled by the probe above). |
+| `/transfers/new` | GR APIs are not quarantined; live use awaits deployed upstream auth certification (wiring now exists on the auth branch) and downstream saving is quarantined (Save/Submit disabled by the probe above). |
 
 `/bonds` and `/cancellations` are currently placeholders with no affected API calls.
 Remaining P1 items are cosmetic only (wording, retry controls, iconography). The

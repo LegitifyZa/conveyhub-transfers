@@ -24,6 +24,18 @@ Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: {
   removeItem(key: string) { storageCalls.push(`remove:${key}`) },
 } })
 
+// Session teardown may remove the legacy auth flag — that is required cleanup,
+// not institution-scoped data access. The assertions below exclude it.
+function institutionStorageCalls() {
+  return storageCalls.filter((call) => call !== 'remove:legitify_auth')
+}
+
+// A 401 response triggers one session-refresh attempt via /api/auth/refresh;
+// the data path itself must still be hit exactly once.
+function dataCalls(fetchMock: { mock: { calls: { arguments: unknown[] }[] } }) {
+  return fetchMock.mock.calls.filter((call) => !String(call.arguments[0]).startsWith('/api/auth/'))
+}
+
 beforeEach(() => { storageCalls = [] })
 afterEach(() => mock.restoreAll())
 after(() => {
@@ -57,8 +69,8 @@ describe('Accounts fail closed without institution-safe offline fallbacks', () =
           { status, headers: { 'Content-Type': 'application/json' } },
         ))
         await assert.rejects(operation, (error: unknown) => error instanceof ApiRequestError && error.status === status)
-        assert.equal(fetchMock.mock.callCount(), 1)
-        assert.deepEqual(storageCalls, [])
+        assert.equal(dataCalls(fetchMock).length, 1)
+        assert.deepEqual(institutionStorageCalls(), [])
         mock.restoreAll()
       }
     })
@@ -82,7 +94,7 @@ describe('Accounts fail closed without institution-safe offline fallbacks', () =
     })
     assert.equal((await AccountsApi.getFirmSettings()).firmName, PRIVATE)
     await assert.rejects(() => AccountsApi.getFirmSettings(), ApiRequestError)
-    assert.deepEqual(storageCalls, [])
+    assert.deepEqual(institutionStorageCalls(), [])
     for (const call of fetchMock.mock.calls) assert.equal(call.arguments[1]?.cache, 'no-store')
   })
 

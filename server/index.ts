@@ -1,6 +1,7 @@
 import express, { Request, Response, NextFunction } from 'express'
 import cors from 'cors'
 import dotenv from 'dotenv'
+import authRouter from './routes/auth'
 import healthRouter from './routes/health'
 import transfersRouter from './routes/transfers'
 import v1TransfersRouter from './routes/v1/transfers'
@@ -29,6 +30,7 @@ app.use('/api', (_req: Request, res: Response, next: NextFunction) => {
 app.use(express.json({ limit: '10mb' }))
 app.use(express.urlencoded({ extended: true }))
 
+app.use('/api/auth', authRouter)
 app.use('/api/health', healthRouter)
 app.use('/api/transfers', transfersRouter)
 app.use('/api/v1/transfers', v1TransfersRouter)

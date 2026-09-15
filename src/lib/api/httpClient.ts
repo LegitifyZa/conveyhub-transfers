@@ -1,3 +1,5 @@
+import { getAccessToken, getSession, refreshSession } from './session'
+
 const API_BASE = ((import.meta as unknown as { env?: Record<string, string> }).env?.VITE_API_BASE_URL as string | undefined) ?? ''
 
 function buildUrl(path: string): string {
@@ -22,7 +24,21 @@ export class ApiRequestError extends Error {
   }
 }
 
-export async function apiRequest<T>(path: string, options: ApiRequestOptions = {}): Promise<T> {
+// Auth-ingress endpoints are excluded from Bearer attachment and from the
+// refresh-and-retry loop: a 401 from initiate-login/login means bad
+// credentials, not an expired session. Logout is the exception — upstream
+// logout requires the Bearer `api` ability, so the token is attached but a
+// 401 there still never triggers a refresh.
+function isAuthIngress(path: string): boolean {
+  return path.startsWith('/api/auth/') && path !== '/api/auth/logout'
+}
+
+function isAuthPath(path: string): boolean {
+  return path.startsWith('/api/auth/')
+}
+
+export async function apiRequest<T>(path: string, options: ApiRequestOptions = {}, allowRefreshRetry = true): Promise<T> {
+  const startSid = getSession()?.sid ?? null
   const headers: Record<string, string> = {}
 
   const body = options.body
@@ -39,6 +55,11 @@ export async function apiRequest<T>(path: string, options: ApiRequestOptions = {
     Object.assign(headers, options.headers as Record<string, string>)
   }
 
+  const token = getAccessToken()
+  if (token && !headers['Authorization'] && !isAuthIngress(path)) {
+    headers['Authorization'] = `Bearer ${token}`
+  }
+
   const init: RequestInit = {
     method: options.method ?? 'GET',
     headers,
@@ -49,6 +70,31 @@ export async function apiRequest<T>(path: string, options: ApiRequestOptions = {
   }
 
   const response = await fetch(buildUrl(path), init)
+
+  // One refresh-and-retry pass on an expired session. A failed refresh clears
+  // the session (see session.ts), so the 401 surfaces and the app returns to
+  // the login screen. Failed requests stay visibly failed — no swallowing.
+  //
+  // Retry safety for writes: our 401s are raised before any handler or
+  // upstream call (BFF requireJwt / FastAPI auth dependencies reject first),
+  // so no partial write can have occurred. The retry reissues the identical
+  // options object — the same serialized body — so client_request_id
+  // idempotency keys on matter/party creates are preserved and a replay is
+  // deduplicated upstream rather than duplicating a row.
+  //
+  // The retry is additionally refused when the session's sid changed while
+  // the request was in flight: a session that logged out or was replaced by a
+  // different login must never have its in-flight write replayed under the
+  // new user/institution (client_request_id keys are institution-scoped and
+  // would not catch that).
+  if (response.status === 401 && allowRefreshRetry && !isAuthPath(path)) {
+    const sameSession = () => (getSession()?.sid ?? null) === startSid
+    if ((startSid === null || sameSession())
+      && await refreshSession()
+      && (startSid === null || sameSession())) {
+      return apiRequest<T>(path, options, false)
+    }
+  }
 
   if (!response.ok) {
     const text = await response.text().catch(() => 'Request failed')

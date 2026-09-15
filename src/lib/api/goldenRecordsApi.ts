@@ -84,7 +84,7 @@ export class GoldenRecordSearchError extends Error {
     super(kind === 'invalid'
       ? 'Enter a search query of 1–200 characters.'
       : kind === 'auth'
-        ? 'Golden Record search requires an authorized session. Authentication is not connected in this application yet.'
+        ? 'Golden Record search requires an authorized session.'
         : 'Golden Record search is temporarily unavailable. Please try again later.')
     this.name = 'GoldenRecordSearchError'
   }
