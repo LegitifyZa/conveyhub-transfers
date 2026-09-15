@@ -198,19 +198,33 @@ errors?}` — no `success` field.
   `client_request_id` keys alone would not catch that).
 - **Refresh credential: sid-bound cookie pair.** On login the BFF generates a
   per-login session id and sets `deedly_refresh=<sid>.<refresh_token>`
-  (HttpOnly) plus `deedly_sid=<sid>` (readable so a post-reload page can still
-  prove ownership). Both `Secure; SameSite=Strict; Path=/api/auth`. `/refresh`
-  requires the client to echo the sid via `X-Deedly-Session` (double-submit);
-  it **never emits Set-Cookie**, so a late refresh response can never create,
-  overwrite or clear a cookie. `/logout` clears the pair **only when the
-  presented sid matches the cookie's**, so a logout for session A cannot
-  strip session B's cookie.
-- **Serialized auth operations.** Login-complete, refresh and logout run
-  through one promise queue (`enqueueAuthOp`): a login response is never in
-  flight while logout executes, and cookie writes cannot reorder relative to
-  each other. The sid is also the session-generation token — async flows
+  (HttpOnly, `Path=/api/auth`) plus `deedly_sid=<sid>` (readable, `Path=/` —
+  `document.cookie` is only visible under the cookie's path, and every SPA
+  route must read it for post-reload restore). Both `Secure; SameSite=Strict`.
+  `/refresh` requires the client to echo the sid via `X-Deedly-Session`
+  (double-submit); it **never emits Set-Cookie**, so a late refresh response
+  can never create, overwrite or clear a cookie. `/logout` clears the pair
+  **only when the presented sid matches the cookie's**, so a logout for
+  session A cannot strip session B's cookie, and it responds without waiting
+  on upstream (upstream logout is fire-and-forget) to keep the in-flight
+  clear window small.
+- **Serialized auth operations, including across tabs.** Login-complete,
+  refresh and logout run through one promise queue (`enqueueAuthOp`) wrapped
+  in the Web Locks mutex `deedly-auth`: a tab holds the lock for its whole
+  request/response window, so a delayed logout/login Set-Cookie in one tab
+  cannot interleave with another tab's auth operation — the BFF's
+  request-time sid check stays effective and Set-Cookie ordering follows
+  operation order. The sid is also the session-generation token — async flows
   discard results when it changed mid-flight (stale refresh/login responses
-  cannot resurrect a cleared or superseded session).
+  cannot resurrect a cleared or superseded session). Limits: where
+  `navigator.locks` is unavailable the guarantee degrades to per-page
+  ordering, and it does not cover code outside the app's auth path (any
+  same-origin page can issue uncoordinated requests; same-origin JS is
+  already trusted with the in-memory token). Verified locally with
+  Playwright/Chromium against a mocked upstream: delayed logout clear
+  correctly preceded a second tab's login (zero auth requests fired while
+  the lock was held), and an uncoordinated raw fetch demonstrated the
+  documented residual.
 - **BFF auth proxy** (`server/routes/auth.ts`, mounted at `/api/auth`):
   `initiate-login`, `otp`, `login`, `refresh`, `logout`. `login` strips
   `refresh_token`/`refresh_expires`/`dev_otp` from the browser-visible body
@@ -234,10 +248,13 @@ errors?}` — no `success` field.
   middleware): `Sec-Fetch-Site: cross-site` → 403; a present `Origin` must
   match `AUTH_ALLOWED_ORIGINS` (comma-separated exact list) when configured,
   else the request `Host` — the supported same-origin `/api` deployment — or
-  a loopback origin outside production (Vite dev proxy). Requests with no
-  `Origin` are non-browser clients. This does not rely on CORS or SameSite
-  alone; on top of it sit `SameSite=Strict`, no credentialed CORS, and the
-  sid double-submit header.
+  a loopback origin outside production (Vite dev proxy). A **missing** Origin
+  does not establish trust: `Sec-Fetch-Site: same-origin`/`none` attests
+  provenance on its own; otherwise only requests carrying no `Cookie` header
+  (non-browser probes with no ambient authority) pass — a cookie-bearing
+  request with no origin evidence is an ambiguous browser and gets 403. This
+  does not rely on CORS or SameSite alone; on top of it sit
+  `SameSite=Strict`, no credentialed CORS, and the sid double-submit header.
 - Deployment requirement: the BFF must be reachable **same-origin under
   `/api`** from the SPA (as the Vite dev proxy does) and served over HTTPS —
   `Secure` requires it and a cross-site BFF host would break refresh. Do not
@@ -255,24 +272,35 @@ errors?}` — no `success` field.
 
 ### Test evidence (focused, mocked — no upstream contacted)
 
-- `server/tests/authProxy.test.ts` — 27 tests: input validation without
+- `server/tests/authProxy.test.ts` — 31 tests: input validation without
   upstream calls, contract forwarding, account-picker relay, sid-bound cookie
-  pair on login, `dev_otp` stripping on `otp`/`login`, local verification of
-  issued and refreshed tokens (retired role / wrong signature rejected), sid
-  double-submit enforcement and refresh's no-Set-Cookie invariant, logout's
-  match-before-clear cookie rule, refresh contract-violation 503, explicit
-  origin/Sec-Fetch-Site rejection before upstream activity,
-  `AUTH_ALLOWED_ORIGINS` allowlist behaviour.
-- `src/lib/api/session.test.ts` — 26 tests: Bearer attachment (and its
+  pair on login (`deedly_refresh` HttpOnly `Path=/api/auth`; `deedly_sid`
+  readable `Path=/`), `dev_otp` stripping on `otp`/`login`, local verification
+  of issued and refreshed tokens (retired role / wrong signature rejected),
+  sid double-submit enforcement and refresh's no-Set-Cookie invariant,
+  logout's match-before-clear cookie rule and fire-and-forget upstream
+  forwarding, refresh contract-violation 503, explicit
+  origin/Sec-Fetch-Site rejection before upstream activity, missing-Origin
+  policy (cookie-bearing requests with no origin evidence → 403;
+  credential-free probes and `same-origin` metadata pass),
+  `AUTH_ALLOWED_ORIGINS` allowlist behaviour incl. same-site entries.
+- `src/lib/api/session.test.ts` — 27 tests: Bearer attachment (and its
   exclusion on auth-ingress paths), one-shot refresh+retry on 401, no retry
   loop, failed-refresh session clearing, refresh single-flight, sid-echo on
   refresh incl. post-reload cookie restore, serialized auth-op ordering
-  (logout waits for in-flight refresh), stale refresh/login responses
-  discarded after logout or a newer login, pending writes never replayed
-  under a changed session, identical-body write retry preserving
-  `client_request_id`, logout Bearer+sid/cleanup under transport failure,
-  match-only sid-cookie deletion, session-change notification, legacy flag
-  removal, no token persistence to storage.
+  (logout waits for in-flight refresh) and routing through the `deedly-auth`
+  cross-tab Web Lock, stale refresh/login responses discarded after logout or
+  a newer login, pending writes never replayed under a changed session,
+  identical-body write retry preserving `client_request_id`, logout
+  Bearer+sid/cleanup under transport failure, match-only sid-cookie deletion,
+  session-change notification, legacy flag removal, no token persistence to
+  storage.
+- Local browser verification (Playwright/Chromium + mocked upstream, not
+  committed): full OTP login through the real UI, `deedly_sid` readable via
+  `document.cookie` on `/transfers`, reload at an SPA route restores the
+  session, two-tab delayed-logout-vs-newer-login ordering under the Web Lock
+  (zero auth requests fired while held; final cookies belong to the newer
+  session), and the uncoordinated-caller residual demonstrated.
 - `src/lib/api/accountsApi.test.ts` — updated to the new retry contract (a 401
   may trigger one `/api/auth/refresh` call; auth-flag cleanup is excluded from
   the institution-storage assertions).

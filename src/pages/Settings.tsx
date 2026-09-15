@@ -4,6 +4,7 @@ import { Card, CardHeader, CardTitle, CardContent, UnavailableNotice } from '@/c
 import { Button } from '@/components/ui'
 import { Input } from '@/components/ui'
 import { apiRequest } from '@/lib/api/http'
+import { useAuth } from '@/hooks/useAuth'
 import { FirmAccountsSettings } from '@/components/accounts/FirmAccountsSettings'
 import { cn } from '@/utils/cn'
 
@@ -28,6 +29,7 @@ const settingsSections = [
 ]
 
 const Settings: React.FC = () => {
+  const { logout } = useAuth()
   const [user, setUser] = useState<UserProfile | null>(null)
   const [firstName, setFirstName] = useState('')
   const [lastName, setLastName] = useState('')
@@ -268,7 +270,7 @@ const Settings: React.FC = () => {
                 Sign out of your account on this device
               </p>
             </div>
-            <Button variant="outline" className="text-red-600 border-red-600 hover:bg-red-50 dark:hover:bg-red-900/20">
+            <Button variant="outline" onClick={() => void logout()} className="text-red-600 border-red-600 hover:bg-red-50 dark:hover:bg-red-900/20">
               <LogOut className="h-4 w-4 mr-2" />
               Sign Out
             </Button>

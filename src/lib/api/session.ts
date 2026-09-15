@@ -18,7 +18,13 @@
 // - Login-complete, refresh and logout run through a single promise queue so
 //   their requests (and the browser's Set-Cookie handling) cannot interleave:
 //   a login response is never in flight while logout executes, and a logout
-//   clear can never land on top of a newer login's cookie.
+//   clear can never land on top of a newer login's cookie. The queue is
+//   additionally wrapped in a Web Locks cross-tab mutex ('deedly-auth') so the
+//   same guarantee holds between tabs: a tab holds the lock for its whole
+//   request/response window, keeping the BFF's request-time sid check
+//   effective against delayed responses from other tabs. Where
+//   navigator.locks is unavailable the guarantee degrades to per-page
+//   ordering only.
 // - Session expiry is handled by one refresh-and-retry pass in apiRequest;
 //   the retry is refused when the session's sid changed mid-flight, so a
 //   pending write is never replayed under a different user or institution.
@@ -46,8 +52,22 @@ let refreshInFlight: Promise<boolean> | null = null
 let authQueue: Promise<unknown> = Promise.resolve()
 const listeners = new Set<SessionListener>()
 
+const AUTH_LOCK = 'deedly-auth'
+
+// Cross-tab mutex via Web Locks: the lock is held across the operation's full
+// fetch round-trip, so a delayed response in one tab cannot interleave its
+// Set-Cookie with another tab's login/logout. Falls back to per-page ordering
+// where the API is unavailable.
+function withCrossTabLock<T>(op: () => Promise<T>): Promise<T> {
+  const locks = typeof navigator !== 'undefined'
+    ? (navigator as { locks?: { request: (name: string, cb: () => Promise<T>) => Promise<T> } }).locks
+    : undefined
+  if (!locks || typeof locks.request !== 'function') return op()
+  return locks.request(AUTH_LOCK, () => op())
+}
+
 export function enqueueAuthOp<T>(op: () => Promise<T>): Promise<T> {
-  const run = authQueue.then(op, op)
+  const run = authQueue.then(() => withCrossTabLock(op), () => withCrossTabLock(op))
   authQueue = run.then(() => undefined, () => undefined)
   return run
 }
@@ -83,7 +103,7 @@ function readSidCookie(): string | null {
 function deleteSidCookieIfOurs(sid: string | null): void {
   if (sid === null || readSidCookie() !== sid) return
   try {
-    document.cookie = `${SID_COOKIE}=; Max-Age=0; Path=/api/auth; SameSite=Strict`
+    document.cookie = `${SID_COOKIE}=; Max-Age=0; Path=/; SameSite=Strict`
   } catch {
     // Best-effort hygiene; the BFF clears it authoritatively on sid match.
   }

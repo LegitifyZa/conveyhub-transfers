@@ -66,10 +66,13 @@ const REFRESH_TOKEN_A = 'a'.repeat(64)
 
 // The sid-bound cookie pair as the BFF sets it: HttpOnly refresh credential
 // plus the JS-readable sid the client echoes back via X-Deedly-Session.
+// A real browser POST always sends Fetch Metadata, so cookie-bearing
+// requests carry Sec-Fetch-Site: same-origin as their origin evidence.
 function authHeaders(sid = SID_A, token = REFRESH_TOKEN_A) {
   return {
     Cookie: `deedly_refresh=${sid}.${token}; deedly_sid=${sid}`,
     'X-Deedly-Session': sid,
+    'Sec-Fetch-Site': 'same-origin',
   }
 }
 
@@ -289,6 +292,11 @@ describe('BFF auth proxy: login', () => {
     const sidCookie = cookies.find((c) => c.startsWith('deedly_sid='))
     assert.ok(sidCookie, 'readable sid cookie must be set')
     assert.doesNotMatch(sidCookie, /HttpOnly/)
+    // The readable marker is scoped Path=/ so every SPA route can read it for
+    // post-reload restore; the HttpOnly refresh credential stays at
+    // Path=/api/auth.
+    assert.match(sidCookie, /Path=\//)
+    assert.doesNotMatch(sidCookie, /Path=\/api\/auth/)
     assert.equal(decodeURIComponent(sidCookie.split(';')[0].split('=')[1]), sid)
     assert.deepEqual(JSON.parse(captured[0].body), { user_id: 42, otp: 123456 })
   })
@@ -331,17 +339,19 @@ describe('BFF auth proxy: refresh', () => {
   })
 
   it('refuses a refresh cookie without the matching X-Deedly-Session sid', async () => {
+    const sameSite = { 'Sec-Fetch-Site': 'same-origin' }
     // No header at all.
-    const missing = await post('/api/auth/refresh', {}, { Cookie: `deedly_refresh=${SID_A}.${REFRESH_TOKEN_A}` })
+    const missing = await post('/api/auth/refresh', {}, { Cookie: `deedly_refresh=${SID_A}.${REFRESH_TOKEN_A}`, ...sameSite })
     assert.equal(missing.status, 401)
     // Mismatched sid: the cookie belongs to a different login.
     const mismatched = await post('/api/auth/refresh', {}, {
       Cookie: `deedly_refresh=${SID_A}.${REFRESH_TOKEN_A}; deedly_sid=${SID_A}`,
       'X-Deedly-Session': SID_B,
+      ...sameSite,
     })
     assert.equal(mismatched.status, 401)
     // A bare (pre-sid) cookie value is not a usable credential either.
-    const legacy = await post('/api/auth/refresh', {}, { Cookie: `deedly_refresh=${REFRESH_TOKEN_A}`, 'X-Deedly-Session': SID_A })
+    const legacy = await post('/api/auth/refresh', {}, { Cookie: `deedly_refresh=${REFRESH_TOKEN_A}`, 'X-Deedly-Session': SID_A, ...sameSite })
     assert.equal(legacy.status, 401)
     assert.equal(captured.length, 0)
     // Refresh never writes cookies — a late response cannot set/clear one.
@@ -405,6 +415,7 @@ describe('BFF auth proxy: logout', () => {
     const other = await post('/api/auth/logout', {}, {
       Cookie: `deedly_refresh=${SID_B}.tokenB; deedly_sid=${SID_B}`,
       'X-Deedly-Session': SID_A,
+      'Sec-Fetch-Site': 'same-origin',
     })
     assert.equal(other.status, 200)
     assert.equal(other.cookies.length, 0)
@@ -415,16 +426,21 @@ describe('BFF auth proxy: logout', () => {
     assert.equal(none.cookies.length, 0)
 
     // Cookie present but no sid proof → not cleared.
-    const unproven = await post('/api/auth/logout', {}, { Cookie: `deedly_refresh=${SID_B}.tokenB` })
+    const unproven = await post('/api/auth/logout', {}, { Cookie: `deedly_refresh=${SID_B}.tokenB`, 'Sec-Fetch-Site': 'same-origin' })
     assert.equal(unproven.status, 200)
     assert.equal(unproven.cookies.length, 0)
     assert.equal(captured.length, 0)
   })
 
-  it('forwards the Bearer token to upstream logout', async () => {
+  it('forwards the Bearer token to upstream logout fire-and-forget', async () => {
     const token = makeAccessToken()
     const { status } = await post('/api/auth/logout', {}, { Authorization: `Bearer ${token}` })
     assert.equal(status, 200)
+    // Upstream forwarding is fire-and-forget: the response is not delayed by
+    // it, so poll briefly for the captured request.
+    for (let i = 0; i < 50 && captured.length === 0; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    }
     assert.equal(captured.length, 1)
     assert.equal(captured[0].url, '/api/v1/auth/logout')
     assert.equal(captured[0].headers.authorization, `Bearer ${token}`)
@@ -438,6 +454,12 @@ describe('BFF auth proxy: logout', () => {
     })
     assert.equal(status, 200)
     assert.match(cookies.find((c) => c.startsWith('deedly_refresh=')) ?? '', /Max-Age=0/)
+    // Drain the fire-and-forget upstream call so it cannot leak into the next
+    // test's capture assertions.
+    for (let i = 0; i < 50 && captured.length === 0; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    }
+    assert.equal(captured.length, 1)
   })
 })
 
@@ -480,9 +502,49 @@ describe('BFF auth proxy: origin/CSRF guard', () => {
       assert.equal(denied.status, 403)
       const hostMatch = await post('/api/auth/refresh', {}, { Origin: baseUrl })
       assert.equal(hostMatch.status, 403)
+      // An explicitly allowlisted same-site origin is also accepted.
+      const sameSite = await post('/api/auth/refresh', {}, { Origin: 'https://app.example.test', 'Sec-Fetch-Site': 'same-site' })
+      assert.equal(sameSite.status, 401)
     } finally {
       if (saved === undefined) delete process.env.AUTH_ALLOWED_ORIGINS
       else process.env.AUTH_ALLOWED_ORIGINS = saved
     }
+  })
+
+  it('rejects a cookie-bearing request with no Origin and no fetch metadata', async () => {
+    // Absence of Origin does not prove absence of ambient authority: a
+    // cookie-carrying request with no origin evidence at all is an ambiguous
+    // browser request and is refused before any upstream activity.
+    const { status } = await post('/api/auth/refresh', {}, {
+      Cookie: `deedly_refresh=${SID_A}.${REFRESH_TOKEN_A}; deedly_sid=${SID_A}`,
+      'X-Deedly-Session': SID_A,
+    })
+    assert.equal(status, 403)
+    assert.equal(captured.length, 0)
+  })
+
+  it('accepts a credential-free request with no origin evidence and a same-origin metadata request', async () => {
+    // No Origin, no fetch metadata, no cookies — a non-browser probe with no
+    // ambient authority to protect. It passes the guard (then fails on
+    // missing cookie, proving the guard did not reject it).
+    const probe = await post('/api/auth/refresh', {})
+    assert.equal(probe.status, 401)
+    // No Origin but Sec-Fetch-Site attests same-origin → trusted.
+    const sameOrigin = await post('/api/auth/refresh', {}, {
+      Cookie: `deedly_refresh=${SID_A}.${REFRESH_TOKEN_A}`,
+      'Sec-Fetch-Site': 'same-origin',
+    })
+    assert.equal(sameOrigin.status, 401) // guard passed; refused on sid proof
+    assert.equal(captured.length, 0)
+  })
+
+  it('rejects same-site metadata without an Origin to allowlist', async () => {
+    const { status } = await post('/api/auth/refresh', {}, {
+      Cookie: `deedly_refresh=${SID_A}.${REFRESH_TOKEN_A}`,
+      'X-Deedly-Session': SID_A,
+      'Sec-Fetch-Site': 'same-site',
+    })
+    assert.equal(status, 403)
+    assert.equal(captured.length, 0)
   })
 })

@@ -346,6 +346,54 @@ describe('stale-response invalidation', () => {
     assert.equal(logoutHeaders[0].get('Authorization'), 'Bearer new')
   })
 
+  it('routes auth operations through the cross-tab Web Lock when available', async () => {
+    // A fake LockManager that enforces the real contract: one holder at a
+    // time. Proves both refresh and logout go through 'deedly-auth' rather
+    // than only the per-page queue — the property that makes the BFF's
+    // request-time sid check effective across tabs.
+    const acquisitions: string[] = []
+    let inside = 0
+    const fakeLocks = {
+      request: async (name: string, cb: () => Promise<unknown>) => {
+        acquisitions.push(name)
+        inside++
+        assert.equal(inside, 1, 'overlapping auth operations under the lock')
+        try { return await cb() } finally { inside-- }
+      },
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator')
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { locks: fakeLocks },
+      configurable: true,
+      writable: true,
+    })
+    try {
+      makeSession('old-token', 'sid-A')
+      fakeDocument.jar.set('deedly_sid', 'sid-A')
+      let resolveRefresh: (r: Response) => void = () => {}
+      const order: string[] = []
+      handler = (url) => {
+        order.push(url)
+        if (url === '/api/auth/refresh') {
+          return new Promise<Response>((resolve) => { resolveRefresh = resolve })
+        }
+        return Promise.resolve(jsonResponse({ success: true }))
+      }
+      const refresh = refreshSession()
+      const logout = logoutSession()
+      await tick()
+      assert.deepEqual(order, ['/api/auth/refresh'])
+      resolveRefresh(jsonResponse({ data: { token: 'new', expires: 1 } }))
+      await Promise.all([refresh, logout])
+      assert.deepEqual(order, ['/api/auth/refresh', '/api/auth/logout'])
+      assert.deepEqual(acquisitions, ['deedly-auth', 'deedly-auth'])
+      assert.equal(getSession(), null)
+    } finally {
+      if (descriptor) Object.defineProperty(globalThis, 'navigator', descriptor)
+      else delete (globalThis as { navigator?: unknown }).navigator
+    }
+  })
+
   it('a retried write repeats the identical body so client_request_id deduplicates upstream', async () => {
     makeSession('expired')
     const bodies: string[] = []

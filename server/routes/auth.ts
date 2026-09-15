@@ -10,8 +10,9 @@ import { verifyJwt } from '../auth/jwt'
 // Credential storage and race coordination:
 // - The upstream refresh token never reaches JavaScript. On login the BFF
 //   generates a per-login session id (sid) and sets TWO cookies:
-//   `deedly_refresh=<sid>.<refresh_token>` (HttpOnly) and `deedly_sid=<sid>`
-//   (JS-readable). Both are Secure, SameSite=Strict, Path=/api/auth.
+//   `deedly_refresh=<sid>.<refresh_token>` (HttpOnly, Path=/api/auth) and
+//   `deedly_sid=<sid>` (JS-readable, Path=/ so every SPA route can read it).
+//   Both are Secure, SameSite=Strict.
 // - /refresh requires the caller to echo the sid back in X-Deedly-Session
 //   (double-submit): the refresh credential is unusable to anyone who did not
 //   complete that login, and a stale Set-Cookie left over from a superseded
@@ -42,16 +43,32 @@ const REFRESH_COOKIE_MAX_AGE_S = 30 * 24 * 60 * 60
 // is rejected outright; a present Origin must appear in AUTH_ALLOWED_ORIGINS
 // (comma-separated) when configured, else match the request Host (the
 // supported same-origin /api deployment). Loopback origins are accepted only
-// outside production so the Vite dev proxy origin works; requests without an
-// Origin are non-browser clients and carry no ambient cookie authority.
+// outside production so the Vite dev proxy origin works.
+//
+// A missing Origin does NOT establish trust — cookies can still be attached by
+// a browser that omitted it (older engines, some navigation flows). Trust is
+// then established only by Fetch Metadata: Sec-Fetch-Site `same-origin` or
+// `none` (direct navigation) attests the request's provenance. A request that
+// carries ambient Cookie credentials with no Origin and no usable fetch
+// metadata is ambiguous and is rejected; only credential-free requests
+// (non-browser probes) pass without origin evidence.
 function trustedAuthOrigin(req: Request, res: Response, next: NextFunction): void {
-  if (req.headers['sec-fetch-site'] === 'cross-site') {
+  const fetchSite = req.headers['sec-fetch-site']
+  if (fetchSite === 'cross-site') {
     res.status(403).json(FORBIDDEN)
     return
   }
   const origin = req.headers.origin
   if (origin === undefined) {
-    next()
+    // No Origin: Sec-Fetch-Site can still attest provenance (same-origin or a
+    // direct navigation). Anything else — same-site cross-origin without an
+    // Origin to allowlist, or no metadata at all — is trusted only when the
+    // request carries no ambient Cookie credentials.
+    if (fetchSite === 'same-origin' || fetchSite === 'none' || !req.headers.cookie) {
+      next()
+      return
+    }
+    res.status(403).json(FORBIDDEN)
     return
   }
   const allowed = (process.env.AUTH_ALLOWED_ORIGINS ?? '')
@@ -89,19 +106,24 @@ function authBaseUrl(): string | null {
   return baseUrl ? baseUrl.replace(/\/+$/, '') : null
 }
 
+// Cookie scoping is deliberately asymmetric: the HttpOnly refresh credential
+// stays confined to Path=/api/auth (it is only ever needed on these routes),
+// while the readable, non-secret sid marker uses Path=/ so every SPA route can
+// read it for post-reload restore — document.cookie is only visible on paths
+// covered by the cookie's Path attribute.
 function setAuthCookies(sid: string, refreshToken: string): string[] {
-  const base = `Secure; SameSite=Strict; Path=/api/auth; Max-Age=${REFRESH_COOKIE_MAX_AGE_S}`
+  const base = `Secure; SameSite=Strict; Max-Age=${REFRESH_COOKIE_MAX_AGE_S}`
   return [
-    `${REFRESH_COOKIE}=${encodeURIComponent(`${sid}.${refreshToken}`)}; HttpOnly; ${base}`,
-    `${SID_COOKIE}=${encodeURIComponent(sid)}; ${base}`,
+    `${REFRESH_COOKIE}=${encodeURIComponent(`${sid}.${refreshToken}`)}; HttpOnly; ${base}; Path=/api/auth`,
+    `${SID_COOKIE}=${encodeURIComponent(sid)}; ${base}; Path=/`,
   ]
 }
 
 function clearAuthCookies(): string[] {
-  const base = 'Secure; SameSite=Strict; Path=/api/auth; Max-Age=0'
+  const base = 'Secure; SameSite=Strict; Max-Age=0'
   return [
-    `${REFRESH_COOKIE}=; HttpOnly; ${base}`,
-    `${SID_COOKIE}=; ${base}`,
+    `${REFRESH_COOKIE}=; HttpOnly; ${base}; Path=/api/auth`,
+    `${SID_COOKIE}=; ${base}; Path=/`,
   ]
 }
 
@@ -358,7 +380,9 @@ router.post('/refresh', asyncHandler(async (req: Request, res: Response) => {
 // Logout is best-effort upstream (it requires the Bearer `api` ability) but
 // unconditional locally. The cookie pair is cleared only when the presented
 // sid matches the cookie's embedded sid — a logout issued for session A can
-// never clear session B's cookie. (Local teardown is not upstream token
+// never clear session B's cookie. The response (with its cookie clear) is
+// sent immediately rather than after the upstream call, shrinking the window
+// in which a clear can be in flight. (Local teardown is not upstream token
 // revocation: upstream refresh tokens are stateless and expire naturally.)
 router.post('/logout', asyncHandler(async (req: Request, res: Response) => {
   const credential = readRefreshCookie(req)
@@ -367,20 +391,16 @@ router.post('/logout', asyncHandler(async (req: Request, res: Response) => {
   }
   const authorization = req.headers.authorization
   if (typeof authorization === 'string' && authorization.startsWith('Bearer ')) {
-    // Fire-and-forget forwarding; a failed upstream logout must not block
-    // local session teardown.
     const baseUrl = authBaseUrl()
     if (baseUrl) {
-      try {
-        await fetch(`${baseUrl}/api/v1/auth/logout`, {
-          method: 'POST',
-          headers: { Authorization: authorization },
-          redirect: 'error',
-          signal: AbortSignal.timeout(10_000),
-        })
-      } catch {
-        // Local teardown already done; upstream expiry will retire the token.
-      }
+      // Fire-and-forget: a failed upstream logout must not block or delay
+      // local session teardown.
+      void fetch(`${baseUrl}/api/v1/auth/logout`, {
+        method: 'POST',
+        headers: { Authorization: authorization },
+        redirect: 'error',
+        signal: AbortSignal.timeout(10_000),
+      }).catch(() => undefined)
     }
   }
   res.json({ success: true })
