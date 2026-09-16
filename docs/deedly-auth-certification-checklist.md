@@ -18,11 +18,40 @@ docs, logs or chat.
 **Evidence-status qualifiers:**
 - DEEDLY previously had Vercel previews; a suitable same-origin HTTPS
   frontend/BFF/FastAPI deployment has **not yet been verified**. Nothing in
-  §2 may be treated as satisfied until such a deployment exists.
+  §2 may be treated as satisfied until such a deployment exists. Vercel is
+  being replaced; Clive and Dean own the new hosting/configuration — final
+  URL, routing and environment readiness remain pending (§6.3).
 - The upstream staging endpoint (`staging-api.legitify.co.za`) and the
   staging infrastructure described in `docs/staging-environment.md` of the
-  upstream snapshot are **documentation evidence only** until confirmed by
-  the platform owner; no live call has verified them from this repo.
+  upstream snapshot are **documentation evidence only**. **Owner
+  confirmation received 2026-09-16 (Clive):** the supplied OTP/token
+  contract is confirmed and user-auth traffic is permitted through the
+  staging gateway. This is owner confirmation, **not** executed
+  certification; the deployed SHA/version remains outstanding unless
+  supplied.
+
+**Confirmed decisions (2026-09-16):**
+- OTP/token contract + user-auth staging-gateway permission: confirmed by
+  Clive (owner confirmation only; deployed SHA outstanding — §7.1).
+- Retired/unknown-role rejection: mocked evidence is retained with the
+  live-verification limitation stated; **no** retired-role users will be
+  created and **no** ad-hoc live tokens minted (§5.5, §7.6).
+- Hosting/configuration: owned by Clive and Dean; Vercel replaced; final
+  URL, routing and environment readiness pending (§6.3).
+- Disposable staging accounts/matters for two-institution tests: approved
+  under a bounded cleanup plan, on an explicitly identified approved
+  staging target only — never production or customer data (§5, §6.3).
+- Browser policy: supported matrix settled — Chrome/Edge current Stable
+  and Extended Stable; Firefox current release and ESR; Safari current and
+  previous major; IE11 and Edge Legacy unsupported; other out-of-policy
+  browsers get a warning and best-effort support only where mandatory
+  security capabilities exist. Web Locks remains mandatory for
+  authentication — the per-page fallback is not reintroduced. Record exact
+  browser name+version for every executed check (§2).
+- OTP policy: routine certification/QA must not send real SMS/email — use
+  the local mock or a platform-approved test OTP mechanism. Real delivery
+  requires separate explicit E2E approval covering account scope,
+  recipients, cost and rollback (§4.4, §7.5).
 
 ---
 
@@ -36,6 +65,14 @@ and the DEEDLY FastAPI service (`python_server`, `verify_jwt`).
 ---
 
 ## 2. Checklist — hosting, origins and cookies
+
+Run each browser-dependent check on the supported matrix (Chrome/Edge current
+Stable and Extended Stable; Firefox current release and ESR; Safari current and
+previous major) and **record the exact browser name and version** in the
+evidence for every executed check. IE11 and Edge Legacy are unsupported;
+out-of-policy browsers get a warning and best-effort support only where the
+mandatory security capabilities (Web Locks) are present — Web Locks remains
+mandatory for authentication.
 
 | # | Check | Expected outcome | Evidence |
 |---|---|---|---|
@@ -51,8 +88,8 @@ and the DEEDLY FastAPI service (`python_server`, `verify_jwt`).
 
 | # | Check | Expected outcome | Evidence |
 |---|---|---|---|
-| 3.1 | `LEGITIFY_API_BASE_URL` set on the BFF to the approved non-prod gateway (`https://staging-api.legitify.co.za` per upstream docs — confirm) | Auth POSTs reach upstream; a deliberately wrong base URL yields 503 `Authentication service unavailable` | Config diff of env var *names only*; 503 capture |
-| 3.2 | Deployed auth-service version/contract confirmed equal to the reviewed snapshot (OTP flow: initiate → otp → login → refresh/logout) | Owner confirms deployed SHA or contract version | Written confirmation in ticket |
+| 3.1 | `LEGITIFY_API_BASE_URL` set on the BFF to the approved non-prod gateway (`https://staging-api.legitify.co.za` — user-auth traffic permitted per owner confirmation 2026-09-16) | Auth POSTs reach upstream; a deliberately wrong base URL yields 503 `Authentication service unavailable` | Config diff of env var *names only*; 503 capture |
+| 3.2 | Deployed auth-service version/contract confirmed equal to the reviewed snapshot (OTP flow: initiate → otp → login → refresh/logout) — **contract confirmed by owner 2026-09-16; deployed SHA/version still outstanding** | Owner supplies deployed SHA or contract version | Written confirmation in ticket |
 | 3.3 | `JWT_SECRET` provisioned to **both** BFF and FastAPI via AWS Secrets Manager (never committed/printed) — must equal the auth service's signing secret | Login succeeds and issued tokens verify locally; a tampered-signature token → 401 | Successful login evidence + negative JWT test |
 | 3.4 | `dev_otp` never surfaces | `/api/auth/otp` and `/api/auth/login` responses contain no `dev_otp` field even if upstream emits one | Response capture |
 | 3.5 | No secrets in logs/errors | BFF/FastAPI logs contain no password, OTP, refresh or access token | Redacted log excerpt |
@@ -64,7 +101,7 @@ and the DEEDLY FastAPI service (`python_server`, `verify_jwt`).
 | 4.1 | Initiate login, approved staff test account (single account) | `{user_id, requires_otp}`; **no OTP sent yet** | Redacted response | Upstream audit row |
 | 4.2 | Initiate login, multi-account identifier | `data.accounts[]` picker, per-account role/institution | Redacted response | Upstream audit row |
 | 4.3 | Wrong password | 401 `Invalid credentials` | Response capture | Upstream failed-attempt counter/audit |
-| 4.4 | `POST /api/auth/otp` | OTP delivered via approved channel (CELL/EMAIL); `confirmation_pin` shown in UI | Screenshot + delivery evidence (device/mailbox, code redacted) | **Real SMS/email sent; rate-limit consumption** |
+| 4.4 | `POST /api/auth/otp` | Routine runs: OTP obtained via the local mock or a platform-approved test OTP mechanism — **no real SMS/email during certification/QA**. Real delivery is a separate gated run requiring explicit E2E approval (covering account scope, recipients, cost and rollback); only then: OTP delivered via approved channel (CELL/EMAIL); `confirmation_pin` shown in UI | Screenshot + delivery evidence (device/mailbox, code redacted) | Test-OTP path: none. Gated real-delivery run: real SMS/email sent; rate-limit consumption |
 | 4.5 | Wrong OTP | 401/400 `Invalid or expired verification code` | Response capture | Upstream failed-OTP counter |
 | 4.6 | Correct OTP → `/api/auth/login` | Access token + `sid` in body; cookie pair set; UI lands on `/transfers` | Screenshots + redacted response | Upstream session/audit row; refresh token issued |
 | 4.7 | Reload on an SPA route | Silent restore via refresh cookie; stays authenticated | Screen recording | One upstream refresh call |
@@ -76,10 +113,10 @@ and the DEEDLY FastAPI service (`python_server`, `verify_jwt`).
 ## 5. Checklist — roles, institution isolation, client-write denial
 
 **Settled policy (recorded, not open):** only role IDs 1–4 are valid; retired
-roles 5/6 and unknown role IDs are rejected. What needs agreement is only the
-*live verification method* — do not create retired-role users or mint ad-hoc
-tokens for live testing; mocked coverage stands unless the owners propose a
-method.
+roles 5/6 and unknown role IDs are rejected. **Verification method resolved
+2026-09-16:** mocked coverage stands and the live-verification limitation is
+stated in evidence — do not create retired-role users or mint ad-hoc tokens
+for live testing.
 
 **Correction on write-attempt safety:** a "denied" write check is only
 side-effect-free if the control *works*. A failed authorization control would
@@ -94,13 +131,13 @@ mutation attempt at a real customer matter.
 | 5.2 | Institution isolation (negative) | Role-3 user requests a disposable institution-B fixture matter id | 404 | None (read) |
 | 5.3 | Client-role write denial | Role-4 user attempts matter create / party attach **against a disposable fixture** | 403/401 before persistence; cleanup verifies nothing was written — and if the control failed, the fixture (not a real matter) absorbs it | Disposable fixture + bounded cleanup |
 | 5.4 | Roles 1–4 login | One approved account per role where available | Each logs in; abilities honored | None (read) |
-| 5.5 | Retired/unknown role (5/6) | Method subject to owner agreement only — no retired-role users created and no ad-hoc tokens minted for live testing | 401 at login, no cookie set (mocked coverage already proves this) | None |
+| 5.5 | Retired/unknown role (5/6) | Mocked evidence retained — **decided 2026-09-16**: no retired-role users created, no ad-hoc live tokens minted; live verification not performed and that limitation is stated in the evidence | 401 at login, no cookie set (mocked coverage proves this) | None |
 
 **Fixture requirements:** approved disposable fixtures — a matter in each of
 two test institutions and a role-4 client account — plus a written cleanup
 plan (exact removal steps and a post-run verification query per fixture).
-Provisioning and approving these is a **decision item** (§6.3); it is not
-authorized by this document.
+**Approved 2026-09-16** subject to: an explicitly identified approved staging
+target, the bounded cleanup plan, and no production or customer data.
 
 ## 6. Prerequisites
 
@@ -120,77 +157,90 @@ authorized by this document.
 ### 6.2 Missing configuration/access (requests — §7)
 
 - Non-prod hosting for DEEDLY SPA + BFF (and FastAPI reachability) with
-  same-origin `/api` over HTTPS. DEEDLY previously had Vercel previews, but a
-  suitable same-origin HTTPS deployment has not been verified; the same-origin
-  routing decision is open.
-- `LEGITIFY_API_BASE_URL` value + confirmation the auth service is deployed there.
+  same-origin `/api` over HTTPS — **owners assigned: Clive and Dean**; Vercel
+  is being replaced; final URL, routing and environment readiness pending.
+- `LEGITIFY_API_BASE_URL` value + confirmation the auth service is deployed
+  there (user-auth traffic permitted per owner confirmation 2026-09-16).
 - `JWT_SECRET` for that env, via Secrets Manager/Clive — to **both** BFF and FastAPI.
 - `AUTH_ALLOWED_ORIGINS` = the deployed SPA origin.
 - Approved staff test accounts: single-account user, multi-account user,
   role-4 client, roles 1–2 coverage; institution assignments; an approved
   second institution's fixture matter for the isolation check.
-- Approved OTP delivery targets (phone number/mailbox that may receive real
-  staging OTPs).
-- Deployed auth-service SHA/contract confirmation.
+- A platform-approved test OTP mechanism for staging (routine certification
+  must not send real SMS/email). Real-delivery targets are needed only if the
+  separate E2E approval for live OTP delivery is granted.
+- Deployed auth-service SHA/version — still outstanding; the contract itself
+  is owner-confirmed (2026-09-16).
 
-### 6.3 Decisions required
+### 6.3 Decisions — status
 
-- **Hosting:** where DEEDLY non-prod SPA+BFF+FastAPI run, and how `/api` stays
-  same-origin (proxy rule / rewrites) under HTTPS — without weakening
-  `Secure`/`SameSite=Strict`. DEEDLY previously had Vercel previews; no
-  suitable same-origin HTTPS deployment is verified yet.
-- **Disposable fixtures + cleanup:** approval to create disposable test
-  fixtures (a matter in each of two test institutions, a role-4 client
-  account) in staging for checks 5.1–5.3, with a bounded cleanup plan —
-  pre-approved removal steps and a post-run verification per fixture. Real
-  customer matters are never used. (Neon branch is *not* needed —
-  certification targets deployed staging, not a DB copy.)
-- **Browser support sign-off:** unsupported-browser hard-fail is by design;
-  confirm the supported-browser matrix is acceptable.
-- **Retired-role verification method:** roles 1–4 valid / 5–6 and unknown
-  rejected is settled policy; agree only the live verification method. No
-  retired-role users will be created and no ad-hoc tokens minted — mocked
-  coverage stands unless the owners propose a method.
+- **Hosting — owners assigned, readiness pending.** Clive and Dean own the
+  new non-production hosting/configuration; Vercel is being replaced. Final
+  URL, routing (same-origin `/api` under HTTPS without weakening
+  `Secure`/`SameSite=Strict`) and environment readiness remain pending.
+- **Disposable fixtures + cleanup — approved with bounds (2026-09-16).**
+  Our team may prepare disposable staging accounts/matters for the
+  two-institution tests (5.1–5.3): an explicitly identified approved staging
+  target only, bounded cleanup plan with pre-approved removal steps and
+  post-run verification per fixture, no production or customer data.
+- **Browser support — matrix settled (2026-09-16).** Chrome and Edge:
+  current Stable and Extended Stable. Firefox: current release and ESR.
+  Safari: current and previous major. IE11 and Edge Legacy: unsupported.
+  Other out-of-policy browsers: warning + best-effort only where mandatory
+  security capabilities are available. Web Locks stays mandatory — no
+  per-page fallback. Record exact browser versions when tests execute.
+- **Retired-role verification — resolved (2026-09-16).** Roles 1–4 valid /
+  5–6 and unknown rejected is settled policy; mocked evidence is retained
+  and the live-verification limitation is stated. No retired-role users are
+  created and no ad-hoc live tokens are minted.
 
 ## 7. Exact outbound requests
 
 **To Clive (platform/auth service):**
 
-1. Deployed auth-service SHA (or contract version) on
-   `staging-api.legitify.co.za`, and confirmation it matches the OTP contract:
-   `initiate-login` → `otp` → `login` → `refresh`/`logout`, `{message,data}`
-   envelope, HS256 `type=access` 24h + `type=refresh` 30d.
+1. ~~Deployed auth-service SHA (or contract version) on
+   `staging-api.legitify.co.za`, and confirmation it matches the OTP
+   contract~~ — **contract confirmed by Clive 2026-09-16** (owner
+   confirmation, not executed certification). **Outstanding:** the deployed
+   SHA/version itself, unless supplied.
 2. The staging `JWT_SECRET` for DEEDLY's BFF **and** FastAPI service, delivered
    via AWS Secrets Manager — never in chat/tickets.
-3. Confirmation that browser user-auth traffic (`POST /api/v1/auth/*` with no
-   `X-Service-Key`) remains permitted through the staging gateway — i.e. the
-   S2S `X-Service-Key` ingress HOLD does not close the user-auth path.
+3. ~~Confirmation that browser user-auth traffic (`POST /api/v1/auth/*` with no
+   `X-Service-Key`) remains permitted through the staging gateway~~ —
+   **confirmed by Clive 2026-09-16**: the S2S `X-Service-Key` ingress HOLD
+   does not close the user-auth path.
 4. Approved staff test accounts for staging: one single-account user, one
    multi-account user, one role-4 client, roles 1–2 where available; their
    `accountable_institution_id` assignments; and an approved disposable
    fixture matter in a second test institution for the isolation check.
-5. Approved OTP delivery targets (CELL number and/or EMAIL mailbox) for those
-   accounts on staging, plus current OTP resend rate limits/lockout policy.
-6. Agreement on the retired-role (5/6) verification method only — role IDs
-   1–4 valid / 5–6 rejected is settled policy and no retired-role users will
-   be created or ad-hoc tokens minted; mocked coverage stands unless you
-   propose a method.
+5. A platform-approved **test OTP mechanism** for staging (routine
+   certification must not send real SMS/email). Approved CELL/EMAIL delivery
+   targets and rate-limit/lockout details are needed only if the separate
+   real-delivery E2E run is approved.
+6. ~~Agreement on the retired-role (5/6) verification method~~ — **resolved
+   2026-09-16**: mocked evidence retained with the live-verification
+   limitation stated; no retired-role users or ad-hoc live tokens.
 7. Answers to the retained production questions (§8): refresh revocation/
    rotation plans, `iss`/`aud` expectations, external-ingress/key-rotation
    HOLD resolution.
 
 **To Louis (product/ops):**
 
-8. Decision: where DEEDLY's non-production SPA+BFF+FastAPI will be hosted —
-   previous Vercel previews do not constitute a verified same-origin HTTPS
-   deployment — and who owns configuring same-origin `/api` + HTTPS there.
-9. Decision: approval to create disposable test fixtures (two test
-   institutions' matters, a role-4 client) in staging for checks 5.1–5.3,
-   under a bounded cleanup plan with post-run removal verification. Real
-   customer matters are never used.
-10. Decision: supported-browser matrix sign-off (Web Locks required).
-11. Approval to send real OTP SMS/email to the approved targets during
-    certification (rate-limit and cost acknowledgment).
+8. ~~Decision: where DEEDLY's non-production SPA+BFF+FastAPI will be hosted
+   and who owns it~~ — **owners assigned 2026-09-16: Clive and Dean**; Vercel
+   being replaced. **Outstanding:** final URL, same-origin `/api` routing and
+   environment readiness.
+9. ~~Decision: approval to create disposable test fixtures~~ — **approved
+   2026-09-16** for the explicitly identified approved staging target, under
+   the bounded cleanup plan; no production or customer data.
+10. ~~Decision: supported-browser matrix sign-off~~ — **settled 2026-09-16**:
+    Chrome/Edge Stable+Extended Stable; Firefox release+ESR; Safari current
+    and previous major; IE11/Edge Legacy unsupported; Web Locks mandatory;
+    record exact versions at execution.
+11. Approval for real OTP delivery — **policy set 2026-09-16**: routine
+    certification uses mock/test OTP only; real SMS/email needs a separate
+    explicit E2E approval covering account scope, recipients, cost and
+    rollback. This item stays open only for that gated run.
 
 ## 8. Open production questions — retained, not resolved
 
@@ -199,8 +249,11 @@ authorized by this document.
 - `iss`/`aud` are neither issued nor validated in the inspected code.
 - Upstream OTP resend rate limits/lockouts unverified.
 - External-ingress/key-rotation HOLD (`deedly_external_integration.md`
-  2026-09-03) unresolved — S2S lane only; user-auth path unaffected per §7.3.
-- Deployed auth-service SHA unverified (snapshot has no Git metadata).
+  2026-09-03) unresolved — S2S lane only; user-auth path permitted through
+  the staging gateway per owner confirmation 2026-09-16 (§7.3).
+- Deployed auth-service SHA unverified (snapshot has no Git metadata);
+  contract owner-confirmed 2026-09-16, deployed SHA/version still
+  outstanding.
 
 **Production Authentication is NOT marked complete.** This checklist certifies
 a non-production deployment only; production certification additionally needs
