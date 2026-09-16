@@ -7,8 +7,9 @@ import { Badge } from '@/components/ui'
 import { useTransfers, TransferAggregate } from '@/hooks/useTransfers'
 import { TransferDocumentsPanel } from '@/components/transfers/TransferDocumentsPanel'
 import { TransferAccountsTab } from '@/components/transfers/accounts/TransferAccountsTab'
+import { TransferApi, type MatterCoreDetail } from '@/lib/api/transferApi'
+import { ApiRequestError } from '@/lib/api/http'
 import { cn } from '@/utils/cn'
-import type { Party } from '@/components/transfers/TransferForm'
 
 export type MilestoneStatus = 'not_started' | 'in_progress' | 'completed' | 'overdue' | 'not_required'
 
@@ -127,48 +128,6 @@ function mapAggregateToDetails(aggregate: TransferAggregate | null): TransferDet
   }
 }
 
-function detailsToAggregate(base: TransferAggregate, details: TransferDetails): TransferAggregate {
-  const updateParty = (type: 'buyer' | 'seller', detailsParty: PartyDetails): Party => {
-    const existing = base.parties?.find(p => p.type === type)
-    return {
-      id: existing?.id || crypto.randomUUID(),
-      source: existing?.source ?? 'golden_record',
-      type,
-      name: detailsParty.fullName,
-      idNumber: detailsParty.idNumber,
-      email: detailsParty.email,
-      phone: detailsParty.phone,
-      address: detailsParty.address,
-      company: existing?.company,
-      role: existing?.role,
-      isPrimary: existing?.isPrimary ?? (type === 'buyer' ? true : undefined)
-    }
-  }
-
-  return {
-    ...base,
-    propertyDetails: {
-      ...base.propertyDetails,
-      address: details.property.address,
-      city: details.property.city,
-      state: details.property.province,
-      zipCode: details.property.postalCode,
-      propertyType: details.property.propertyType,
-      lotNumber: details.property.erfNumber,
-      legalDescription: details.property.legalDescription
-    },
-    parties: [
-      updateParty('buyer', details.buyer),
-      updateParty('seller', details.seller),
-      ...(base.parties?.filter(p => p.type !== 'buyer' && p.type !== 'seller') || [])
-    ],
-    financials: {
-      ...base.financials,
-      purchasePrice: String(details.purchasePrice)
-    }
-  }
-}
-
 const TransferMilestones: React.FC = () => {
   const { transferId } = useParams<{ transferId: string }>()
   const navigate = useNavigate()
@@ -183,8 +142,7 @@ const TransferMilestones: React.FC = () => {
     fetchTransfer,
     fetchMilestones,
     updateMilestones,
-    fetchActivity,
-    updateTransfer
+    fetchActivity
   } = useTransfers()
 
   const [milestones, setMilestones] = useState<Milestone[]>(INITIAL_MILESTONES)
@@ -192,7 +150,11 @@ const TransferMilestones: React.FC = () => {
   const [expandedMilestone, setExpandedMilestone] = useState<string | null>(null)
   const [isDetailsExpanded, setIsDetailsExpanded] = useState(false)
   const [transfer, setTransfer] = useState<TransferDetails>(() => emptyDetails(resolvedTransferId))
-  const [isSaving, setIsSaving] = useState(false)
+  const [coreDetail, setCoreDetail] = useState<MatterCoreDetail | null>(null)
+  const [coreDraft, setCoreDraft] = useState({ title: '', firmReference: '', propertyAddress: '' })
+  const [coreError, setCoreError] = useState<string | null>(null)
+  const [coreConflict, setCoreConflict] = useState(false)
+  const [isSavingCore, setIsSavingCore] = useState(false)
   const [activeTab, setActiveTab] = useState<'milestones' | 'documents' | 'accounts'>('milestones')
   const noteValuesAtFocus = useRef(new Map<string, string>())
 
@@ -211,6 +173,32 @@ const TransferMilestones: React.FC = () => {
     load()
     return () => { cancelled = true }
   }, [resolvedTransferId, fetchTransfer, fetchMilestones, fetchActivity])
+
+  // Load the editable core fields and concurrency tokens through the
+  // authenticated v1 lane. The updatedAt strings are echoed back verbatim —
+  // never parsed or reformatted.
+  const loadCoreDetails = async () => {
+    if (!resolvedTransferId) return
+    setCoreError(null)
+    try {
+      const response = await TransferApi.getMatterCore(resolvedTransferId)
+      const detail = response.data ?? null
+      setCoreDetail(detail)
+      setCoreConflict(false)
+      setCoreDraft({
+        title: detail?.matter?.title ?? '',
+        firmReference: detail?.matter?.firmReference ?? '',
+        propertyAddress: detail?.propertyAddress ?? ''
+      })
+    } catch (loadError) {
+      setCoreDetail(null)
+      setCoreError(loadError instanceof Error ? loadError.message : 'Failed to load matter details')
+    }
+  }
+
+  useEffect(() => {
+    loadCoreDetails()
+  }, [resolvedTransferId])
 
   // Keep local state in sync with hook state returned from the API.
   useEffect(() => {
@@ -262,26 +250,38 @@ const TransferMilestones: React.FC = () => {
     return true
   }
 
-  const updatePropertyDetail = (field: keyof TransferDetails['property'], value: string) => {
-    setTransfer(previous => ({ ...previous, property: { ...previous.property, [field]: value } }))
-  }
-
-  const updatePartyDetail = (party: 'buyer' | 'seller', field: keyof PartyDetails, value: string) => {
-    setTransfer(previous => ({ ...previous, [party]: { ...previous[party], [field]: value } }))
-  }
-
-  const saveTransferDetails = async () => {
-    if (!resolvedTransferId || !currentTransfer) return
-    setIsSaving(true)
+  const saveCoreDetails = async () => {
+    if (!resolvedTransferId || !coreDetail?.matter) return
+    setIsSavingCore(true)
+    setCoreError(null)
+    setCoreConflict(false)
     try {
-      const updated = detailsToAggregate(currentTransfer, transfer)
-      const saved = await updateTransfer(resolvedTransferId, updated)
-      if (saved) {
-        addAuditEntry('Updated transfer, property, buyer, or seller details.')
-        setIsDetailsExpanded(false)
+      const response = await TransferApi.updateMatterCore(resolvedTransferId, {
+        expected_updated_at: coreDetail.updatedAt,
+        expected_matter_updated_at: coreDetail.matter.updatedAt,
+        property_address: coreDraft.propertyAddress,
+        firm_reference: coreDraft.firmReference.trim() ? coreDraft.firmReference : null,
+        title: coreDraft.title.trim() ? coreDraft.title : null
+      })
+      const detail = response.data ?? null
+      setCoreDetail(detail)
+      setCoreDraft({
+        title: detail?.matter?.title ?? '',
+        firmReference: detail?.matter?.firmReference ?? '',
+        propertyAddress: detail?.propertyAddress ?? ''
+      })
+      addAuditEntry('Updated matter title, firm reference, or property address.')
+      setIsDetailsExpanded(false)
+    } catch (saveError) {
+      if (saveError instanceof ApiRequestError && saveError.status === 409) {
+        // Another user saved first. Keep the draft edits untouched — the user
+        // chooses to reload the latest version or abandon their edit.
+        setCoreConflict(true)
+      } else {
+        setCoreError(saveError instanceof Error ? saveError.message : 'Failed to save matter details')
       }
     } finally {
-      setIsSaving(false)
+      setIsSavingCore(false)
     }
   }
 
@@ -458,7 +458,7 @@ const TransferMilestones: React.FC = () => {
                 <Building className="w-4 h-4 text-gray-400" />
                 <div>
                   <p className="text-xs text-gray-500 dark:text-gray-400">Property</p>
-                  <p className="text-sm font-medium text-gray-900 dark:text-gray-100">{currentTransfer ? `${transfer.property.address}, ${transfer.property.city}` : '—'}</p>
+                  <p className="text-sm font-medium text-gray-900 dark:text-gray-100">{coreDetail?.propertyAddress || (currentTransfer ? `${transfer.property.address}, ${transfer.property.city}` : '—')}</p>
                 </div>
               </div>
               <div className="flex items-center space-x-2">
@@ -477,29 +477,50 @@ const TransferMilestones: React.FC = () => {
               </div>
               <div>
                 <p className="text-xs text-gray-500 dark:text-gray-400">Purchase Price</p>
-                <p className="text-sm font-bold text-gray-900 dark:text-gray-100">{currentTransfer ? formatCurrency(transfer.purchasePrice) : '—'}</p>
+                <p className="text-sm font-bold text-gray-900 dark:text-gray-100">{coreDetail?.purchasePrice != null ? formatCurrency(coreDetail.purchasePrice) : (currentTransfer ? formatCurrency(transfer.purchasePrice) : '—')}</p>
               </div>
-              <Button variant="outline" size="sm" onClick={() => setIsDetailsExpanded(current => !current)} disabled={isSaving || !currentTransfer}>
+              <Button variant="outline" size="sm" onClick={() => setIsDetailsExpanded(current => !current)} disabled={isSavingCore || !coreDetail}>
                 {isDetailsExpanded ? <ChevronUp className="mr-2 h-4 w-4" /> : <ChevronDown className="mr-2 h-4 w-4" />}
                 {isDetailsExpanded ? 'Hide Details' : 'View & Edit Details'}
               </Button>
             </div>
 
-            {isDetailsExpanded && (
+            {isDetailsExpanded && coreDetail && (
               <div className="mt-5 space-y-6 border-t border-gray-200 pt-5 dark:border-navy-700">
-                <div className="grid grid-cols-1 gap-6 xl:grid-cols-3">
-                  <div className="space-y-3">
-                    <h2 className="font-semibold text-gray-900 dark:text-gray-100">Property Details</h2>
-                    <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Street Address<input value={transfer.property.address} onChange={event => updatePropertyDetail('address', event.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-navy-600 dark:bg-navy-700 dark:text-gray-100" /></label>
-                    <div className="grid grid-cols-2 gap-3"><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">City<input value={transfer.property.city} onChange={event => updatePropertyDetail('city', event.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-navy-600 dark:bg-navy-700 dark:text-gray-100" /></label><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Province<input value={transfer.property.province} onChange={event => updatePropertyDetail('province', event.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-navy-600 dark:bg-navy-700 dark:text-gray-100" /></label></div>
-                    <div className="grid grid-cols-2 gap-3"><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Postal Code<input value={transfer.property.postalCode} onChange={event => updatePropertyDetail('postalCode', event.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-navy-600 dark:bg-navy-700 dark:text-gray-100" /></label><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">ERF Number<input value={transfer.property.erfNumber} onChange={event => updatePropertyDetail('erfNumber', event.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-navy-600 dark:bg-navy-700 dark:text-gray-100" /></label></div>
-                    <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Property Type<input value={transfer.property.propertyType} onChange={event => updatePropertyDetail('propertyType', event.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-navy-600 dark:bg-navy-700 dark:text-gray-100" /></label>
-                    <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Purchase Price<input type="number" min="0" value={transfer.purchasePrice} onChange={event => setTransfer(previous => ({ ...previous, purchasePrice: Number(event.target.value) || 0 }))} className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-navy-600 dark:bg-navy-700 dark:text-gray-100" /></label>
-                    <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Legal Description<textarea value={transfer.property.legalDescription} onChange={event => updatePropertyDetail('legalDescription', event.target.value)} rows={3} className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-navy-600 dark:bg-navy-700 dark:text-gray-100" /></label>
+                {coreConflict && (
+                  <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-200">
+                    This matter was modified by another user since you opened it. Your edits were not
+                    saved and are still in the fields below. Reload to see the latest version before
+                    saving again.
+                    <Button variant="outline" size="sm" className="ml-3" onClick={loadCoreDetails}>
+                      Reload latest
+                    </Button>
                   </div>
-                  {(['buyer', 'seller'] as const).map(party => <div key={party} className="space-y-3"><h2 className="font-semibold capitalize text-gray-900 dark:text-gray-100">{party} Details</h2><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Full Name<input value={transfer[party].fullName} onChange={event => updatePartyDetail(party, 'fullName', event.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-navy-600 dark:bg-navy-700 dark:text-gray-100" /></label><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">ID / Registration Number<input value={transfer[party].idNumber} onChange={event => updatePartyDetail(party, 'idNumber', event.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-navy-600 dark:bg-navy-700 dark:text-gray-100" /></label><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Email<input type="email" value={transfer[party].email} onChange={event => updatePartyDetail(party, 'email', event.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-navy-600 dark:bg-navy-700 dark:text-gray-100" /></label><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Phone<input value={transfer[party].phone} onChange={event => updatePartyDetail(party, 'phone', event.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-navy-600 dark:bg-navy-700 dark:text-gray-100" /></label><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Address<textarea value={transfer[party].address} onChange={event => updatePartyDetail(party, 'address', event.target.value)} rows={3} className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-navy-600 dark:bg-navy-700 dark:text-gray-100" /></label></div>)}
+                )}
+                {coreError && !coreConflict && (
+                  <div className="rounded-lg border border-red-300 bg-red-50 p-3 text-sm text-red-800 dark:border-red-700 dark:bg-red-900/30 dark:text-red-200">
+                    {coreError}
+                  </div>
+                )}
+                <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
+                  <div className="space-y-3">
+                    <h2 className="font-semibold text-gray-900 dark:text-gray-100">Matter Details</h2>
+                    <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Matter Title<input value={coreDraft.title} onChange={event => setCoreDraft(previous => ({ ...previous, title: event.target.value }))} maxLength={255} className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-navy-600 dark:bg-navy-700 dark:text-gray-100" /></label>
+                    <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Firm Reference<input value={coreDraft.firmReference} onChange={event => setCoreDraft(previous => ({ ...previous, firmReference: event.target.value }))} maxLength={100} className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-navy-600 dark:bg-navy-700 dark:text-gray-100" /></label>
+                    <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Property Address<input value={coreDraft.propertyAddress} onChange={event => setCoreDraft(previous => ({ ...previous, propertyAddress: event.target.value }))} className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-navy-600 dark:bg-navy-700 dark:text-gray-100" /></label>
+                  </div>
+                  <div className="space-y-3">
+                    <h2 className="font-semibold text-gray-900 dark:text-gray-100">Read-only Details</h2>
+                    <div><p className="text-xs font-medium text-gray-500 dark:text-gray-400">Reference Number</p><p className="mt-1 text-sm text-gray-900 dark:text-gray-100">{coreDetail.matter?.referenceNumber || '—'}</p></div>
+                    <div><p className="text-xs font-medium text-gray-500 dark:text-gray-400">Classification</p><p className="mt-1 text-sm text-gray-900 dark:text-gray-100">{coreDetail.matter?.classificationCode || '—'}</p></div>
+                    <div><p className="text-xs font-medium text-gray-500 dark:text-gray-400">Status</p><p className="mt-1 text-sm text-gray-900 dark:text-gray-100">{coreDetail.status || '—'}</p></div>
+                    <div><p className="text-xs font-medium text-gray-500 dark:text-gray-400">Purchase Price</p><p className="mt-1 text-sm text-gray-900 dark:text-gray-100">{coreDetail.purchasePrice != null ? formatCurrency(coreDetail.purchasePrice) : '—'}</p></div>
+                    <div><p className="text-xs font-medium text-gray-500 dark:text-gray-400">Buyer</p><p className="mt-1 text-sm text-gray-900 dark:text-gray-100">{transfer.buyer.fullName || '—'}</p></div>
+                    <div><p className="text-xs font-medium text-gray-500 dark:text-gray-400">Seller</p><p className="mt-1 text-sm text-gray-900 dark:text-gray-100">{transfer.seller.fullName || '—'}</p></div>
+                    <p className="text-xs text-gray-500 dark:text-gray-400">Party, property-record and financial details are managed in separate workflows and cannot be edited here.</p>
+                  </div>
                 </div>
-                <div className="flex justify-end"><Button onClick={saveTransferDetails} disabled={isSaving}>{isSaving ? 'Saving...' : 'Save Details'}</Button></div>
+                <div className="flex justify-end"><Button onClick={saveCoreDetails} disabled={isSavingCore || !coreDetail.matter}>{isSavingCore ? 'Saving...' : 'Save Details'}</Button></div>
               </div>
             )}
           </CardContent>

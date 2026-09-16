@@ -13,7 +13,7 @@ const DEEDLY_UNAVAILABLE = { success: false, error: 'Matter service temporarily 
 // Auth-forwarding proxy for write routes owned by the FastAPI DEEDLY service
 // (it holds the Entities client needed for Golden Record visibility checks).
 // The caller's JWT is verified by requireJwt, then forwarded unchanged.
-async function proxyDeedly(req: Request, res: Response, path: string, method: 'GET' | 'POST') {
+async function proxyDeedly(req: Request, res: Response, path: string, method: 'GET' | 'POST' | 'PATCH') {
   const baseUrl = process.env.DEEDLY_API_BASE_URL
   if (!baseUrl) {
     res.status(503).json(DEEDLY_UNAVAILABLE)
@@ -25,9 +25,9 @@ async function proxyDeedly(req: Request, res: Response, path: string, method: 'G
       method,
       headers: {
         Authorization: req.headers.authorization as string,
-        ...(method === 'POST' ? { 'Content-Type': 'application/json' } : {}),
+        ...(method !== 'GET' ? { 'Content-Type': 'application/json' } : {}),
       },
-      ...(method === 'POST' ? { body: JSON.stringify(req.body ?? {}) } : {}),
+      ...(method !== 'GET' ? { body: JSON.stringify(req.body ?? {}) } : {}),
       redirect: 'error',
       signal: AbortSignal.timeout(35_000),
     })
@@ -72,8 +72,25 @@ function mapTransferRow(row: any) {
     totalSteps: row.total_steps,
     progress: row.progress != null ? Number(row.progress) : undefined,
     createdAt: row.created_at,
-    updatedAt: row.updated_at,
+    // updated_at_text preserves timestamptz microseconds; the JS-Date form
+    // would truncate to milliseconds and break the PATCH version token.
+    // List queries don't select the text column and keep the Date form.
+    updatedAt: row.updated_at_text ?? row.updated_at,
     parties: [],
+  }
+}
+
+function mapMatter(row: any) {
+  return {
+    id: row.id,
+    referenceNumber: row.reference_number,
+    matterType: row.matter_type,
+    title: row.title,
+    firmReference: row.firm_reference,
+    classificationCode: row.classification_code,
+    status: row.status,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
   }
 }
 
@@ -190,8 +207,9 @@ function mapTransferFinancials(row: any) {
 const isUuid = (value: string): boolean => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
 
 const SELECT_TRANSFER_COLUMNS = `
-  SELECT t.id, t.transfer_id, t.property_address, t.purchase_price, t.status,
-         t.current_step, t.total_steps, t.progress, t.created_at, t.updated_at
+  SELECT t.id, t.transfer_id, t.matter_id, t.property_address, t.purchase_price, t.status,
+         t.current_step, t.total_steps, t.progress, t.created_at, t.updated_at,
+         t.updated_at::text AS updated_at_text
 `
 
 // All callers are scoped to their verified institution — there is no
@@ -519,9 +537,29 @@ router.get(
       return
     }
 
+    const data: Record<string, any> = mapTransferRow(transfer)
+    // The matter projection is staff-only: the client contract does not
+    // document matter-field visibility, so clients keep the existing view.
+    if (!user.isClient) {
+      let matter = null
+      if (transfer.matter_id) {
+        const matterResult = await query(
+          `SELECT id, reference_number, matter_type, title, status, firm_reference,
+                  classification_code, accountable_institution_id, created_at,
+                  updated_at::text AS updated_at
+           FROM matters
+           WHERE id = $1 AND accountable_institution_id = $2
+             AND matter_type = 'transfer'`,
+          [transfer.matter_id, user.accountable_institution_id]
+        )
+        matter = matterResult.rows[0] ? mapMatter(matterResult.rows[0]) : null
+      }
+      data.matter = matter
+    }
+
     res.json({
       message: 'OK',
-      data: mapTransferRow(transfer),
+      data,
     })
   })
 )
@@ -906,6 +944,20 @@ router.post('/', requireJwt, asyncHandler(async (req, res) => {
   if (denyClientWrite(req, res)) return
   await proxyDeedly(req, res, '/', 'POST')
 }))
+
+router.patch(
+  '/:id',
+  requireJwt,
+  asyncHandler(async (req: Request, res: Response) => {
+    if (denyClientWrite(req, res)) return
+    const { id } = req.params
+    if (!isUuid(id)) {
+      res.status(404).json({ success: false, error: 'Not found' })
+      return
+    }
+    await proxyDeedly(req, res, `/${id}`, 'PATCH')
+  })
+)
 
 router.post(
   '/:id/parties',

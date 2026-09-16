@@ -13,6 +13,7 @@ MatterIdempotencyConflictError. A foreign institution's identical key is an
 independent request by design.
 """
 
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Optional, Union
 from uuid import UUID
@@ -36,6 +37,12 @@ class MatterValidationError(MatterServiceError):
 
 class MatterIdempotencyConflictError(MatterServiceError):
     """A client_request_id was reused with a different payload."""
+
+    pass
+
+
+class MatterConflictError(MatterServiceError):
+    """The expected row version no longer matches the stored row."""
 
     pass
 
@@ -177,3 +184,174 @@ async def create_transfer_matter(
         raise
 
     return row, created
+
+
+_MATTER_READ_COLUMNS = """
+    id, reference_number, matter_type, title, status, firm_reference,
+    classification_code, accountable_institution_id, created_at, updated_at
+""".strip()
+
+_FIRM_REFERENCE_MAX_LEN = 100
+_TITLE_MAX_LEN = 255
+
+
+async def update_core_matter_fields(
+    *,
+    transfer_id: str,
+    accountable_institution_id: int,
+    expected_updated_at: str,
+    expected_matter_updated_at: str,
+    fields: dict,
+) -> tuple[dict, dict]:
+    """Update the editable core fields of a transfer matter.
+
+    Only the keys present in `fields` are written; an absent key means
+    "unchanged". `None` clears a nullable matter field (firm_reference,
+    title); property_address is NOT NULL and rejects blank values.
+
+    The linked matter is resolved deterministically through
+    transfers.matter_id — never by guessing between legacy source_record_id
+    matches. A missing or inconsistent link fails the whole transaction.
+
+    Both expected timestamps are required and verified against the locked
+    rows, so a concurrent edit to EITHER transfers or matters (including a
+    matter-only edit) is detected: BEFORE UPDATE triggers on both tables
+    (migrations 001/003) maintain each row's updated_at. The expected values
+    are ISO 8601 strings parsed here to timestamptz parameters — a naive
+    value is assumed UTC; a malformed value is a validation error, never a
+    silent conflict. Rows are locked transfers-then-matters, the same order
+    as create, and check-then-write is atomic under the lock.
+
+    Returns (transfer row, matter row).
+    """
+
+    def _expected_timestamp(value: str, name: str) -> datetime:
+        try:
+            parsed = datetime.fromisoformat(value)
+        except (TypeError, ValueError):
+            raise MatterValidationError(f"{name} must be an ISO 8601 timestamp") from None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed
+
+    expected_transfer_ts = _expected_timestamp(expected_updated_at, "expected_updated_at")
+    expected_matter_ts = _expected_timestamp(expected_matter_updated_at, "expected_matter_updated_at")
+    transfer_updates: dict = {}
+    matter_updates: dict = {}
+
+    if "property_address" in fields:
+        value = fields["property_address"]
+        if not isinstance(value, str) or not value.strip():
+            raise MatterValidationError("property_address must be a non-empty string")
+        transfer_updates["property_address"] = value.strip()
+
+    if "firm_reference" in fields:
+        value = fields["firm_reference"]
+        if value is not None:
+            if not isinstance(value, str):
+                raise MatterValidationError("firm_reference must be a string or null")
+            value = value.strip() or None
+            if value is not None and len(value) > _FIRM_REFERENCE_MAX_LEN:
+                raise MatterValidationError(
+                    f"firm_reference must be at most {_FIRM_REFERENCE_MAX_LEN} characters"
+                )
+        matter_updates["firm_reference"] = value
+
+    if "title" in fields:
+        value = fields["title"]
+        if value is not None:
+            if not isinstance(value, str):
+                raise MatterValidationError("title must be a string or null")
+            value = value.strip() or None
+            if value is not None and len(value) > _TITLE_MAX_LEN:
+                raise MatterValidationError(
+                    f"title must be at most {_TITLE_MAX_LEN} characters"
+                )
+        matter_updates["title"] = value
+
+    if not transfer_updates and not matter_updates:
+        raise MatterValidationError("At least one editable field is required")
+
+    async def _do_update(connection: Any) -> tuple[dict, dict]:
+        transfer_result = await db.query(
+            f"""
+            SELECT {_TRANSFER_READ_COLUMNS}
+            FROM transfers
+            WHERE id = $1 AND accountable_institution_id = $2
+            FOR UPDATE
+            """,
+            [transfer_id, accountable_institution_id],
+            connection=connection,
+        )
+        if not transfer_result.rows:
+            raise MatterServiceError("Transfer not found")
+        transfer = dict(transfer_result.rows[0])
+
+        if transfer.get("matter_id") is None:
+            raise MatterServiceError("Transfer has no linked matter")
+
+        matter_result = await db.query(
+            f"""
+            SELECT {_MATTER_READ_COLUMNS}
+            FROM matters
+            WHERE id = $1 AND accountable_institution_id = $2
+            FOR UPDATE
+            """,
+            [transfer["matter_id"], accountable_institution_id],
+            connection=connection,
+        )
+        if not matter_result.rows or matter_result.rows[0]["matter_type"] != "transfer":
+            raise MatterServiceError("Linked matter not found")
+        matter = dict(matter_result.rows[0])
+
+        transfer_fresh = await db.query(
+            "SELECT 1 FROM transfers WHERE id = $1 AND updated_at = $2",
+            [transfer_id, expected_transfer_ts],
+            connection=connection,
+        )
+        if not transfer_fresh.rows:
+            raise MatterConflictError("Transfer was modified by another user")
+
+        matter_fresh = await db.query(
+            "SELECT 1 FROM matters WHERE id = $1 AND updated_at = $2",
+            [matter["id"], expected_matter_ts],
+            connection=connection,
+        )
+        if not matter_fresh.rows:
+            raise MatterConflictError("Matter was modified by another user")
+
+        if transfer_updates:
+            set_clause = ", ".join(
+                f"{column} = ${index + 1}"
+                for index, column in enumerate(transfer_updates)
+            )
+            updated = await db.query(
+                f"""
+                UPDATE transfers SET {set_clause}
+                WHERE id = ${len(transfer_updates) + 1}
+                RETURNING {_TRANSFER_READ_COLUMNS}
+                """,
+                [*transfer_updates.values(), transfer_id],
+                connection=connection,
+            )
+            transfer = dict(updated.rows[0])
+
+        if matter_updates:
+            set_clause = ", ".join(
+                f"{column} = ${index + 1}"
+                for index, column in enumerate(matter_updates)
+            )
+            updated = await db.query(
+                f"""
+                UPDATE matters SET {set_clause}
+                WHERE id = ${len(matter_updates) + 1}
+                RETURNING {_MATTER_READ_COLUMNS}
+                """,
+                [*matter_updates.values(), matter["id"]],
+                connection=connection,
+            )
+            matter = dict(updated.rows[0])
+
+        return transfer, matter
+
+    return await db.with_transaction(_do_update)
