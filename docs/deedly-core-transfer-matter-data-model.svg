@@ -1,0 +1,430 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="1260" viewBox="0 0 1400 1260" role="img" aria-labelledby="erdTitle erdDesc" font-family="Segoe UI, Arial, sans-serif">
+  <title id="erdTitle">DEEDLY core transfer and matter data model — entity relationship diagram</title>
+  <desc id="erdDesc">Entity-relationship diagram centred on the transfers.transfers, transfers.matters and transfers.transfer_parties tables. Solid lines are enforced foreign keys, dashed lines are logical or cross-database references with no foreign key, and grey boxes are deprecated legacy tables. Derived from origin/main commit f5c6a338543ca43c5a7b227a82df30214d3e183e, migrations 001-021 and 023.</desc>
+
+  <defs>
+    <marker id="crow" markerWidth="12" markerHeight="10" refX="11" refY="5" orient="auto">
+      <path d="M0,0 L11,5 M0,10 L11,5" fill="none" stroke="#444" stroke-width="1.4"/>
+    </marker>
+    <marker id="crowDash" markerWidth="12" markerHeight="10" refX="11" refY="5" orient="auto">
+      <path d="M0,0 L11,5 M0,10 L11,5" fill="none" stroke="#b06000" stroke-width="1.4"/>
+    </marker>
+    <marker id="one" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
+      <path d="M9,0 L9,10" fill="none" stroke="#444" stroke-width="1.4"/>
+    </marker>
+    <marker id="oneDash" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
+      <path d="M9,0 L9,10" fill="none" stroke="#b06000" stroke-width="1.4"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1400" height="1260" fill="#ffffff"/>
+
+  <!-- ===== Title & legend ===== -->
+  <text x="20" y="30" font-size="19" font-weight="bold" fill="#1a1a1a">DEEDLY Core Transfer / Matter Data Model</text>
+  <text x="20" y="50" font-size="11.5" fill="#555">origin/main @ f5c6a33 · migrations 001–021, 023 (022 reserved on unmerged SARS branch) · schema <tspan font-weight="bold">transfers</tspan> unless noted · ai = accountable_institution_id</text>
+
+  <g font-size="11" fill="#333">
+    <line x1="760" y1="30" x2="800" y2="30" stroke="#444" stroke-width="1.6"/>
+    <text x="806" y="34">enforced FK</text>
+    <line x1="890" y1="30" x2="930" y2="30" stroke="#b06000" stroke-width="1.6" stroke-dasharray="6,4"/>
+    <text x="936" y="34">logical / external ref (no FK)</text>
+    <line x1="1130" y1="30" x2="1170" y2="30" stroke="#999" stroke-width="1.6"/>
+    <text x="1176" y="34">deprecated</text>
+    <rect x="760" y="42" width="14" height="12" fill="#1f4e79"/>
+    <text x="780" y="52">working data</text>
+    <rect x="870" y="42" width="14" height="12" fill="#3d6b35"/>
+    <text x="890" y="52">reference / config</text>
+    <rect x="1000" y="42" width="14" height="12" fill="#8a6d1a"/>
+    <text x="1020" y="52">external system</text>
+    <rect x="1130" y="42" width="14" height="12" fill="#777"/>
+    <text x="1150" y="52">deprecated table</text>
+  </g>
+
+  <!-- ================= LEFT COLUMN: external / deprecated ================= -->
+  <!-- platform accountable institutions -->
+  <g>
+    <rect x="20" y="110" width="240" height="64" rx="6" fill="#fdf6e3" stroke="#8a6d1a" stroke-width="1.4" stroke-dasharray="5,3"/>
+    <rect x="20" y="110" width="240" height="22" rx="6" fill="#8a6d1a"/>
+    <text x="30" y="125" font-size="11.5" font-weight="bold" fill="#fff">platform: accountable institutions</text>
+    <text x="30" y="148" font-size="10.5" fill="#333">accountable_institution_id (int)</text>
+    <text x="30" y="164" font-size="10.5" fill="#333">cross-database — no FK possible</text>
+  </g>
+  <!-- platform users -->
+  <g>
+    <rect x="20" y="190" width="240" height="64" rx="6" fill="#fdf6e3" stroke="#8a6d1a" stroke-width="1.4" stroke-dasharray="5,3"/>
+    <rect x="20" y="190" width="240" height="22" rx="6" fill="#8a6d1a"/>
+    <text x="30" y="205" font-size="11.5" font-weight="bold" fill="#fff">platform: users (JWT)</text>
+    <text x="30" y="228" font-size="10.5" fill="#333">user_id int → *_user_id columns</text>
+    <text x="30" y="244" font-size="10.5" fill="#333">verified claim, never a request field</text>
+  </g>
+  <!-- Golden Records -->
+  <g>
+    <rect x="20" y="270" width="240" height="70" rx="6" fill="#fdf6e3" stroke="#8a6d1a" stroke-width="1.4" stroke-dasharray="5,3"/>
+    <rect x="20" y="270" width="240" height="22" rx="6" fill="#8a6d1a"/>
+    <text x="30" y="285" font-size="11.5" font-weight="bold" fill="#fff">Legitify Golden Records / Entities</text>
+    <text x="30" y="308" font-size="10.5" fill="#333">golden_record_id (uuid)</text>
+    <text x="30" y="324" font-size="10.5" fill="#333">linkage + typed fetch via S2S lane</text>
+  </g>
+  <!-- deprecated firms/users -->
+  <g>
+    <rect x="20" y="370" width="240" height="64" rx="6" fill="#f4f4f4" stroke="#999" stroke-width="1.4"/>
+    <rect x="20" y="370" width="240" height="22" rx="6" fill="#777"/>
+    <text x="30" y="385" font-size="11.5" font-weight="bold" fill="#fff">public.firms · public.users</text>
+    <text x="30" y="408" font-size="10.5" fill="#555">legacy owner / actor model</text>
+    <text x="30" y="424" font-size="10.5" fill="#555">deprecated (data-boundary audit)</text>
+  </g>
+  <!-- deprecated parties -->
+  <g>
+    <rect x="20" y="450" width="240" height="78" rx="6" fill="#f4f4f4" stroke="#999" stroke-width="1.4"/>
+    <rect x="20" y="450" width="240" height="22" rx="6" fill="#777"/>
+    <text x="30" y="465" font-size="11.5" font-weight="bold" fill="#fff">public.parties · matter_parties</text>
+    <text x="30" y="488" font-size="10.5" fill="#555">buyer/seller prototype parties</text>
+    <text x="30" y="504" font-size="10.5" fill="#555">writers quarantined; deprecated</text>
+  </g>
+  <!-- accounts -->
+  <g>
+    <rect x="20" y="560" width="240" height="96" rx="6" fill="#fff" stroke="#1f4e79" stroke-width="1.4"/>
+    <rect x="20" y="560" width="240" height="22" rx="6" fill="#1f4e79"/>
+    <text x="30" y="575" font-size="11.5" font-weight="bold" fill="#fff">accounts / billing (017)</text>
+    <text x="30" y="598" font-size="10.5" fill="#333">account_firm_settings (PK = ai)</text>
+    <text x="30" y="614" font-size="10.5" fill="#333">tariff_schedules (ai NULL = global)</text>
+    <text x="30" y="630" font-size="10.5" fill="#333">proforma_statements — transfer_id</text>
+    <text x="30" y="646" font-size="10.5" fill="#333">is logical, no FK</text>
+  </g>
+
+  <!-- ================= SPINE ================= -->
+  <!-- matters -->
+  <g>
+    <rect x="300" y="110" width="280" height="160" rx="6" fill="#fff" stroke="#1f4e79" stroke-width="1.6"/>
+    <rect x="300" y="110" width="280" height="22" rx="6" fill="#1f4e79"/>
+    <text x="310" y="125" font-size="12" font-weight="bold" fill="#fff">matters</text>
+    <text x="310" y="148" font-size="10.5" fill="#222">id uuid PK</text>
+    <text x="310" y="164" font-size="10.5" fill="#222">reference_number ← transfers.transfer_id</text>
+    <text x="310" y="180" font-size="10.5" fill="#222">matter_type = 'transfer'</text>
+    <text x="310" y="196" font-size="10.5" fill="#222">status: in_progress | complete</text>
+    <text x="310" y="212" font-size="10.5" fill="#222">classification_code → options · firm_reference</text>
+    <text x="310" y="228" font-size="10.5" fill="#222">source_record_id = transfers.id::text (no UK)</text>
+    <text x="310" y="244" font-size="10.5" fill="#222">accountable_institution_id NOT NULL (ext)</text>
+    <text x="310" y="260" font-size="10.5" fill="#222">firm_id → public.firms (deprecated)</text>
+  </g>
+  <!-- transfers -->
+  <g>
+    <rect x="300" y="320" width="280" height="180" rx="6" fill="#fff" stroke="#1f4e79" stroke-width="2"/>
+    <rect x="300" y="320" width="280" height="22" rx="6" fill="#1f4e79"/>
+    <text x="310" y="335" font-size="12" font-weight="bold" fill="#fff">transfers</text>
+    <text x="310" y="358" font-size="10.5" fill="#222">id uuid PK · UK (id, ai)</text>
+    <text x="310" y="374" font-size="10.5" fill="#222">transfer_id UK — 'TRF-YYYY-…' (user-facing)</text>
+    <text x="310" y="390" font-size="10.5" fill="#222">matter_id → matters (SET NULL)</text>
+    <text x="310" y="406" font-size="10.5" fill="#222">property_address · purchase_price</text>
+    <text x="310" y="422" font-size="10.5" fill="#222">status: in_progress | complete</text>
+    <text x="310" y="438" font-size="10.5" fill="#222">accountable_institution_id NOT NULL (ext)</text>
+    <text x="310" y="454" font-size="10.5" fill="#222">created_by_user_id (ext) · client_request_id</text>
+    <text x="310" y="470" font-size="10.5" fill="#222">request_fingerprint (sha256 payload)</text>
+    <text x="310" y="486" font-size="10.5" fill="#222">property_id → properties (legacy pointer)</text>
+  </g>
+  <!-- transfer_parties -->
+  <g>
+    <rect x="300" y="560" width="280" height="230" rx="6" fill="#fff" stroke="#1f4e79" stroke-width="2"/>
+    <rect x="300" y="560" width="280" height="22" rx="6" fill="#1f4e79"/>
+    <text x="310" y="575" font-size="12" font-weight="bold" fill="#fff">transfer_parties</text>
+    <text x="310" y="598" font-size="10.5" fill="#222">id uuid PK · UK (id, ai) · UK (id, transfer_id, ai)</text>
+    <text x="310" y="614" font-size="10.5" fill="#222">transfer_id → transfers CASCADE</text>
+    <text x="310" y="630" font-size="10.5" fill="#222">golden_record_id (ext; NULL iff manual)</text>
+    <text x="310" y="646" font-size="10.5" fill="#222">party_source: golden_record | manual</text>
+    <text x="310" y="662" font-size="10.5" fill="#222">entity_type → entity_type_definitions</text>
+    <text x="310" y="678" font-size="10.5" fill="#222">role — no DB check; runtime: transferor|transferee</text>
+    <text x="310" y="694" font-size="10.5" fill="#222">manual_name (+id_number, id_type, passport_</text>
+    <text x="310" y="710" font-size="10.5" fill="#222">  country, email, phone, address)</text>
+    <text x="310" y="726" font-size="10.5" fill="#222">cached_name / id_number / email · synced_at</text>
+    <text x="310" y="742" font-size="10.5" fill="#222">is_primary_contact (≤1 per role) · ai (parent)</text>
+    <text x="310" y="758" font-size="10.5" fill="#222">client_request_id + request_fingerprint</text>
+    <text x="310" y="774" font-size="10.5" fill="#222">acknowledged_duplicate</text>
+  </g>
+
+  <!-- ================= C2: matter/transfer children ================= -->
+  <!-- matter_properties -->
+  <g>
+    <rect x="630" y="110" width="290" height="130" rx="6" fill="#fff" stroke="#1f4e79" stroke-width="1.4"/>
+    <rect x="630" y="110" width="290" height="22" rx="6" fill="#1f4e79"/>
+    <text x="640" y="125" font-size="12" font-weight="bold" fill="#fff">matter_properties</text>
+    <text x="640" y="148" font-size="10.5" fill="#222">id uuid PK · matter_id → matters CASCADE</text>
+    <text x="640" y="164" font-size="10.5" fill="#222">(property_id, ai) → properties CASCADE</text>
+    <text x="640" y="180" font-size="10.5" fill="#222">property_kind: input | output (output may be</text>
+    <text x="640" y="196" font-size="10.5" fill="#222">  property-less) · registration_status (future)</text>
+    <text x="640" y="212" font-size="10.5" fill="#222">ai trigger-derived from matters · canonical v1</text>
+    <text x="640" y="228" font-size="10.5" fill="#222">  property link (no route writes it yet)</text>
+  </g>
+  <!-- matter_estate_contexts -->
+  <g>
+    <rect x="630" y="300" width="290" height="110" rx="6" fill="#fff" stroke="#1f4e79" stroke-width="1.4"/>
+    <rect x="630" y="300" width="290" height="22" rx="6" fill="#1f4e79"/>
+    <text x="640" y="315" font-size="12" font-weight="bold" fill="#fff">matter_estate_contexts</text>
+    <text x="640" y="338" font-size="10.5" fill="#222">id uuid PK · (transfer_id, ai) → transfers</text>
+    <text x="640" y="354" font-size="10.5" fill="#222">deceased_golden_record_id (ext)</text>
+    <text x="640" y="370" font-size="10.5" fill="#222">masters_estate_reference — runtime-validated</text>
+    <text x="640" y="386" font-size="10.5" fill="#222">ai trigger-derived · many per transfer</text>
+  </g>
+  <!-- representative_assignments -->
+  <g>
+    <rect x="630" y="470" width="290" height="160" rx="6" fill="#fff" stroke="#1f4e79" stroke-width="1.4"/>
+    <rect x="630" y="470" width="290" height="22" rx="6" fill="#1f4e79"/>
+    <text x="640" y="485" font-size="12" font-weight="bold" fill="#fff">representative_assignments</text>
+    <text x="640" y="508" font-size="10.5" fill="#222">id uuid PK · (transfer_id, ai) → transfers</text>
+    <text x="640" y="524" font-size="10.5" fill="#222">person_golden_record_id (ext)</text>
+    <text x="640" y="540" font-size="10.5" fill="#222">capacity → rep_capacity_definitions</text>
+    <text x="640" y="556" font-size="10.5" fill="#222">exactly one represented_* target (XOR):</text>
+    <text x="640" y="572" font-size="10.5" fill="#222">  → transfer_parties OR matter_estate_contexts</text>
+    <text x="640" y="588" font-size="10.5" fill="#222">assignment_state: active|withdrawn|superseded</text>
+    <text x="640" y="604" font-size="10.5" fill="#222">ai trigger-derived · capacity ≠ signing authority</text>
+  </g>
+  <!-- party_relationship_assignments -->
+  <g>
+    <rect x="630" y="680" width="290" height="95" rx="6" fill="#fff" stroke="#1f4e79" stroke-width="1.4"/>
+    <rect x="630" y="680" width="290" height="22" rx="6" fill="#1f4e79"/>
+    <text x="640" y="695" font-size="12" font-weight="bold" fill="#fff">party_relationship_assignments</text>
+    <text x="640" y="718" font-size="10.5" fill="#222">id uuid PK · (transfer_party_id, ai) → tp</text>
+    <text x="640" y="734" font-size="10.5" fill="#222">relationship_code → definitions (UNSEEDED)</text>
+    <text x="640" y="750" font-size="10.5" fill="#222">UK (transfer_party_id, relationship_code)</text>
+  </g>
+
+  <!-- ================= C3: properties + reference ================= -->
+  <!-- properties -->
+  <g>
+    <rect x="970" y="110" width="290" height="160" rx="6" fill="#fff" stroke="#1f4e79" stroke-width="1.4"/>
+    <rect x="970" y="110" width="290" height="22" rx="6" fill="#1f4e79"/>
+    <text x="980" y="125" font-size="12" font-weight="bold" fill="#fff">properties</text>
+    <text x="980" y="148" font-size="10.5" fill="#222">id uuid PK · property_id UK 'PROP-YYYY-XXXX'</text>
+    <text x="980" y="164" font-size="10.5" fill="#222">street_address · city · province · erf_number</text>
+    <text x="980" y="180" font-size="10.5" fill="#222">property_type (9 values) · title_deed_number …</text>
+    <text x="980" y="196" font-size="10.5" fill="#222">created_for_transfer_id — logical (TRF-…)</text>
+    <text x="980" y="212" font-size="10.5" fill="#222">accountable_institution_id NOT NULL (ext)</text>
+    <text x="980" y="228" font-size="10.5" fill="#222">UK (id, ai) — composite-FK target</text>
+    <text x="980" y="244" font-size="10.5" fill="#222">postal_code: 4-digit check</text>
+  </g>
+  <!-- matter_classification_options -->
+  <g>
+    <rect x="970" y="320" width="290" height="80" rx="6" fill="#fff" stroke="#3d6b35" stroke-width="1.4"/>
+    <rect x="970" y="320" width="290" height="22" rx="6" fill="#3d6b35"/>
+    <text x="980" y="335" font-size="12" font-weight="bold" fill="#fff">matter_classification_options</text>
+    <text x="980" y="358" font-size="10.5" fill="#222">canonical_code PK · 19 seeded rows</text>
+    <text x="980" y="374" font-size="10.5" fill="#222">12 transfer · 4 development · transfer.generic</text>
+    <text x="980" y="390" font-size="10.5" fill="#222">FK target for matters.classification_code</text>
+  </g>
+  <!-- entity_type_definitions -->
+  <g>
+    <rect x="970" y="430" width="290" height="48" rx="6" fill="#fff" stroke="#3d6b35" stroke-width="1.4"/>
+    <rect x="970" y="430" width="290" height="22" rx="6" fill="#3d6b35"/>
+    <text x="980" y="445" font-size="12" font-weight="bold" fill="#fff">entity_type_definitions</text>
+    <text x="980" y="468" font-size="10.5" fill="#222">code PK — person | company | trust</text>
+  </g>
+  <!-- party_role_definitions -->
+  <g>
+    <rect x="970" y="510" width="290" height="48" rx="6" fill="#fff" stroke="#3d6b35" stroke-width="1.4"/>
+    <rect x="970" y="510" width="290" height="22" rx="6" fill="#3d6b35"/>
+    <text x="980" y="525" font-size="12" font-weight="bold" fill="#fff">party_role_definitions</text>
+    <text x="980" y="548" font-size="10.5" fill="#222">code PK — transferor | transferee only</text>
+  </g>
+  <!-- representative_capacity_definitions -->
+  <g>
+    <rect x="970" y="590" width="290" height="48" rx="6" fill="#fff" stroke="#3d6b35" stroke-width="1.4"/>
+    <rect x="970" y="590" width="290" height="22" rx="6" fill="#3d6b35"/>
+    <text x="980" y="605" font-size="12" font-weight="bold" fill="#fff">representative_capacity_definitions</text>
+    <text x="980" y="628" font-size="10.5" fill="#222">code PK — executor | masters_representative | trustee</text>
+  </g>
+  <!-- party_relationship_definitions -->
+  <g>
+    <rect x="970" y="670" width="290" height="48" rx="6" fill="#fff" stroke="#3d6b35" stroke-width="1.4"/>
+    <rect x="970" y="670" width="290" height="22" rx="6" fill="#3d6b35"/>
+    <text x="980" y="685" font-size="12" font-weight="bold" fill="#fff">party_relationship_definitions</text>
+    <text x="980" y="708" font-size="10.5" fill="#222">code PK — created but UNSEEDED on main</text>
+  </g>
+  <!-- classification_party_role_rules -->
+  <g>
+    <rect x="970" y="750" width="290" height="80" rx="6" fill="#fff" stroke="#3d6b35" stroke-width="1.4"/>
+    <rect x="970" y="750" width="290" height="22" rx="6" fill="#3d6b35"/>
+    <text x="980" y="765" font-size="12" font-weight="bold" fill="#fff">classification_party_role_rules</text>
+    <text x="980" y="788" font-size="10.5" fill="#222">(classification_code, role_code) PK</text>
+    <text x="980" y="804" font-size="10.5" fill="#222">seeded: 9 sale classifications + donation</text>
+    <text x="980" y="820" font-size="10.5" fill="#222">NOT consulted by any route yet</text>
+  </g>
+
+  <!-- ================= Bottom band ================= -->
+  <!-- transfer_financials -->
+  <g>
+    <rect x="300" y="880" width="270" height="80" rx="6" fill="#fff" stroke="#1f4e79" stroke-width="1.4"/>
+    <rect x="300" y="880" width="270" height="22" rx="6" fill="#1f4e79"/>
+    <text x="310" y="895" font-size="12" font-weight="bold" fill="#fff">transfer_financials</text>
+    <text x="310" y="918" font-size="10.5" fill="#222">transfer_id PK/FK → transfers CASCADE</text>
+    <text x="310" y="934" font-size="10.5" fill="#222">money cols numeric(14,2) ≥ 0</text>
+    <text x="310" y="950" font-size="10.5" fill="#222">no ai column — parent-anchored only</text>
+  </g>
+  <!-- transfer_documents -->
+  <g>
+    <rect x="620" y="880" width="290" height="90" rx="6" fill="#fff" stroke="#1f4e79" stroke-width="1.4"/>
+    <rect x="620" y="880" width="290" height="22" rx="6" fill="#1f4e79"/>
+    <text x="630" y="895" font-size="12" font-weight="bold" fill="#fff">transfer_documents</text>
+    <text x="630" y="918" font-size="10.5" fill="#222">transfer_id → transfers CASCADE</text>
+    <text x="630" y="934" font-size="10.5" fill="#222">catalogue_document_id → public.document_catalogue</text>
+    <text x="630" y="950" font-size="10.5" fill="#222">UK (transfer_id, catalogue_document_id)</text>
+    <text x="630" y="966" font-size="10.5" fill="#222">no ai column — parent-anchored only</text>
+  </g>
+  <!-- classification maps -->
+  <g>
+    <rect x="970" y="880" width="290" height="70" rx="6" fill="#fff" stroke="#3d6b35" stroke-width="1.4"/>
+    <rect x="970" y="880" width="290" height="22" rx="6" fill="#3d6b35"/>
+    <text x="980" y="895" font-size="12" font-weight="bold" fill="#fff">classification_milestone/document_map</text>
+    <text x="980" y="918" font-size="10.5" fill="#222">classification → milestones / catalogue config</text>
+    <text x="980" y="934" font-size="10.5" fill="#222">generic-fallback seeds only</text>
+  </g>
+  <!-- matter_milestones -->
+  <g>
+    <rect x="300" y="1010" width="270" height="110" rx="6" fill="#fff" stroke="#1f4e79" stroke-width="1.4"/>
+    <rect x="300" y="1010" width="270" height="22" rx="6" fill="#1f4e79"/>
+    <text x="310" y="1025" font-size="12" font-weight="bold" fill="#fff">matter_milestones</text>
+    <text x="310" y="1048" font-size="10.5" fill="#222">matter_id → matters CASCADE</text>
+    <text x="310" y="1064" font-size="10.5" fill="#222">definition_id → milestone_definitions</text>
+    <text x="310" y="1080" font-size="10.5" fill="#222">status: not_started|in_progress|completed|</text>
+    <text x="310" y="1096" font-size="10.5" fill="#222">  overdue|not_required · UK (matter_id, seq)</text>
+    <text x="310" y="1112" font-size="10.5" fill="#222">assigned_to_user_id (ext, indexed)</text>
+  </g>
+  <!-- milestone_definitions -->
+  <g>
+    <rect x="600" y="1010" width="240" height="70" rx="6" fill="#fff" stroke="#3d6b35" stroke-width="1.4"/>
+    <rect x="600" y="1010" width="240" height="22" rx="6" fill="#3d6b35"/>
+    <text x="610" y="1025" font-size="12" font-weight="bold" fill="#fff">milestone_definitions</text>
+    <text x="610" y="1048" font-size="10.5" fill="#222">code UK · sequence_number</text>
+    <text x="610" y="1064" font-size="10.5" fill="#222">23 transfer defs seeded (004)</text>
+  </g>
+  <!-- milestone_history -->
+  <g>
+    <rect x="870" y="1010" width="240" height="70" rx="6" fill="#fff" stroke="#1f4e79" stroke-width="1.4"/>
+    <rect x="870" y="1010" width="240" height="22" rx="6" fill="#1f4e79"/>
+    <text x="880" y="1025" font-size="12" font-weight="bold" fill="#fff">milestone_history</text>
+    <text x="880" y="1048" font-size="10.5" fill="#222">milestone_id → matter_milestones</text>
+    <text x="880" y="1064" font-size="10.5" fill="#222">old/new snapshots · changed_by_user_id</text>
+  </g>
+  <!-- public.document_catalogue -->
+  <g>
+    <rect x="1140" y="1010" width="230" height="85" rx="6" fill="#fff" stroke="#1f4e79" stroke-width="1.4"/>
+    <rect x="1140" y="1010" width="230" height="22" rx="6" fill="#1f4e79"/>
+    <text x="1150" y="1025" font-size="12" font-weight="bold" fill="#fff">public.document_catalogue</text>
+    <text x="1150" y="1048" font-size="10.5" fill="#222">catalogue_code UK</text>
+    <text x="1150" y="1064" font-size="10.5" fill="#222">FK target: transfer_documents,</text>
+    <text x="1150" y="1080" font-size="10.5" fill="#222">classification_document_map</text>
+  </g>
+
+  <!-- ================= EDGES ================= -->
+  <g fill="none" stroke="#444" stroke-width="1.5">
+    <!-- matters ↔ transfers -->
+    <path d="M440 270 V 320" marker-end="url(#one)"/>
+    <!-- transfers → transfer_parties -->
+    <path d="M440 500 V 560" marker-end="url(#crow)"/>
+    <!-- matters → matter_properties -->
+    <path d="M580 180 H 630" marker-end="url(#crow)"/>
+    <!-- matter_properties → properties -->
+    <path d="M920 155 H 970" marker-end="url(#one)"/>
+    <!-- transfers → properties (legacy composite FK) -->
+    <path d="M580 430 H 605 V 282 H 1100 V 270" marker-end="url(#one)"/>
+    <!-- transfers → matter_estate_contexts -->
+    <path d="M580 380 H 630" marker-end="url(#crow)"/>
+    <!-- transfers → representative_assignments -->
+    <path d="M580 460 H 612 V 540 H 630" marker-end="url(#crow)"/>
+    <!-- transfer_parties → party_relationship_assignments -->
+    <path d="M580 700 H 608 V 720 H 630" marker-end="url(#crow)"/>
+    <!-- representative_assignments → transfer_parties (XOR target) -->
+    <path d="M630 610 H 612 V 660 H 580" marker-end="url(#one)"/>
+    <!-- representative_assignments → matter_estate_contexts (XOR target) -->
+    <path d="M780 470 V 410" marker-end="url(#one)"/>
+    <!-- matters → matter_classification_options -->
+    <path d="M580 130 H 955 V 340 H 970" marker-end="url(#crow)"/>
+    <!-- entity_type_definitions → transfer_parties -->
+    <path d="M970 454 H 950 V 782 H 580" marker-end="url(#crow)"/>
+    <!-- representative_capacity_definitions → representative_assignments -->
+    <path d="M970 614 H 920" marker-end="url(#crow)"/>
+    <!-- party_relationship_definitions → party_relationship_assignments -->
+    <path d="M970 700 H 948 V 745 H 920" marker-end="url(#crow)"/>
+    <!-- classification_party_role_rules → matter_classification_options -->
+    <path d="M1100 750 V 400" marker-end="url(#one)"/>
+    <!-- classification_party_role_rules → party_role_definitions -->
+    <path d="M1265 750 V 556 H 1260" marker-end="url(#one)"/>
+    <!-- matters → matter_milestones -->
+    <path d="M320 270 H 295 V 1025 H 300" marker-end="url(#crow)"/>
+    <!-- milestone_definitions → matter_milestones -->
+    <path d="M600 1045 H 570" marker-end="url(#crow)"/>
+    <!-- matter_milestones → milestone_history -->
+    <path d="M435 1120 V 1150 H 990 V 1080" marker-end="url(#crow)"/>
+    <!-- transfer_documents → document_catalogue -->
+    <path d="M910 940 H 1125 V 1050 H 1140" marker-end="url(#one)"/>
+    <!-- classification maps → document_catalogue -->
+    <path d="M1200 950 V 1010" marker-end="url(#one)"/>
+    <!-- classification maps → milestone_definitions -->
+    <path d="M985 950 V 990 H 700 V 1010" marker-end="url(#one)"/>
+    <!-- transfers → transfer_financials -->
+    <path d="M300 490 H 285 V 895 H 300" marker-end="url(#crow)"/>
+    <!-- transfers → transfer_documents -->
+    <path d="M580 495 H 598 V 865 H 720 V 880" marker-end="url(#crow)"/>
+    <!-- matters → public.firms (deprecated) -->
+    <path d="M300 240 H 285 V 400 H 260" stroke="#999" marker-end="url(#one)"/>
+    <!-- transfers → public.parties (deprecated) -->
+    <path d="M300 520 H 265 V 490 H 260" stroke="#999" marker-end="url(#crow)"/>
+  </g>
+
+  <!-- dashed: logical / external -->
+  <g fill="none" stroke="#b06000" stroke-width="1.5" stroke-dasharray="6,4">
+    <!-- transfer_parties → Golden Records -->
+    <path d="M300 660 H 272 V 305 H 260" marker-end="url(#oneDash)"/>
+    <!-- matter_estate_contexts → Golden Records -->
+    <path d="M630 340 H 290 V 322 H 260" marker-end="url(#oneDash)"/>
+    <!-- representative_assignments → Golden Records -->
+    <path d="M630 620 H 618 V 990 H 268 V 335 H 260" marker-end="url(#oneDash)"/>
+    <!-- matters → platform accountable institutions -->
+    <path d="M300 150 H 260" marker-end="url(#oneDash)"/>
+    <!-- transfers → platform users -->
+    <path d="M300 430 H 268 V 222 H 260" marker-end="url(#oneDash)"/>
+    <!-- transfers → accounts/proforma (logical) -->
+    <path d="M300 470 H 278 V 600 H 260" marker-end="url(#oneDash)"/>
+    <!-- party_role_definitions → transfer_parties.role (runtime-only) -->
+    <path d="M970 545 H 940 V 978 H 575 V 790" marker-end="url(#crowDash)"/>
+  </g>
+
+  <!-- ================= Edge labels ================= -->
+  <g font-size="9.5" fill="#666">
+    <text x="448" y="292">1 : 0..1 · matter_id FK + source_record_id (logical)</text>
+    <text x="448" y="535">1 : 0..N · FK transfer_id CASCADE</text>
+    <text x="586" y="172">1 : 0..N</text>
+    <text x="924" y="147">N : 0..1 composite FK (property_id, ai)</text>
+    <text x="700" y="276">legacy (property_id, ai) composite FK</text>
+    <text x="586" y="372">1 : 0..N composite FK</text>
+    <text x="505" y="452">1 : 0..N</text>
+    <text x="586" y="692">1 : 0..N composite FK</text>
+    <text x="470" y="655">XOR target</text>
+    <text x="788" y="442">XOR target</text>
+    <text x="660" y="122">classification_code FK</text>
+    <text x="700" y="778">entity_type FK</text>
+    <text x="924" y="608">capacity FK</text>
+    <text x="924" y="742">FK</text>
+    <text x="1108" y="560">role rules (data only)</text>
+    <text x="1270" y="650">role_code FK</text>
+    <text x="200" y="1030">1 : 0..N</text>
+    <text x="574" y="1038">N : 0..1</text>
+    <text x="700" y="1146">1 : 0..N history</text>
+    <text x="960" y="1044">catalogue FK</text>
+    <text x="1208" y="985">document map</text>
+    <text x="710" y="1004">milestone map</text>
+    <text x="200" y="890">1 : 0..1</text>
+    <text x="600" y="860">1 : 0..N</text>
+    <text x="200" y="395">firm_id (deprecated)</text>
+    <text x="205" y="540">buyer/seller (deprecated)</text>
+    <text x="160" y="300" fill="#8a5a00">golden_record_id</text>
+    <text x="300" y="330" fill="#8a5a00">deceased_golden_record_id</text>
+    <text x="270" y="980" fill="#8a5a00">person_golden_record_id</text>
+    <text x="215" y="145" fill="#8a5a00">ai (tenant)</text>
+    <text x="200" y="225" fill="#8a5a00">created_by_user_id</text>
+    <text x="200" y="585" fill="#8a5a00">proforma transfer_id (logical)</text>
+    <text x="700" y="973" fill="#8a5a00">role — runtime-validated, no FK</text>
+  </g>
+
+  <!-- footnote -->
+  <text x="20" y="1180" font-size="10.5" fill="#666">Enforced-FK edges are drawn solid (including composite tenant FKs such as (transfer_id, ai) → transfers). Dashed edges are logical or cross-database references with no database constraint: golden_record_id values, accountable_institution_id, *_user_id, proforma_statements.transfer_id, transfer_parties.role, and properties.created_for_transfer_id. transfer_parties is also called tp above. Model guide only — not certification evidence.</text>
+  <text x="20" y="1200" font-size="10.5" fill="#666">See docs/deedly-core-transfer-matter-data-model.md for the full field reference, discrepancy register and deferred inventory.</text>
+</svg>
