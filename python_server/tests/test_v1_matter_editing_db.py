@@ -117,14 +117,24 @@ def _token(*, role=3, ai=5, abilities=("transfers:read", "transfers:write")):
 
 
 class MatterEditingDbTests(unittest.IsolatedAsyncioTestCase):
-    """Real-DB behavior for update_core_matter_fields and the PATCH route."""
+    """Real-DB behavior for update_core_matter_fields and the PATCH route.
+
+    Requires BOTH the explicit opt-in RUN_MATTER_EDITING_DB_TESTS=1 and
+    TEST_DATABASE_URL. TEST_DATABASE_URL is the only DSN source: every
+    competing environment key is removed before settings load, so these
+    tests can never fall back to an ordinary database configuration.
+    """
 
     URL = os.getenv("TEST_DATABASE_URL")
 
     @classmethod
     def setUpClass(cls):
-        if not cls.URL:
-            raise unittest.SkipTest("TEST_DATABASE_URL is not set; skipping DB integration test")
+        if os.getenv("RUN_MATTER_EDITING_DB_TESTS") != "1" or not cls.URL:
+            raise unittest.SkipTest(
+                "Set RUN_MATTER_EDITING_DB_TESTS=1 and TEST_DATABASE_URL "
+                "(dedicated scratch target) to run DB integration tests"
+            )
+        cls.DB_NAME = cls.URL.split("?")[0].rstrip("/").rsplit("/", 1)[-1]
         for key in (
             "ConveyHub_Transfers_POSTGRES_URL_NON_POOLING",
             "POSTGRES_URL_NON_POOLING",
@@ -149,7 +159,7 @@ class MatterEditingDbTests(unittest.IsolatedAsyncioTestCase):
 
     @classmethod
     def tearDownClass(cls):
-        if not cls.URL:
+        if os.getenv("RUN_MATTER_EDITING_DB_TESTS") != "1" or not cls.URL:
             return
 
         async def _drop():
@@ -166,8 +176,18 @@ class MatterEditingDbTests(unittest.IsolatedAsyncioTestCase):
         from config import load_settings
 
         await close_pool()
-        await get_pool(load_settings())
+        settings = load_settings()
+        # The pool must be bound to TEST_DATABASE_URL, not any ambient config.
+        self.assertEqual(settings.database_url, self.URL)
+        await get_pool(settings)
         self.query = query
+
+        # Verify the scratch schema is bound on the pool's connection
+        # (db.py's pool setup hook applies search_path to every acquired
+        # connection) and that we are on the approved test database.
+        context = await self.query("SELECT current_schema() AS s, current_database() AS d")
+        self.assertEqual(context.rows[0]["s"], SCRATCH)
+        self.assertEqual(context.rows[0]["d"], self.DB_NAME)
 
         # Re-seed the fixture rows so each test starts from known values.
         await self.query(

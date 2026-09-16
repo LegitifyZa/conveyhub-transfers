@@ -352,6 +352,24 @@ class UpdateCoreMatterFieldsTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("matters", self._updates()[0])
         self.assertIsNone(self.state["matter"]["firm_reference"])
 
+    async def test_malformed_expected_timestamp_is_validation_error(self):
+        # A malformed version token is a client error (422), never a silent
+        # conflict or a database error.
+        for bad in ("not-a-timestamp", "2026-13-45", "12345"):
+            with self.assertRaises(MatterValidationError):
+                await self._call(expected_updated_at=bad)
+        self.assertEqual(self._updates(), [])
+
+    async def test_naive_timestamp_is_interpreted_as_utc(self):
+        # Timezone policy: naive ISO input is assumed UTC, so a client echo
+        # without an offset still compares equal to the stored timestamptz.
+        await self._call(
+            expected_updated_at="2026-01-02T10:00:00",
+            expected_matter_updated_at="2026-01-02T10:00:01",
+            fields={"firm_reference": "TZ"},
+        )
+        self.assertEqual(len(self._updates()), 1)
+
     async def test_validation_matrix(self):
         with self.assertRaises(MatterValidationError):
             await self._call(fields={"property_address": "   "})

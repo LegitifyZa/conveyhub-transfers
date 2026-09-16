@@ -503,6 +503,7 @@ async def _load_linked_matter(transfer: dict, accountable_institution_id: int):
                classification_code, accountable_institution_id, created_at, updated_at
         FROM matters
         WHERE id = $1 AND accountable_institution_id = $2
+          AND matter_type = 'transfer'
         """,
         [matter_id, accountable_institution_id],
     )

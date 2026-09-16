@@ -72,7 +72,10 @@ function mapTransferRow(row: any) {
     totalSteps: row.total_steps,
     progress: row.progress != null ? Number(row.progress) : undefined,
     createdAt: row.created_at,
-    updatedAt: row.updated_at,
+    // updated_at_text preserves timestamptz microseconds; the JS-Date form
+    // would truncate to milliseconds and break the PATCH version token.
+    // List queries don't select the text column and keep the Date form.
+    updatedAt: row.updated_at_text ?? row.updated_at,
     parties: [],
   }
 }
@@ -205,7 +208,8 @@ const isUuid = (value: string): boolean => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-
 
 const SELECT_TRANSFER_COLUMNS = `
   SELECT t.id, t.transfer_id, t.matter_id, t.property_address, t.purchase_price, t.status,
-         t.current_step, t.total_steps, t.progress, t.created_at, t.updated_at
+         t.current_step, t.total_steps, t.progress, t.created_at, t.updated_at,
+         t.updated_at::text AS updated_at_text
 `
 
 // All callers are scoped to their verified institution — there is no
@@ -541,9 +545,11 @@ router.get(
       if (transfer.matter_id) {
         const matterResult = await query(
           `SELECT id, reference_number, matter_type, title, status, firm_reference,
-                  classification_code, accountable_institution_id, created_at, updated_at
+                  classification_code, accountable_institution_id, created_at,
+                  updated_at::text AS updated_at
            FROM matters
-           WHERE id = $1 AND accountable_institution_id = $2`,
+           WHERE id = $1 AND accountable_institution_id = $2
+             AND matter_type = 'transfer'`,
           [transfer.matter_id, user.accountable_institution_id]
         )
         matter = matterResult.rows[0] ? mapMatter(matterResult.rows[0]) : null
