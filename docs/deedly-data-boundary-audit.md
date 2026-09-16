@@ -13,7 +13,7 @@ The handover defines the following data-ownership boundaries for the new Transfe
 - Transfers must **never** read or write the `legitify_golden_record` database; all person/company/property canonical data is reached over HTTP through the `entities` service (port 8003).
 - Golden Record owns canonical person/company identity, addresses, FICA/AML status and verified bank-account data.
 - Transfers owns the matter-specific workflow, roles, property working data, financials, SARS state, milestones and fees.
-- Parties must reference `golden_record_id` (a UUID) and may cache only display fields (`cached_name`, `cached_id_number`, etc.) plus a `synced_at` timestamp.
+- Parties must reference `golden_record_id` (a UUID) and may cache only display fields (`cached_name`, `cached_id_number`, etc.) plus a `synced_at` timestamp. **Superseded in part (2026-09-16):** Golden Record linkage is now one of two approved party sources — migration `023_deedly_manual_party_sources.sql` adds `party_source='manual'` rows with `golden_record_id NULL` and `manual_*` capture fields. The display-cache-only rule still applies to `party_source='golden_record'` rows; manual rows store only the firm-private `manual_*` fields and no upstream data.
 - No Transfers-local `users` table is allowed; authentication comes from the platform `users.users` table via JWT and the shared `CurrentUser` dependency.
 - Every business record must be owned by an `accountable_institution_id` (tenant). Setup/config data may use `tenant_id` where appropriate.
 - The platform `AuditLogger` and `legitify_auditor` database are the intended immutable audit mechanism, not a local Transfers `audit_log` table.

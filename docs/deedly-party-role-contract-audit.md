@@ -64,6 +64,18 @@ Locked rules:
 
 ## 5. Golden Record missing-entity rule
 
+> **Superseded (2026-09-16).** The create-and-return workflow below assumed
+> DEEDLY could launch Golden Record creation. The product decision cancels
+> DEEDLY-initiated Golden Record creation entirely (see `AGENTS.md` — "Create
+> Golden Record foundation — superseded by product decision"), and migration
+> `023_deedly_manual_party_sources.sql` (merged on `main`) approves
+> firm-private manual party capture (`party_source='manual'`, `golden_record_id`
+> NULL) as the alternative when no Golden Record exists or none should be
+> linked. A "not found" result is therefore resolved by capturing a manual
+> party — never by DEEDLY creating a Golden Record. The visibility-validation
+> paragraph below remains in force: a caller-supplied `golden_record_id` must
+> still be verified through the authorised Entities service before linking.
+
 Locked workflow for any required entity that does not yet exist in Golden Records:
 
 1. Search Golden Records.

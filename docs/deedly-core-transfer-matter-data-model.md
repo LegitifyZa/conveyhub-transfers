@@ -40,6 +40,19 @@ Out of scope: Golden Record search/retrieve transport, the SARS submission model
 internals, and the documents/clauses catalogue internals beyond what
 `transfer_documents` and `classification_document_map` touch.
 
+**Document status.** This file (`deedly-core-transfer-matter-data-model.md`,
+with `deedly-core-transfer-matter-data-model.svg`) is the **current** model
+reference for the P0 data model at `f5c6a33`. Historical companions —
+authoritative when written, now superseded in part and kept for provenance:
+`docs/ERD.md`, `docs/ERD_Art.md`, `docs/ERD_Mermaid.md`,
+`docs/Database_Schema.md`, `README_Database.md` (pre-DEEDLY model);
+`docs/deedly-data-boundary-audit.md` (2026-08-19 target-state audit — its
+GR-only party bullet is superseded in part by manual parties);
+`docs/deedly-party-role-contract-audit.md` (2026-08-27 contract — §5 GR
+creation prerequisite superseded; other rules stand);
+`docs/deedly-specialist-role-capacity-contract.md` (design contract partially
+landed by migration 021 — see §11 item 10).
+
 ## 2. Conventions used in this guide
 
 - **Enforced FK** — a real `FOREIGN KEY` constraint in the migration SQL.
@@ -824,8 +837,15 @@ model — do not code against them:
   existed only on the now-quarantined legacy `/api/transfers` routes
   (evidence: `routers/v1/transfers.py` exposes no such writers;
   `src/lib/api/transferApi.ts` still points the SPA's document/milestone calls
-  at the quarantined endpoints). Until it lands, the only live write paths are
-  `POST /api/v1/transfers` (transfer+matter pair) and the party attach above.
+  at the quarantined endpoints). Until it lands, the only live write paths in
+  the **ordinary matter-creation flow** are `POST /api/v1/transfers`
+  (transfer+matter pair) and `POST /api/v1/transfers/{id}/parties`.
+  Separately, the specialist write surface in §11 item 14 is implemented:
+  `POST …/estate-contexts` and `POST …/representative-assignments` exist on
+  the FastAPI service only (the BFF exposes their GETs but not their POSTs),
+  and `POST …/relationships` exists on both servers though it cannot succeed
+  until `party_relationship_definitions` is seeded (§11 item 5). "Live" here
+  means implemented on `main` — not deployed or certified.
 - **SARS model (022)** — six `sars_*` tables exist only on the unmerged
   `tdc01-foundation` branch.
 - **Client-facing read contract** — what a role-4 caller may see beyond their
