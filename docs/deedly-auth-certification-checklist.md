@@ -48,10 +48,11 @@ docs, logs or chat.
   security capabilities exist. Web Locks remains mandatory for
   authentication — the per-page fallback is not reintroduced. Record exact
   browser name+version for every executed check (§2).
-- OTP policy: routine certification/QA must not send real SMS/email — use
-  the local mock or a platform-approved test OTP mechanism. Real delivery
-  requires separate explicit E2E approval covering account scope,
-  recipients, cost and rollback (§4.4, §7.5).
+- OTP policy: routine certification/QA must not trigger real SMS/email —
+  use the local mock or a platform-approved test OTP mechanism. Real
+  delivery is permitted only inside explicitly approved E2E tests with
+  designated test accounts and recipients, an agreed test window, and a
+  strict attempt limit agreed in advance (§4.4, §7.5).
 
 ---
 
@@ -84,6 +85,20 @@ mandatory for authentication.
 | 2.6 | `deedly_sid` Set-Cookie on login | `Secure; SameSite=Strict; Path=/`; JS-readable | `document.cookie` on an SPA route shows `deedly_sid` |
 | 2.7 | Browser without `navigator.locks` (or Locks disabled) | Login page shows the unsupported-browser message; **zero** `/api/auth/*` requests fire | Screenshot + empty network log |
 
+**Browser-policy conformance (code inspection 2026-09-16, no runtime change):**
+- **Met:** Web Locks is mandatory and fail-closed —
+  `authEnvironmentSupported()` (`src/lib/api/session.ts`) gates the Login
+  page (unsupported-browser card, zero auth requests) and
+  `enqueueAuthOp`/`withCrossTabLock` reject without `navigator.locks`. No
+  per-page fallback exists. IE11/Edge Legacy correctly land as unsupported
+  (no Locks).
+- **Gap:** the approved "warning + best-effort" tier for out-of-policy
+  browsers is **not implemented** — there is no user-agent or version
+  detection anywhere, so a Web Locks-capable but out-of-policy browser gets
+  silent full access rather than a warning, and in-matrix browsers get no
+  version floor. Tracked as a separate UI task; mandatory-Web-Locks
+  behavior must be preserved when it lands.
+
 ## 3. Checklist — deployed upstream/auth configuration
 
 | # | Check | Expected outcome | Evidence |
@@ -101,7 +116,7 @@ mandatory for authentication.
 | 4.1 | Initiate login, approved staff test account (single account) | `{user_id, requires_otp}`; **no OTP sent yet** | Redacted response | Upstream audit row |
 | 4.2 | Initiate login, multi-account identifier | `data.accounts[]` picker, per-account role/institution | Redacted response | Upstream audit row |
 | 4.3 | Wrong password | 401 `Invalid credentials` | Response capture | Upstream failed-attempt counter/audit |
-| 4.4 | `POST /api/auth/otp` | Routine runs: OTP obtained via the local mock or a platform-approved test OTP mechanism — **no real SMS/email during certification/QA**. Real delivery is a separate gated run requiring explicit E2E approval (covering account scope, recipients, cost and rollback); only then: OTP delivered via approved channel (CELL/EMAIL); `confirmation_pin` shown in UI | Screenshot + delivery evidence (device/mailbox, code redacted) | Test-OTP path: none. Gated real-delivery run: real SMS/email sent; rate-limit consumption |
+| 4.4 | `POST /api/auth/otp` | Routine runs: OTP obtained via the local mock or a platform-approved test OTP mechanism — **routine certification/QA must not trigger real SMS/email**. Real delivery is permitted only inside explicitly approved E2E tests with designated test accounts and recipients, an agreed test window, and a strict attempt limit agreed in advance; only then: OTP delivered via approved channel (CELL/EMAIL); `confirmation_pin` shown in UI | Screenshot + delivery evidence (device/mailbox, code redacted) | Test-OTP path: none. Gated E2E run only: real SMS/email within the agreed window and attempt limit; rate-limit consumption |
 | 4.5 | Wrong OTP | 401/400 `Invalid or expired verification code` | Response capture | Upstream failed-OTP counter |
 | 4.6 | Correct OTP → `/api/auth/login` | Access token + `sid` in body; cookie pair set; UI lands on `/transfers` | Screenshots + redacted response | Upstream session/audit row; refresh token issued |
 | 4.7 | Reload on an SPA route | Silent restore via refresh cookie; stays authenticated | Screen recording | One upstream refresh call |
@@ -138,6 +153,53 @@ two test institutions and a role-4 client account — plus a written cleanup
 plan (exact removal steps and a post-run verification query per fixture).
 **Approved 2026-09-16** subject to: an explicitly identified approved staging
 target, the bounded cleanup plan, and no production or customer data.
+
+### 5a. Fixture plan (preparation only — nothing created yet)
+
+Accounts to provision on the approved staging target (all synthetic — no real
+names, ID numbers or customer data):
+
+| Fixture | Institution | Role | Used by |
+|---|---|---|---|
+| `STAFF-A1` | A | 3 (staff), single account | 4.1, 4.4–4.11, 5.1 |
+| `STAFF-MULTI` | A (+B) | 3, multiple accounts on one identifier | 4.2 |
+| `STAFF-B1` | B | 3 (staff) | creates `MATTER-B`; 5.2 |
+| `CLIENT-A1` | A | 4 (client) | 5.3, 5.4; GR id attached as party on `MATTER-A` |
+| `ROLE-1`, `ROLE-2` | A | 1, 2 where available | 5.4 login-only |
+
+Data fixtures (created at execution time via the v1 API, not by hand):
+
+- `MATTER-A` — disposable transfer+matter pair in institution A, created by
+  `STAFF-A1` via `POST /api/v1/transfers`; `CLIENT-A1`'s `golden_record_id`
+  attached as a `transfer_parties` row so role-4 visibility applies.
+- `MATTER-B` — disposable transfer+matter pair in institution B, created by
+  `STAFF-B1`; exists only as the foreign-institution target id for 5.2.
+- v1 create is intentionally sparse (no milestones/financials/documents
+  scaffolding) — fixtures need no additional rows.
+
+### 5b. Bounded cleanup plan
+
+- **Fixture register:** before any check runs, record every fixture's UUID,
+  business id (`TRF-…`), owning `accountable_institution_id` and creating
+  account in the run log.
+- **Removal order** (per fixture matter): `transfer_parties` rows →
+  `representative_assignments` / `matter_estate_contexts` /
+  `party_relationship_assignments` rows (if any) → `matter_properties` →
+  `matters` row (matched by `source_record_id` + `accountable_institution_id`)
+  → `transfers` row → scaffolded `properties` row only when
+  `created_for_transfer_id` matches the fixture's `TRF-…` id.
+- **Post-run verification:** `SELECT count(*) = 0` per fixture id across
+  `transfer_parties`, `matters.source_record_id`, `transfers.id`,
+  `representative_assignments`, `matter_estate_contexts`,
+  `matter_properties`, `party_relationship_assignments`; a second person
+  countersigns the zero-row results.
+- **Accounts:** disabling/removal follows the platform's own procedure on the
+  staging target — outside DEEDLY's schema.
+- **Bounds:** cleanup is unconditional (runs even if checks fail), inside the
+  agreed test window, on the approved staging target only. If a denied-write
+  check (5.3) fails open, the fixture absorbs the write, the failure is
+  reported as a defect, and cleanup still removes the row — it is never
+  "cleaned up quietly".
 
 ## 6. Prerequisites
 
@@ -194,53 +256,40 @@ target, the bounded cleanup plan, and no production or customer data.
   and the live-verification limitation is stated. No retired-role users are
   created and no ad-hoc live tokens are minted.
 
-## 7. Exact outbound requests
+## 7. Consolidated outstanding request — for forwarding
 
-**To Clive (platform/auth service):**
+**To Clive (platform/auth service) — outstanding only:**
 
-1. ~~Deployed auth-service SHA (or contract version) on
-   `staging-api.legitify.co.za`, and confirmation it matches the OTP
-   contract~~ — **contract confirmed by Clive 2026-09-16** (owner
-   confirmation, not executed certification). **Outstanding:** the deployed
-   SHA/version itself, unless supplied.
-2. The staging `JWT_SECRET` for DEEDLY's BFF **and** FastAPI service, delivered
-   via AWS Secrets Manager — never in chat/tickets.
-3. ~~Confirmation that browser user-auth traffic (`POST /api/v1/auth/*` with no
-   `X-Service-Key`) remains permitted through the staging gateway~~ —
-   **confirmed by Clive 2026-09-16**: the S2S `X-Service-Key` ingress HOLD
-   does not close the user-auth path.
-4. Approved staff test accounts for staging: one single-account user, one
-   multi-account user, one role-4 client, roles 1–2 where available; their
-   `accountable_institution_id` assignments; and an approved disposable
-   fixture matter in a second test institution for the isolation check.
-5. A platform-approved **test OTP mechanism** for staging (routine
-   certification must not send real SMS/email). Approved CELL/EMAIL delivery
-   targets and rate-limit/lockout details are needed only if the separate
-   real-delivery E2E run is approved.
-6. ~~Agreement on the retired-role (5/6) verification method~~ — **resolved
-   2026-09-16**: mocked evidence retained with the live-verification
-   limitation stated; no retired-role users or ad-hoc live tokens.
-7. Answers to the retained production questions (§8): refresh revocation/
-   rotation plans, `iss`/`aud` expectations, external-ingress/key-rotation
-   HOLD resolution.
+1. The deployed auth-service **SHA/version** on `staging-api.legitify.co.za`.
+   (Contract and user-auth gateway permission already confirmed by you
+   2026-09-16 — thank you; this is the last piece.)
+2. The staging `JWT_SECRET` for DEEDLY's BFF **and** FastAPI service, via AWS
+   Secrets Manager — never in chat/tickets.
+3. Approved staging test accounts (per §5a): one single-account staff user,
+   one multi-account user, one role-4 client, roles 1–2 where available —
+   with their `accountable_institution_id` assignments — plus confirmation
+   of the two approved test institutions for the isolation fixture.
+4. A platform-approved **test OTP mechanism** for staging (routine
+   certification sends no real SMS/email).
+5. Answers to the retained production questions (§8): refresh-token
+   revocation/rotation plans, `iss`/`aud` expectations, and resolution of the
+   external-ingress/key-rotation HOLD (S2S lane only — user-auth path already
+   confirmed open).
 
-**To Louis (product/ops):**
+**Resolved here — no action needed:** contract/gateway confirmation (✓ 1,
+2026-09-16), retired-role method (mocked evidence retained, limitation
+stated), fixture approval (✓, bounded cleanup), browser matrix (settled).
 
-8. ~~Decision: where DEEDLY's non-production SPA+BFF+FastAPI will be hosted
-   and who owns it~~ — **owners assigned 2026-09-16: Clive and Dean**; Vercel
-   being replaced. **Outstanding:** final URL, same-origin `/api` routing and
-   environment readiness.
-9. ~~Decision: approval to create disposable test fixtures~~ — **approved
-   2026-09-16** for the explicitly identified approved staging target, under
-   the bounded cleanup plan; no production or customer data.
-10. ~~Decision: supported-browser matrix sign-off~~ — **settled 2026-09-16**:
-    Chrome/Edge Stable+Extended Stable; Firefox release+ESR; Safari current
-    and previous major; IE11/Edge Legacy unsupported; Web Locks mandatory;
-    record exact versions at execution.
-11. Approval for real OTP delivery — **policy set 2026-09-16**: routine
-    certification uses mock/test OTP only; real SMS/email needs a separate
-    explicit E2E approval covering account scope, recipients, cost and
-    rollback. This item stays open only for that gated run.
+**To Louis (product/ops) — outstanding only:**
+
+6. Hosting readiness signal: the new non-prod SPA+BFF+FastAPI environment is
+   owned by Clive and Dean (Vercel replaced); outstanding items are the final
+   URL, same-origin `/api` routing and environment readiness — please confirm
+   when ready.
+7. Real-OTP E2E approval — stays open for a separately gated run only:
+   explicitly approved E2E tests, designated test accounts and recipients,
+   an agreed test window, and a strict attempt limit agreed in advance.
+   Routine certification does not need it.
 
 ## 8. Open production questions — retained, not resolved
 
