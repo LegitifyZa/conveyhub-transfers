@@ -10,6 +10,7 @@ All DB access is mocked — these are non-DB tests.
 import re
 import time
 import unittest
+from datetime import datetime
 from contextlib import ExitStack
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -281,11 +282,11 @@ class UpdateCoreMatterFieldsTests(unittest.IsolatedAsyncioTestCase):
             if matter is None or params[0] != transfer["matter_id"] or params[1] != matter["accountable_institution_id"]:
                 return db.QueryResult(rows=[], row_count=0)
             return db.QueryResult(rows=[dict(matter)], row_count=1)
-        if "SELECT 1 FROM transfers" in text:
-            fresh = params[1] == transfer["updated_at"]
-            return db.QueryResult(rows=[{"?column?": 1}] if fresh else [], row_count=int(fresh))
-        if "SELECT 1 FROM matters" in text:
-            fresh = params[1] == matter["updated_at"]
+        if "SELECT 1 FROM transfers" in text or "SELECT 1 FROM matters" in text:
+            row = transfer if "transfers" in text.split("FROM", 1)[1].split()[0] else matter
+            expected = params[1]
+            expected = expected.isoformat() if isinstance(expected, datetime) else expected
+            fresh = expected == row["updated_at"]
             return db.QueryResult(rows=[{"?column?": 1}] if fresh else [], row_count=int(fresh))
         if "UPDATE transfers" in text or "UPDATE matters" in text:
             target = transfer if "UPDATE transfers" in text else matter

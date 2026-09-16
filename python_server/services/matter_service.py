@@ -13,6 +13,7 @@ MatterIdempotencyConflictError. A foreign institution's identical key is an
 independent request by design.
 """
 
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Optional, Union
 from uuid import UUID
@@ -215,13 +216,26 @@ async def update_core_matter_fields(
     Both expected timestamps are required and verified against the locked
     rows, so a concurrent edit to EITHER transfers or matters (including a
     matter-only edit) is detected: BEFORE UPDATE triggers on both tables
-    (migrations 001/003) maintain each row's updated_at. The comparison is
-    SQL-side ($::timestamptz) so clients may echo the timestamp verbatim;
-    they must not reformat it. Rows are locked transfers-then-matters, the
-    same order as create, and check-then-write is atomic under the lock.
+    (migrations 001/003) maintain each row's updated_at. The expected values
+    are ISO 8601 strings parsed here to timestamptz parameters — a naive
+    value is assumed UTC; a malformed value is a validation error, never a
+    silent conflict. Rows are locked transfers-then-matters, the same order
+    as create, and check-then-write is atomic under the lock.
 
     Returns (transfer row, matter row).
     """
+
+    def _expected_timestamp(value: str, name: str) -> datetime:
+        try:
+            parsed = datetime.fromisoformat(value)
+        except (TypeError, ValueError):
+            raise MatterValidationError(f"{name} must be an ISO 8601 timestamp") from None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed
+
+    expected_transfer_ts = _expected_timestamp(expected_updated_at, "expected_updated_at")
+    expected_matter_ts = _expected_timestamp(expected_matter_updated_at, "expected_matter_updated_at")
     transfer_updates: dict = {}
     matter_updates: dict = {}
 
@@ -291,16 +305,16 @@ async def update_core_matter_fields(
         matter = dict(matter_result.rows[0])
 
         transfer_fresh = await db.query(
-            "SELECT 1 FROM transfers WHERE id = $1 AND updated_at = $2::timestamptz",
-            [transfer_id, expected_updated_at],
+            "SELECT 1 FROM transfers WHERE id = $1 AND updated_at = $2",
+            [transfer_id, expected_transfer_ts],
             connection=connection,
         )
         if not transfer_fresh.rows:
             raise MatterConflictError("Transfer was modified by another user")
 
         matter_fresh = await db.query(
-            "SELECT 1 FROM matters WHERE id = $1 AND updated_at = $2::timestamptz",
-            [matter["id"], expected_matter_updated_at],
+            "SELECT 1 FROM matters WHERE id = $1 AND updated_at = $2",
+            [matter["id"], expected_matter_ts],
             connection=connection,
         )
         if not matter_fresh.rows:
