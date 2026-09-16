@@ -15,10 +15,12 @@ from clients.dependencies import get_entities_client
 from db import query, with_transaction
 from services.golden_record_visibility import GoldenRecordVisibilityError
 from services.matter_service import (
+    MatterConflictError,
     MatterIdempotencyConflictError,
     MatterServiceError,
     MatterValidationError,
     create_transfer_matter,
+    update_core_matter_fields,
 )
 from services.matter_specialist_service import (
     MatterSpecialistServiceError,
@@ -40,7 +42,7 @@ DEFAULT_SORT_COLUMNS = ["created_at", "updated_at", "property_address", "status"
 
 
 SELECT_TRANSFER_COLUMNS = """
-    SELECT t.id, t.transfer_id, t.property_address, t.purchase_price, t.status,
+    SELECT t.id, t.transfer_id, t.matter_id, t.property_address, t.purchase_price, t.status,
            t.current_step, t.total_steps, t.progress, t.created_at, t.updated_at
 """
 
@@ -58,6 +60,20 @@ def _map_transfer(row: dict) -> dict:
         "createdAt": row["created_at"],
         "updatedAt": row["updated_at"],
         "parties": [],
+    }
+
+
+def _map_matter(row: dict) -> dict:
+    return {
+        "id": row["id"],
+        "referenceNumber": row["reference_number"],
+        "matterType": row["matter_type"],
+        "title": row["title"],
+        "firmReference": row["firm_reference"],
+        "classificationCode": row["classification_code"],
+        "status": row["status"],
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
     }
 
 
@@ -467,7 +483,101 @@ async def get_transfer(
     if not transfer:
         raise HTTPException(status_code=404, detail="Not found")
 
-    return {"message": "OK", "data": _map_transfer(transfer)}
+    data = _map_transfer(transfer)
+    # The matter projection is staff-only: the client contract does not
+    # document matter-field visibility, so clients keep the existing view.
+    if not user.is_client:
+        matter = await _load_linked_matter(transfer, user.accountable_institution_id)
+        data["matter"] = _map_matter(matter) if matter else None
+    return {"message": "OK", "data": data}
+
+
+async def _load_linked_matter(transfer: dict, accountable_institution_id: int):
+    """Resolve the linked matter deterministically via transfers.matter_id."""
+    matter_id = transfer.get("matter_id")
+    if matter_id is None:
+        return None
+    result = await query(
+        """
+        SELECT id, reference_number, matter_type, title, status, firm_reference,
+               classification_code, accountable_institution_id, created_at, updated_at
+        FROM matters
+        WHERE id = $1 AND accountable_institution_id = $2
+        """,
+        [matter_id, accountable_institution_id],
+    )
+    return result.rows[0] if result.rows else None
+
+
+@router.patch("/{id}")
+async def update_transfer_core_fields(
+    id: str,
+    body: dict,
+    user: CurrentUser = Depends(require_jwt),
+):
+    """Update the editable core fields of a transfer matter.
+
+    Allow-list field semantics:
+      - omitted            -> unchanged
+      - property_address   -> required non-empty string when present
+      - firm_reference     -> string <= 100 chars, or null/blank to clear
+      - title              -> string <= 255 chars, or null/blank to clear
+    Status, classification, progress counters, reference_number, internal
+    ids and institution ownership are immutable and rejected by the
+    allow-list.
+
+    Both expected_*_updated_at preconditions are required and verified under
+    row locks against transfers.updated_at and matters.updated_at, so a
+    stale copy conflicts on either row (409) rather than silently
+    overwriting another user's change.
+    """
+    _require_transfers_write(user)
+
+    if not _is_valid_uuid(id):
+        raise HTTPException(status_code=404, detail="Not found")
+
+    _require_body_keys(
+        body,
+        required={"expected_updated_at", "expected_matter_updated_at"},
+        optional={"property_address", "firm_reference", "title"},
+    )
+
+    expected_updated_at = body["expected_updated_at"]
+    expected_matter_updated_at = body["expected_matter_updated_at"]
+    for name, value in (
+        ("expected_updated_at", expected_updated_at),
+        ("expected_matter_updated_at", expected_matter_updated_at),
+    ):
+        if not isinstance(value, str) or not value.strip():
+            raise HTTPException(status_code=422, detail=f"{name} must be a timestamp string")
+
+    fields = {
+        key: body[key]
+        for key in ("property_address", "firm_reference", "title")
+        if key in body
+    }
+
+    try:
+        transfer, matter = await update_core_matter_fields(
+            transfer_id=id,
+            accountable_institution_id=user.accountable_institution_id,
+            expected_updated_at=expected_updated_at.strip(),
+            expected_matter_updated_at=expected_matter_updated_at.strip(),
+            fields=fields,
+        )
+    except MatterValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    except MatterConflictError:
+        return JSONResponse(
+            status_code=409,
+            content={"success": False, "error": "Matter was modified by another user; reload and retry"},
+        )
+    except MatterServiceError:
+        raise HTTPException(status_code=404, detail="Not found") from None
+
+    data = _map_transfer(transfer)
+    data["matter"] = _map_matter(matter)
+    return {"message": "OK", "data": data}
 
 
 def _map_estate_context(row: dict) -> dict:

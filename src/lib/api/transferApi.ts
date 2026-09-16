@@ -325,6 +325,20 @@ export class TransferApi {
     const response = await apiRequest<ApiResponse<{ parties: TransferPartyApi[] }>>(`/api/v1/transfers/${transferId}/parties`)
     return { ...response, data: response.data?.parties }
   }
+
+  /** Core matter read-back including the matter projection and both
+   * updated_at concurrency tokens. Echo the token strings verbatim into
+   * updateMatterCore — never reformat them. */
+  static async getMatterCore(transferId: string): Promise<ApiResponse<MatterCoreDetail>> {
+    return apiRequest(`/api/v1/transfers/${transferId}`)
+  }
+
+  /** Optimistic-concurrency update of the editable core fields.
+   * Throws ApiRequestError with status 409 when either stored row was
+   * modified since the read the edit was based on. */
+  static async updateMatterCore(transferId: string, request: UpdateMatterCoreRequest): Promise<ApiResponse<MatterCoreDetail>> {
+    return apiRequest(`/api/v1/transfers/${transferId}`, { method: 'PATCH', body: request })
+  }
 }
 
 export interface CreateMatterRequest {
@@ -344,6 +358,43 @@ export interface MatterCreated {
   status: string | null
   /** false when the request replayed an existing matter (HTTP 200). */
   created: boolean
+}
+
+/** GET/PATCH /api/v1/transfers/{id} matter projection (staff view). */
+export interface MatterCoreMatter {
+  id: string
+  referenceNumber: string | null
+  matterType: string | null
+  title: string | null
+  firmReference: string | null
+  classificationCode: string | null
+  status: string | null
+  updatedAt: string
+}
+
+/** GET/PATCH /api/v1/transfers/{id} data payload. */
+export interface MatterCoreDetail {
+  id: string
+  transferId: string | null
+  propertyAddress: string | null
+  purchasePrice: number | null
+  status: string | null
+  currentStep: number | null
+  totalSteps: number | null
+  progress: number | null
+  updatedAt: string
+  matter?: MatterCoreMatter | null
+}
+
+/** PATCH /api/v1/transfers/{id} request. Omitted keys are unchanged;
+ * null clears firm_reference/title. The expected_* keys must echo the
+ * server's updatedAt/matter.updatedAt strings verbatim. */
+export interface UpdateMatterCoreRequest {
+  expected_updated_at: string
+  expected_matter_updated_at: string
+  property_address?: string
+  firm_reference?: string | null
+  title?: string | null
 }
 
 export interface ManualPersonPayload {
