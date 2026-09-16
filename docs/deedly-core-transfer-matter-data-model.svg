@@ -20,24 +20,24 @@
   <rect x="0" y="0" width="1400" height="1260" fill="#ffffff"/>
 
   <!-- ===== Title & legend ===== -->
-  <text x="20" y="30" font-size="19" font-weight="bold" fill="#1a1a1a">DEEDLY Core Transfer / Matter Data Model</text>
-  <text x="20" y="50" font-size="11.5" fill="#555">origin/main @ f5c6a33 · migrations 001–021, 023 (022 reserved on unmerged SARS branch) · schema <tspan font-weight="bold">transfers</tspan> unless noted · ai = accountable_institution_id</text>
+  <text x="20" y="28" font-size="19" font-weight="bold" fill="#1a1a1a">DEEDLY Core Transfer / Matter Data Model</text>
+  <text x="20" y="48" font-size="11.5" fill="#555">origin/main @ f5c6a33 · migrations 001–021, 023 (022 reserved on unmerged SARS branch) · schema <tspan font-weight="bold">transfers</tspan> unless noted · ai = accountable_institution_id</text>
 
   <g font-size="11" fill="#333">
-    <line x1="760" y1="30" x2="800" y2="30" stroke="#444" stroke-width="1.6"/>
-    <text x="806" y="34">enforced FK</text>
-    <line x1="890" y1="30" x2="930" y2="30" stroke="#b06000" stroke-width="1.6" stroke-dasharray="6,4"/>
-    <text x="936" y="34">logical / external ref (no FK)</text>
-    <line x1="1130" y1="30" x2="1170" y2="30" stroke="#999" stroke-width="1.6"/>
-    <text x="1176" y="34">deprecated</text>
-    <rect x="760" y="42" width="14" height="12" fill="#1f4e79"/>
-    <text x="780" y="52">working data</text>
-    <rect x="870" y="42" width="14" height="12" fill="#3d6b35"/>
-    <text x="890" y="52">reference / config</text>
-    <rect x="1000" y="42" width="14" height="12" fill="#8a6d1a"/>
-    <text x="1020" y="52">external system</text>
-    <rect x="1130" y="42" width="14" height="12" fill="#777"/>
-    <text x="1150" y="52">deprecated table</text>
+    <line x1="780" y1="26" x2="820" y2="26" stroke="#444" stroke-width="1.6"/>
+    <text x="826" y="30">enforced FK</text>
+    <line x1="910" y1="26" x2="950" y2="26" stroke="#b06000" stroke-width="1.6" stroke-dasharray="6,4"/>
+    <text x="956" y="30">logical / external ref (no FK)</text>
+    <line x1="1150" y1="26" x2="1190" y2="26" stroke="#999" stroke-width="1.6"/>
+    <text x="1196" y="30">deprecated</text>
+    <rect x="780" y="60" width="14" height="12" fill="#1f4e79"/>
+    <text x="800" y="70">working data</text>
+    <rect x="890" y="60" width="14" height="12" fill="#3d6b35"/>
+    <text x="910" y="70">reference / config</text>
+    <rect x="1020" y="60" width="14" height="12" fill="#8a6d1a"/>
+    <text x="1040" y="70">external system</text>
+    <rect x="1150" y="60" width="14" height="12" fill="#777"/>
+    <text x="1170" y="70">deprecated table</text>
   </g>
 
   <!-- ================= LEFT COLUMN: external / deprecated ================= -->
@@ -229,7 +229,7 @@
     <rect x="970" y="590" width="290" height="48" rx="6" fill="#fff" stroke="#3d6b35" stroke-width="1.4"/>
     <rect x="970" y="590" width="290" height="22" rx="6" fill="#3d6b35"/>
     <text x="980" y="605" font-size="12" font-weight="bold" fill="#fff">representative_capacity_definitions</text>
-    <text x="980" y="628" font-size="10.5" fill="#222">code PK — executor | masters_representative | trustee</text>
+    <text x="980" y="628" font-size="10.5" fill="#222">code PK — executor | masters_rep | trustee</text>
   </g>
   <!-- party_relationship_definitions -->
   <g>
@@ -336,7 +336,7 @@
     <!-- representative_assignments → matter_estate_contexts (XOR target) -->
     <path d="M780 470 V 410" marker-end="url(#one)"/>
     <!-- matters → matter_classification_options -->
-    <path d="M580 130 H 955 V 340 H 970" marker-end="url(#crow)"/>
+    <path d="M580 200 H 620 V 440 H 950 V 360 H 970" marker-end="url(#crow)"/>
     <!-- entity_type_definitions → transfer_parties -->
     <path d="M970 454 H 950 V 782 H 580" marker-end="url(#crow)"/>
     <!-- representative_capacity_definitions → representative_assignments -->
@@ -344,7 +344,7 @@
     <!-- party_relationship_definitions → party_relationship_assignments -->
     <path d="M970 700 H 948 V 745 H 920" marker-end="url(#crow)"/>
     <!-- classification_party_role_rules → matter_classification_options -->
-    <path d="M1100 750 V 400" marker-end="url(#one)"/>
+    <path d="M970 790 H 960 V 395 H 970" marker-end="url(#one)"/>
     <!-- classification_party_role_rules → party_role_definitions -->
     <path d="M1265 750 V 556 H 1260" marker-end="url(#one)"/>
     <!-- matters → matter_milestones -->
@@ -354,7 +354,7 @@
     <!-- matter_milestones → milestone_history -->
     <path d="M435 1120 V 1150 H 990 V 1080" marker-end="url(#crow)"/>
     <!-- transfer_documents → document_catalogue -->
-    <path d="M910 940 H 1125 V 1050 H 1140" marker-end="url(#one)"/>
+    <path d="M910 960 H 930 V 990 H 1120 V 1050 H 1140" marker-end="url(#one)"/>
     <!-- classification maps → document_catalogue -->
     <path d="M1200 950 V 1010" marker-end="url(#one)"/>
     <!-- classification maps → milestone_definitions -->
@@ -372,11 +372,11 @@
   <!-- dashed: logical / external -->
   <g fill="none" stroke="#b06000" stroke-width="1.5" stroke-dasharray="6,4">
     <!-- transfer_parties → Golden Records -->
-    <path d="M300 660 H 272 V 305 H 260" marker-end="url(#oneDash)"/>
+    <path d="M300 660 H 272 V 300 H 260" marker-end="url(#oneDash)"/>
     <!-- matter_estate_contexts → Golden Records -->
-    <path d="M630 340 H 290 V 322 H 260" marker-end="url(#oneDash)"/>
+    <path d="M630 305 H 290 V 315 H 260" marker-end="url(#oneDash)"/>
     <!-- representative_assignments → Golden Records -->
-    <path d="M630 620 H 618 V 990 H 268 V 335 H 260" marker-end="url(#oneDash)"/>
+    <path d="M630 620 H 618 V 990 H 268 V 330 H 260" marker-end="url(#oneDash)"/>
     <!-- matters → platform accountable institutions -->
     <path d="M300 150 H 260" marker-end="url(#oneDash)"/>
     <!-- transfers → platform users -->
@@ -392,39 +392,39 @@
     <text x="448" y="292">1 : 0..1 · matter_id FK + source_record_id (logical)</text>
     <text x="448" y="535">1 : 0..N · FK transfer_id CASCADE</text>
     <text x="586" y="172">1 : 0..N</text>
-    <text x="924" y="147">N : 0..1 composite FK (property_id, ai)</text>
+    <text x="925" y="142">N:0..1</text>
     <text x="700" y="276">legacy (property_id, ai) composite FK</text>
-    <text x="586" y="372">1 : 0..N composite FK</text>
-    <text x="505" y="452">1 : 0..N</text>
-    <text x="586" y="692">1 : 0..N composite FK</text>
-    <text x="470" y="655">XOR target</text>
-    <text x="788" y="442">XOR target</text>
-    <text x="660" y="122">classification_code FK</text>
-    <text x="700" y="778">entity_type FK</text>
-    <text x="924" y="608">capacity FK</text>
+    <text x="582" y="372">1 : 0..N</text>
+    <text x="584" y="453">1 : 0..N</text>
+    <text x="582" y="692">1 : 0..N</text>
+    <text x="585" y="608">XOR</text>
+    <text x="785" y="458">XOR target</text>
+    <text x="645" y="432">classification_code FK</text>
+    <text x="955" y="572">entity_type FK</text>
+    <text x="925" y="650">capacity FK</text>
     <text x="924" y="742">FK</text>
-    <text x="1108" y="560">role rules (data only)</text>
+    <text x="965" y="418">role rules (data only)</text>
     <text x="1270" y="650">role_code FK</text>
     <text x="200" y="1030">1 : 0..N</text>
-    <text x="574" y="1038">N : 0..1</text>
+    <text x="575" y="1042">N:1</text>
     <text x="700" y="1146">1 : 0..N history</text>
-    <text x="960" y="1044">catalogue FK</text>
+    <text x="1115" y="985">catalogue FK</text>
     <text x="1208" y="985">document map</text>
     <text x="710" y="1004">milestone map</text>
     <text x="200" y="890">1 : 0..1</text>
     <text x="600" y="860">1 : 0..N</text>
-    <text x="200" y="395">firm_id (deprecated)</text>
+    <text x="185" y="360">firm_id (deprecated)</text>
     <text x="205" y="540">buyer/seller (deprecated)</text>
-    <text x="160" y="300" fill="#8a5a00">golden_record_id</text>
-    <text x="300" y="330" fill="#8a5a00">deceased_golden_record_id</text>
-    <text x="270" y="980" fill="#8a5a00">person_golden_record_id</text>
-    <text x="215" y="145" fill="#8a5a00">ai (tenant)</text>
-    <text x="200" y="225" fill="#8a5a00">created_by_user_id</text>
-    <text x="200" y="585" fill="#8a5a00">proforma transfer_id (logical)</text>
-    <text x="700" y="973" fill="#8a5a00">role — runtime-validated, no FK</text>
+    <text x="140" y="700" fill="#8a5a00">golden_record_id</text>
+    <text x="295" y="300" fill="#8a5a00">deceased_golden_record_id</text>
+    <text x="300" y="982" fill="#8a5a00">person_golden_record_id</text>
+    <text x="272" y="147" fill="#8a5a00">ai</text>
+    <text x="278" y="340" fill="#8a5a00" transform="rotate(-90 278 340)">created_by_user_id</text>
+    <text x="582" y="998" fill="#8a5a00">role — runtime only</text>
   </g>
 
   <!-- footnote -->
-  <text x="20" y="1180" font-size="10.5" fill="#666">Enforced-FK edges are drawn solid (including composite tenant FKs such as (transfer_id, ai) → transfers). Dashed edges are logical or cross-database references with no database constraint: golden_record_id values, accountable_institution_id, *_user_id, proforma_statements.transfer_id, transfer_parties.role, and properties.created_for_transfer_id. transfer_parties is also called tp above. Model guide only — not certification evidence.</text>
-  <text x="20" y="1200" font-size="10.5" fill="#666">See docs/deedly-core-transfer-matter-data-model.md for the full field reference, discrepancy register and deferred inventory.</text>
+  <text x="20" y="1180" font-size="10.5" fill="#666">Solid edges = enforced foreign keys (including composite tenant FKs such as (transfer_id, ai) → transfers (id, ai)). 'tp' = transfer_parties.</text>
+  <text x="20" y="1200" font-size="10.5" fill="#666">Dashed edges = logical or cross-database references with no database constraint: golden_record_id, deceased/person_golden_record_id, accountable_institution_id, *_user_id, proforma_statements.transfer_id, transfer_parties.role, properties.created_for_transfer_id.</text>
+  <text x="20" y="1220" font-size="10.5" fill="#666">Model guide only — not certification evidence. Full field reference: docs/deedly-core-transfer-matter-data-model.md.</text>
 </svg>

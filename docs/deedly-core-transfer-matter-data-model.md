@@ -391,8 +391,8 @@ client_request_id IS NOT NULL`, so:
   **not** create `properties`/`matter_properties`, `transfer_financials`,
   `matter_milestones` or `transfer_documents` rows. That scaffolding exists only
   on the legacy create path, which is quarantined (503) on both servers, so a v1
-  transfer today is intentionally sparse — follow-on P0 work
-  ("durable matter attachment and authenticated matter saving") fills this in.
+  transfer today is intentionally sparse — the deferred authenticated-matter-
+  saving work in §12 fills this in.
 - The quarantined legacy create (`POST /api/transfers`) did the same thing in
   one larger transaction — property scaffold, transfer, financials, parties
   (legacy `parties` table), matter, default milestones, seeded
@@ -651,78 +651,143 @@ documents-service ownership decision.
 
 ## 11. Discrepancy register — where migrations and runtime/docs disagree
 
-Flagged, not resolved:
+These are **findings for Jordan to assess**, not approved schema changes. Each
+lists the supporting migration/runtime location and the affected behavior.
 
-1. **`transfers.status` default `'draft'` is unreachable-but-invalid.** Migration
-   016 narrowed the CHECK to `in_progress|complete` but never altered the column
-   default — an `INSERT` omitting `status` violates the CHECK. All code paths
-   write `'in_progress'` explicitly, so it is latent. Same for
-   `matters.status DEFAULT 'draft'` when `matter_type='transfer'`.
+1. **`transfers.status` default `'draft'` is unreachable-but-invalid.**
+   *Evidence:* `001_initial_schema.sql` declares `status VARCHAR(50) DEFAULT
+   'draft'` with the old 4-value CHECK; `016_deedly_status_lifecycle.sql`
+   rewrites values and narrows the CHECK to `in_progress|complete` but never
+   alters the column default. `003` line ~78 does the same for `matters.status
+   DEFAULT 'draft'` (7-value list; 016 restricts it to the two-state pair only
+   when `matter_type='transfer'`).
+   *Affected behavior:* any `INSERT` that omits `status` violates the CHECK.
+   All live code paths write `'in_progress'` explicitly
+   (`python_server/services/matter_service.py`), so the defect is latent —
+   it would only bite direct-SQL or future writers.
 2. **`matters` uniqueness is keyed on a nullable legacy column.**
-   `UNIQUE (firm_id, reference_number)` never fires for DEEDLY rows because
-   `firm_id` is NULL (Postgres treats NULLs as distinct) — two transfer matters
-   could share a `reference_number`. Uniqueness today rests on
-   `transfers.transfer_id` being unique, not on this constraint.
-3. **`transfer_parties.role` has no DB constraint.** Runtime (v1 attach)
-   requires an active `party_role_definitions` row *and* membership of
-   `{transferor, transferee}`; the schema allows any varchar(40). The contract
-   audit explicitly defers adding an FK/CHECK here.
-4. **`classification_party_role_rules` is seeded but not enforced.** The attach
-   route validates role against `party_role_definitions` + the ordinary-role
-   allow-list only; per-classification min/max/entity-type rules exist as data
-   but no code path consults them.
-5. **`party_relationship_definitions` is unseeded.** The relationships POST
-   exists on both servers but cannot succeed — every code 400s. The FK is real;
-   the reference data is not.
-6. **`masters_estate_reference` is validated only in code.** DB type is bare
-   `text`; the service enforces trim/≤100 chars/pattern. DB accepts what the
-   route rejects.
-7. **Dual transfer↔matter link.** `transfers.matter_id` (FK) and
-   `matters.source_record_id = transfers.id::text` (unconstrained varchar) are
-   both maintained by create paths; reads key on `source_record_id` because the
-   migrated prototype rows have `matter_id` NULL. Redundant by design for now —
-   a documented transition state, not a bug.
-8. **`transfers.property_id` vs `matter_properties`.** The migration comments
-   and contract doc declare `matter_properties` canonical for v1, the 019
-   trigger mirrors legacy writes one-way, **but no v1 route writes
-   `matter_properties` yet** — a v1-created transfer currently has neither a
-   `properties` row nor a `matter_properties` row. Transitional gap, tracked
-   under the durable-matter-attachment work.
+   *Evidence:* `003` line ~89 `UNIQUE (firm_id, reference_number)`; DEEDLY rows
+   always have `firm_id = NULL`, and Postgres treats NULLs as distinct so the
+   constraint can never fire for them. `matter_service.py` sets
+   `reference_number = transfers.transfer_id`.
+   *Affected behavior:* two transfer matters could share a `reference_number`;
+   practical uniqueness rests on `transfers.transfer_id` being UNIQUE, not on
+   this constraint.
+3. **`transfer_parties.role` has no DB constraint.**
+   *Evidence:* `008_create_transfer_parties.sql` declares `role VARCHAR(40)`
+   with no CHECK/FK; runtime validation lives in
+   `python_server/routers/v1/transfers.py` (~line 933 `_ORDINARY_PARTY_ROLES`
+   and ~1100 the active `party_role_definitions` lookup).
+   `docs/deedly-party-role-contract-audit.md` explicitly defers a DB
+   constraint.
+   *Affected behavior:* only v1 attach validates role; any other writer can
+   store arbitrary strings.
+4. **`classification_party_role_rules` is seeded but not enforced.**
+   *Evidence:* `018` creates and seeds the table; a repo-wide search finds the
+   only code reference in `python_server/tests/test_db_test_utils.py`
+   (teardown) — the attach route validates role against
+   `party_role_definitions` + the ordinary-role allow-list only.
+   *Affected behavior:* per-classification minimums, maximums, entity-type
+   restrictions and primary-contact flags exist as data but gate nothing.
+5. **`party_relationship_definitions` is unseeded.**
+   *Evidence:* `021` creates the table with no `INSERT`; the POST
+   `…/parties/{id}/relationships` exists on both servers
+   (`server/routes/v1/transfers.ts` ~717,
+   `python_server/routers/v1/transfers.py`) and validates codes against the
+   empty table.
+   *Affected behavior:* every relationship attach returns 400 "unknown or
+   inactive relationship code" until reference data lands.
+6. **`masters_estate_reference` is validated only in code.**
+   *Evidence:* `021` line ~83 declares it bare `TEXT`;
+   `python_server/services/matter_specialist_service.py` enforces trim,
+   ≤100 chars and `^[A-Za-z0-9][A-Za-z0-9/\-. ]*$`.
+   *Affected behavior:* the DB accepts values the route rejects — divergence
+   only matters for non-API writers.
+7. **Dual transfer↔matter link.**
+   *Evidence:* `003` adds both `transfers.matter_id` (FK) and
+   `matters.source_record_id`; `matter_service.py` writes both; the v1
+   milestones query and the legacy delete path key on `source_record_id`;
+   the migrated prototype rows have `matter_id` NULL and `source_record_id`
+   has no UNIQUE.
+   *Affected behavior:* a documented transition state — both links must be
+   maintained by every writer, and readers must predicate on
+   `source_record_id` + `accountable_institution_id` for prototype data.
+8. **`transfers.property_id` vs `matter_properties`.**
+   *Evidence:* `002` adds the legacy pointer; `018` creates
+   `matter_properties`; `019` backfills, adds the one-way sync trigger
+   (`trg_sync_matter_properties_from_transfer`) and declares
+   `matter_properties` canonical for v1 in its header comments;
+   `routers/v1/transfers.py` has no `matter_properties` writer.
+   *Affected behavior:* a v1-created transfer currently has neither a
+   `properties` row nor a `matter_properties` row — the canonical table is
+   populated only via the legacy path (now quarantined) or the trigger.
+   Tracked under the authenticated-matter-saving work in §12.
 9. **`transfer_parties.accountable_institution_id` is app-derived, not
-   FK-derived.** Sibling child tables get tenant-anchoring triggers + composite
-   FKs; `transfer_parties` relies on the service's parent re-check. Consistent
-   in effect, different in mechanism — worth knowing before adding direct-SQL
-   writers.
-10. **Contract-doc shape vs landed shape (021).** The specialist contract doc
-    sketched `created_by_actor_id TEXT` and an `authority_basis` column on
-    `representative_assignments`; the landed migration uses
-    `created_by_user_id`/`updated_by_user_id INTEGER` and **no**
-    `authority_basis`. The doc's `authority_documents` / `authority_effectiveness`
-    tables do not exist (see §12).
-11. **Legacy vs platform actor duality.** `assigned_to`/`created_by`/
-    `submitted_by`/`uploaded_by`/`changed_by` are uuid FKs into deprecated
-    `public.users`; the parallel `*_user_id INTEGER` columns carry platform
-    `user_id` claims with no FK. Both exist; only the int columns are written by
-    live code.
-12. **Stale companion docs.** `docs/ERD*.md`, `docs/Database_Schema.md` and
-    `README_Database.md` predate the `transfers` schema, tenant columns,
-    `transfer_parties`, and the 016 lifecycle — they describe the pre-DEEDLY
-    model. `python_server/utils/validate.py` still defines an unused
-    `VALID_STATUSES = [draft, in_progress, completed, cancelled]` list.
-13. **Migration numbering gap.** No `022` file on main; the number is taken by
-    the unmerged SARS TDC01 branch (§3).
-14. **BFF/FastAPI write-surface split.** `POST /api/v1/transfers` and
-    `POST …/parties` are BFF-proxied to FastAPI (the Entities S2S lane lives
-    there); `POST …/relationships` is implemented locally on *both* servers;
-    `POST …/estate-contexts` and `POST …/representative-assignments` exist only
-    on FastAPI — the BFF exposes their GETs but not their POSTs.
-15. **`parties.id_number` CHECK is format-only.** `validate_sa_id_number` checks
-    13 digits, not the SA checksum; `properties` postal-code check is 4 digits.
-    Both are looser than their names suggest.
+   FK-derived.**
+   *Evidence:* `008` adds the column with no composite FK to the parent;
+   `021` adds `(id, ai)` / `(id, transfer_id, ai)` unique indexes as FK
+   *targets*; sibling children get anchoring triggers + composite FKs
+   (`018`/`019`/`021`); `transfer_party_service.py` re-reads and re-checks
+   the parent transfer's tenant inside the write transaction.
+   *Affected behavior:* equivalent effect through a different mechanism —
+   safe today, but a direct-SQL writer could create a tenant-divergent
+   party row the schema would not reject.
+10. **Contract-doc shape vs landed shape (021).**
+    *Evidence:* `docs/deedly-specialist-role-capacity-contract.md` sketches
+    `created_by_actor_id TEXT` and an `authority_basis` column; landed `021`
+    uses `created_by_user_id`/`updated_by_user_id INTEGER` and no
+    `authority_basis` (`matter_specialist_service.py` comments call the
+    authority-basis concept out as intentionally deferred).
+    *Affected behavior:* implementers reading the contract doc will look for
+    columns/tables that do not exist; the doc needs a "landed vs deferred"
+    annotation.
+11. **Legacy vs platform actor duality.**
+    *Evidence:* `001`/`003`/`005` create uuid `assigned_to`/`created_by`/
+    `submitted_by`/`uploaded_by`/`changed_by` FKs into `public.users`;
+    `013` adds parallel `*_user_id INTEGER` columns (no FK); `014` renames
+    `transfers.submitted_by_user_id` → `created_by_user_id`.
+    *Affected behavior:* live code writes only the int columns; the uuid FKs
+    are stale/NULL on new rows and should not be trusted as actor sources.
+12. **Stale companion docs.**
+    *Evidence:* `docs/ERD.md`, `docs/ERD_Art.md`, `docs/ERD_Mermaid.md`,
+    `docs/Database_Schema.md`, `README_Database.md` all predate the
+    `transfers` schema, tenant columns, `transfer_parties` and the 016
+    lifecycle; `python_server/utils/validate.py` still defines unused
+    `VALID_STATUSES = [draft, in_progress, completed, cancelled]` (the v1
+    router uses its own `TRANSFER_STATUSES`); `server/utils/validate.ts`
+    mirrors the stale list.
+    *Affected behavior:* anyone following those docs gets the pre-DEEDLY
+    model; the dead validators are harmless but misleading.
+13. **Migration numbering gap.**
+    *Evidence:* `src/lib/migrations/` contains 001–021 and 023;
+    `022_deedly_sars_tdc01_foundation.sql` exists only on
+    `deedly/mvp1/sars-integration/tdc01-foundation` @ `120a075`.
+    *Affected behavior:* `scripts/migrate.mjs` applies files in filename
+    order, so a future main migration must not reuse `022` without
+    coordinating with that branch or the ledger order will diverge.
+14. **BFF/FastAPI write-surface split.**
+    *Evidence:* `server/routes/v1/transfers.ts` proxies `POST /transfers`
+    and `POST …/parties` to FastAPI (`DEEDLY_API_BASE_URL`), implements
+    `POST …/relationships` locally (~717), and exposes only GETs for
+    `…/estate-contexts` (~583) and `…/representative-assignments` (~801);
+    `python_server/routers/v1/transfers.py` implements all of them.
+    *Affected behavior:* browsers can create estate contexts and
+    representative assignments only via the FastAPI surface; a BFF-only
+    client cannot reach those POSTs.
+15. **`parties.id_number` CHECK is format-only.**
+    *Evidence:* `001` `validate_sa_id_number()` checks 13 digits (no Luhn/
+    checksum); `002` `validate_sa_postal_code()` checks 4 digits.
+    *Affected behavior:* well-formed-but-invalid values pass the DB; the
+    legacy `parties` table is deprecated anyway, and manual-party
+    `manual_id_number` is deliberately unconstrained — but the check names
+    overstate their rigor.
 16. **Client read projection is intentionally narrower than the table.**
-    Role-4 callers see only their own `transfer_parties` row, minimal fields —
-    a documented fail-closed stance until the platform defines the client
-    contract; do not read this as the table's intended projection.
+    *Evidence:* `python_server/routers/v1/transfers.py` role-4 branch returns
+    only the caller's own `transfer_parties` row with minimal fields;
+    `AGENTS.md` documents the fail-closed stance pending a platform client
+    contract.
+    *Affected behavior:* client-role callers cannot see counterparties —
+    intentional, not a table-projection bug; do not "fix" by widening.
 
 ## 12. Proposed / deferred / not-landed inventory
 
@@ -746,11 +811,21 @@ model — do not code against them:
   exist, semantics deliberately unresolved.
 - **`transfers.property_id` removal** — deferred until consumers migrate to
   `matter_properties` (019 contract note).
-- **Durable matter attachment / authenticated matter saving** — the v1 write
-  path that would populate `matter_properties`, financials, milestones and
-  document scaffolding on create remains separate P0 work; today the SPA's old
-  `/api/transfers` calls are quarantined and only `POST /api/v1/transfers` and
-  `POST …/parties` are live write paths.
+- **Authenticated matter saving — the remaining half of "durable matter
+  attachment."** Party attachment itself is **implemented on main** (merged
+  before this guide's source checkpoint): v1
+  `POST /api/v1/transfers/{transfer_id}/parties` durably persists both Golden
+  Record parties (with the verified display-minimal cache) and manual persons,
+  with institution-scoped idempotent replay. What remains deferred is the
+  broader authenticated save of the *rest* of the matter payload:
+  `matter_properties` links and property scaffolding, `transfer_financials`,
+  `matter_milestones`/`milestone_history`, `transfer_documents` rows, and any
+  update/patch of existing transfer or matter fields — capabilities that
+  existed only on the now-quarantined legacy `/api/transfers` routes
+  (evidence: `routers/v1/transfers.py` exposes no such writers;
+  `src/lib/api/transferApi.ts` still points the SPA's document/milestone calls
+  at the quarantined endpoints). Until it lands, the only live write paths are
+  `POST /api/v1/transfers` (transfer+matter pair) and the party attach above.
 - **SARS model (022)** — six `sars_*` tables exist only on the unmerged
   `tdc01-foundation` branch.
 - **Client-facing read contract** — what a role-4 caller may see beyond their
