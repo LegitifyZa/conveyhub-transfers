@@ -29,7 +29,12 @@ const TransferNavigation: React.FC<TransferNavigationProps> = ({
   const validateCurrentStep = (): boolean => {
     switch (currentStep) {
       case 1:
-        return validatePropertyDetails(state.propertyDetails)
+        // A selected or persisted property link satisfies the step; the manual
+        // field floor applies only when capturing a property.
+        return validatePropertyDetails(
+          state.propertyDetails,
+          Boolean(state.persistedPropertyLinkId || state.selectedPropertyId),
+        )
       case 2:
         return validateParties(state.parties)
       case 3:
