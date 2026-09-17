@@ -66,18 +66,22 @@ class PropertyIdempotencyConflictError(MatterPropertyServiceError):
     pass
 
 
-# Allow-listed projections — never expose every column.
+# Allow-listed projections — never expose every column. request_fingerprint
+# is read back solely for server-side idempotency comparison; response
+# mappers do not emit it.
 PROPERTY_READ_COLUMNS = """
     id, property_id, erf_number, street_address, suburb, city, postal_code,
     province, country, property_type, legal_description, year_built,
     square_footage, extent_sqm, status, source_system,
-    accountable_institution_id, client_request_id, created_at, updated_at
+    accountable_institution_id, client_request_id, request_fingerprint,
+    created_at, updated_at
 """.strip()
 
 LINK_READ_COLUMNS = """
     id, matter_id, property_id, property_kind, registration_status,
     role_in_matter, external_property_id, property_source,
-    accountable_institution_id, client_request_id, created_at, updated_at
+    accountable_institution_id, client_request_id, request_fingerprint,
+    created_at, updated_at
 """.strip()
 
 # The nine property_type values permitted by migration 006's CHECK.

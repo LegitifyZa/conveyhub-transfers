@@ -6,6 +6,7 @@ from typing import AbstractSet, Any, Optional
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 
 from auth.current_user import CurrentUser
@@ -1160,7 +1161,11 @@ async def create_transfer(
     data = _map_transfer(row)
     data["created"] = created
     if not created:
-        return JSONResponse(status_code=200, content={"message": "OK", "data": data})
+        # Raw JSONResponse bypasses jsonable_encoder — encode UUID/datetime.
+        return JSONResponse(
+            status_code=200,
+            content=jsonable_encoder({"message": "OK", "data": data}),
+        )
     return {"message": "Created", "data": data}
 
 
@@ -1547,5 +1552,10 @@ async def attach_transfer_property(
     data = _map_matter_property_link(link_row, property_row)
     data["created"] = created
     if not created:
-        return JSONResponse(status_code=200, content={"message": "OK", "data": data})
+        # Raw JSONResponse bypasses jsonable_encoder — UUID/datetime values
+        # in the mapped row must be encoded explicitly.
+        return JSONResponse(
+            status_code=200,
+            content=jsonable_encoder({"message": "OK", "data": data}),
+        )
     return {"message": "Created", "data": data}

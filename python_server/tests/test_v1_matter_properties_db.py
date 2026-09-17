@@ -39,10 +39,46 @@ CREATE FUNCTION {s}.generate_property_id() RETURNS VARCHAR AS $$
     SELECT 'PROP-TEST-' || substr(md5(random()::text), 1, 8)
 $$ LANGUAGE SQL VOLATILE;
 
+-- Faithful replica of migration 019's matter_properties_set_tenant(),
+-- schema-qualified to the scratch schema.
 CREATE FUNCTION {s}.matter_properties_set_tenant() RETURNS TRIGGER AS $$
 BEGIN
-    SELECT accountable_institution_id INTO NEW.accountable_institution_id
-    FROM {s}.matters WHERE id = NEW.matter_id;
+    SELECT accountable_institution_id
+    INTO NEW.accountable_institution_id
+    FROM {s}.matters
+    WHERE id = NEW.matter_id;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Faithful replica of migration 002's audit_trigger_function() writing to a
+-- scratch-local audit_log (the real one writes public.audit_log via the
+-- connection search_path). Included so trigger side effects are exercised,
+-- not suppressed.
+CREATE TABLE {s}.audit_log (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    table_name VARCHAR(50) NOT NULL,
+    record_id UUID NOT NULL,
+    action VARCHAR(20) NOT NULL CHECK (action IN ('INSERT', 'UPDATE', 'DELETE')),
+    old_values JSONB,
+    new_values JSONB,
+    user_id UUID,
+    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE FUNCTION {s}.audit_trigger_function() RETURNS TRIGGER AS $$
+BEGIN
+    IF TG_OP = 'DELETE' THEN
+        INSERT INTO {s}.audit_log (table_name, record_id, action, old_values)
+        VALUES (TG_TABLE_NAME, OLD.id, 'DELETE', to_jsonb(OLD));
+        RETURN OLD;
+    ELSIF TG_OP = 'UPDATE' THEN
+        INSERT INTO {s}.audit_log (table_name, record_id, action, old_values, new_values)
+        VALUES (TG_TABLE_NAME, NEW.id, 'UPDATE', to_jsonb(OLD), to_jsonb(NEW));
+        RETURN NEW;
+    END IF;
+    INSERT INTO {s}.audit_log (table_name, record_id, action, new_values)
+    VALUES (TG_TABLE_NAME, NEW.id, 'INSERT', to_jsonb(NEW));
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
@@ -54,20 +90,6 @@ CREATE TABLE {s}.matters (
     title VARCHAR(255),
     status VARCHAR(50) NOT NULL DEFAULT 'in_progress',
     accountable_institution_id INTEGER NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE {s}.transfers (
-    id UUID PRIMARY KEY,
-    transfer_id VARCHAR(50),
-    matter_id UUID,
-    property_address TEXT NOT NULL,
-    purchase_price DECIMAL(12,2) NOT NULL,
-    status VARCHAR(50) NOT NULL DEFAULT 'in_progress',
-    accountable_institution_id INTEGER NOT NULL,
-    client_request_id UUID,
-    request_fingerprint TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -98,6 +120,7 @@ CREATE TABLE {s}.properties (
     request_fingerprint VARCHAR(64),
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (id, accountable_institution_id),
     CHECK (postal_code IS NULL OR postal_code ~ '^\\d{{4}}$')
 );
 
@@ -105,10 +128,40 @@ CREATE UNIQUE INDEX idx_properties_client_request_id
     ON {s}.properties (accountable_institution_id, client_request_id)
     WHERE client_request_id IS NOT NULL;
 
+CREATE TRIGGER audit_properties_trigger
+    AFTER INSERT OR UPDATE OR DELETE ON {s}.properties
+    FOR EACH ROW EXECUTE FUNCTION {s}.audit_trigger_function();
+
+CREATE TABLE {s}.transfers (
+    id UUID PRIMARY KEY,
+    transfer_id VARCHAR(50),
+    matter_id UUID,
+    property_id UUID,
+    property_address TEXT NOT NULL,
+    purchase_price DECIMAL(12,2) NOT NULL,
+    status VARCHAR(50) NOT NULL DEFAULT 'in_progress',
+    current_step INTEGER,
+    total_steps INTEGER,
+    progress DECIMAL(5,2),
+    accountable_institution_id INTEGER NOT NULL,
+    client_request_id UUID,
+    request_fingerprint TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_transfers_property_tenant
+        FOREIGN KEY (property_id, accountable_institution_id)
+        REFERENCES {s}.properties (id, accountable_institution_id)
+        ON UPDATE CASCADE ON DELETE SET NULL
+);
+
+CREATE TRIGGER audit_transfers_trigger
+    AFTER INSERT OR UPDATE OR DELETE ON {s}.transfers
+    FOR EACH ROW EXECUTE FUNCTION {s}.audit_trigger_function();
+
 CREATE TABLE {s}.matter_properties (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     matter_id UUID NOT NULL REFERENCES {s}.matters(id) ON DELETE CASCADE,
-    property_id UUID REFERENCES {s}.properties(id) ON DELETE SET NULL,
+    property_id UUID,
     property_kind VARCHAR(20) NOT NULL CHECK (property_kind IN ('input', 'output')),
     registration_status VARCHAR(20),
     role_in_matter VARCHAR(50),
@@ -120,7 +173,11 @@ CREATE TABLE {s}.matter_properties (
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CHECK (property_kind = 'output' OR property_id IS NOT NULL),
-    UNIQUE (matter_id, property_id, property_kind)
+    UNIQUE (matter_id, property_id, property_kind),
+    CONSTRAINT fk_matter_properties_property_tenant
+        FOREIGN KEY (property_id, accountable_institution_id)
+        REFERENCES {s}.properties (id, accountable_institution_id)
+        ON UPDATE CASCADE ON DELETE CASCADE
 );
 
 CREATE UNIQUE INDEX idx_matter_properties_client_request_id
@@ -130,6 +187,49 @@ CREATE UNIQUE INDEX idx_matter_properties_client_request_id
 CREATE TRIGGER trg_matter_properties_set_tenant
     BEFORE INSERT OR UPDATE ON {s}.matter_properties
     FOR EACH ROW EXECUTE FUNCTION {s}.matter_properties_set_tenant();
+
+-- Faithful replica of migration 019's sync_matter_properties_from_transfer(),
+-- schema-qualified. Verifies that v1 (NULL property_source) links are never
+-- deleted by the legacy pointer bridge.
+CREATE FUNCTION {s}.sync_matter_properties_from_transfer()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF TG_OP = 'UPDATE' AND OLD.matter_id IS DISTINCT FROM NEW.matter_id AND OLD.matter_id IS NOT NULL THEN
+        DELETE FROM {s}.matter_properties
+        WHERE matter_id = OLD.matter_id
+          AND property_source = 'legacy_transfer_' || OLD.id::text
+          AND property_kind = 'input'
+          AND property_id = OLD.property_id;
+    END IF;
+
+    IF NEW.matter_id IS NOT NULL AND NEW.property_id IS NOT NULL THEN
+        DELETE FROM {s}.matter_properties
+        WHERE matter_id = NEW.matter_id
+          AND property_source = 'legacy_transfer_' || NEW.id::text
+          AND property_kind = 'input'
+          AND property_id IS DISTINCT FROM NEW.property_id;
+
+        INSERT INTO {s}.matter_properties (
+            matter_id,
+            property_id,
+            property_kind,
+            property_source
+        ) VALUES (
+            NEW.matter_id,
+            NEW.property_id,
+            'input',
+            'legacy_transfer_' || NEW.id::text
+        )
+        ON CONFLICT (matter_id, property_id, property_kind) DO NOTHING;
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_sync_matter_properties_from_transfer
+    AFTER INSERT OR UPDATE OF property_id, matter_id ON {s}.transfers
+    FOR EACH ROW EXECUTE FUNCTION {s}.sync_matter_properties_from_transfer();
 
 -- Rollback guard: a capture whose legal_description is the sentinel fails the
 -- link insert AFTER the property insert, proving no orphan survives.
@@ -255,8 +355,14 @@ class MatterPropertyDbTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(context.rows[0]["s"], SCRATCH)
         self.assertEqual(context.rows[0]["d"], self.DB_NAME)
 
+        # Clear the legacy pointer first: the composite tenant FK's
+        # ON DELETE SET NULL would otherwise null transfers.ai too.
+        await self.query(
+            "UPDATE transfers SET property_id = NULL WHERE property_id IS NOT NULL", [])
         await self.query("DELETE FROM matter_properties", [])
         await self.query("DELETE FROM properties", [])
+        await self.query("DELETE FROM transfers WHERE id <> $1", [TRANSFER_ID])
+        await self.query("DELETE FROM matters WHERE id <> $1", [MATTER_ID])
 
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
@@ -388,7 +494,7 @@ class MatterPropertyDbTests(unittest.IsolatedAsyncioTestCase):
             "SELECT id FROM properties WHERE property_id LIKE 'PROP-MULTI-%' ORDER BY property_id",
             [],
         )
-        for row in props:
+        for row in props.rows:
             response = await self.client.post(
                 f"/api/v1/transfers/{TRANSFER_ID}/properties",
                 json={"property_id": str(row["id"]), "client_request_id": str(uuid.uuid4())},
@@ -488,6 +594,175 @@ class MatterPropertyDbTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200)
         rows = response.json()["data"]["properties"]
         self.assertEqual([r["propertyId"] for r in rows], ["PROP-OWN"])
+
+    async def test_concurrent_identical_captures_commit_once(self):
+        request_id = str(uuid.uuid4())
+        body = {"property": _CAPTURE, "client_request_id": request_id}
+        url = f"/api/v1/transfers/{TRANSFER_ID}/properties"
+        first, second = await asyncio.gather(
+            self.client.post(url, json=body, headers=self._headers()),
+            self.client.post(url, json=body, headers=self._headers()),
+        )
+        self.assertEqual(
+            sorted([first.status_code, second.status_code]), [200, 201],
+            f"expected one create + one replay, got {first.status_code}/{second.status_code}",
+        )
+        self.assertEqual(
+            first.json()["data"]["id"], second.json()["data"]["id"])
+        self.assertEqual(await self._property_count(), 1)
+        self.assertEqual(await self._link_count(), 1)
+
+    async def test_concurrent_identical_links_commit_once(self):
+        await self.query(
+            """INSERT INTO properties (property_id, street_address, city, province,
+                    property_type, status, accountable_institution_id)
+               VALUES ('PROP-CONC', '1 Concurrent Ave', 'Pretoria', 'Gauteng',
+                    'Freehold', 'active', 5)""",
+            [],
+        )
+        prop = await self.query("SELECT id FROM properties WHERE property_id = 'PROP-CONC'", [])
+        request_id = str(uuid.uuid4())
+        body = {"property_id": str(prop.rows[0]["id"]), "client_request_id": request_id}
+        url = f"/api/v1/transfers/{TRANSFER_ID}/properties"
+        first, second = await asyncio.gather(
+            self.client.post(url, json=body, headers=self._headers()),
+            self.client.post(url, json=body, headers=self._headers()),
+        )
+        self.assertEqual(
+            sorted([first.status_code, second.status_code]), [200, 201],
+            f"expected one create + one replay, got {first.status_code}/{second.status_code}",
+        )
+        self.assertEqual(await self._link_count(), 1)
+
+    async def test_conflicting_key_reuse_across_matters_fails_409(self):
+        # A second matter+transfer in the same institution.
+        matter2 = str(uuid.uuid4())
+        transfer2 = str(uuid.uuid4())
+        await self.query(
+            """INSERT INTO matters (id, reference_number, matter_type, title, status,
+                    accountable_institution_id)
+               VALUES ($1, 'TRF-TEST-2', 'transfer', 'Transfer TRF-TEST-2',
+                    'in_progress', 5)""",
+            [matter2],
+        )
+        await self.query(
+            """INSERT INTO transfers (id, transfer_id, matter_id, property_address,
+                    purchase_price, status, accountable_institution_id)
+               VALUES ($1, 'TRF-TEST-2', $2, '9 Other Street', 500000,
+                    'in_progress', 5)""",
+            [transfer2, matter2],
+        )
+        request_id = str(uuid.uuid4())
+        body = {"property": _CAPTURE, "client_request_id": request_id}
+        first = await self.client.post(
+            f"/api/v1/transfers/{TRANSFER_ID}/properties", json=body, headers=self._headers()
+        )
+        self.assertEqual(first.status_code, 201)
+        # Same key, same payload, different target transfer — the fingerprint
+        # binds the target, so this is a conflict, not a replay.
+        conflict = await self.client.post(
+            f"/api/v1/transfers/{transfer2}/properties", json=body, headers=self._headers()
+        )
+        self.assertEqual(conflict.status_code, 409)
+        # Nothing was written for the second matter.
+        links = await self.query(
+            "SELECT matter_id FROM matter_properties", [])
+        self.assertEqual(len(links.rows), 1)
+        self.assertEqual(str(links.rows[0]["matter_id"]), MATTER_ID)
+
+    async def test_composite_fk_rejects_cross_tenant_link(self):
+        # Even if service checks were bypassed, the tenant composite FK on
+        # matter_properties makes a foreign-institution property unlinkable:
+        # the set_tenant trigger derives AI=5 from the matter while the
+        # property row carries AI=9.
+        await self.query(
+            """INSERT INTO properties (property_id, street_address, city, province,
+                    property_type, status, accountable_institution_id)
+               VALUES ('PROP-XFK', '1 Foreign Ave', 'Pretoria', 'Gauteng',
+                    'Freehold', 'active', 9)""",
+            [],
+        )
+        prop = await self.query("SELECT id FROM properties WHERE property_id = 'PROP-XFK'", [])
+        with self.assertRaises(asyncpg.ForeignKeyViolationError):
+            await self.query(
+                """INSERT INTO matter_properties (matter_id, property_id,
+                        property_kind, accountable_institution_id)
+                   VALUES ($1, $2, 'input', 5)""",
+                [MATTER_ID, str(prop.rows[0]["id"])],
+            )
+
+    async def test_legacy_sync_trigger_does_not_touch_v1_links(self):
+        # Property A is linked via v1 (property_source NULL); property B is
+        # free-standing.
+        await self.query(
+            """INSERT INTO properties (property_id, street_address, city, province,
+                    property_type, status, accountable_institution_id)
+               VALUES
+                 ('PROP-A', '1 Alpha Ave', 'Pretoria', 'Gauteng', 'Freehold', 'active', 5),
+                 ('PROP-B', '2 Beta Ave', 'Pretoria', 'Gauteng', 'Freehold', 'active', 5)""",
+            [],
+        )
+        props = await self.query(
+            "SELECT id, property_id FROM properties WHERE property_id IN ('PROP-A','PROP-B')",
+            [],
+        )
+        ids = {r["property_id"]: str(r["id"]) for r in props.rows}
+        response = await self.client.post(
+            f"/api/v1/transfers/{TRANSFER_ID}/properties",
+            json={"property_id": ids["PROP-A"], "client_request_id": str(uuid.uuid4())},
+            headers=self._headers(),
+        )
+        self.assertEqual(response.status_code, 201)
+        v1_link_id = response.json()["data"]["id"]
+
+        # Simulate the quarantined legacy path on the scratch copy: pointing
+        # transfers.property_id at B fires the sync trigger, which inserts a
+        # legacy-tagged link for B.
+        await self.query(
+            "UPDATE transfers SET property_id = $1 WHERE id = $2",
+            [ids["PROP-B"], TRANSFER_ID],
+        )
+        links = await self.query(
+            "SELECT property_id, property_source FROM matter_properties ORDER BY property_source NULLS LAST",
+            [],
+        )
+        self.assertEqual(len(links.rows), 2)
+        sources = {str(r["property_id"]): r["property_source"] for r in links.rows}
+        self.assertIsNone(sources[ids["PROP-A"]])
+        self.assertEqual(sources[ids["PROP-B"]], f"legacy_transfer_{TRANSFER_ID}")
+
+        # Re-pointing at A deletes the legacy B row; its insert for A hits
+        # ON CONFLICT DO NOTHING because the v1 row already holds the key —
+        # and the v1 row is never deleted (NULL property_source).
+        await self.query(
+            "UPDATE transfers SET property_id = $1 WHERE id = $2",
+            [ids["PROP-A"], TRANSFER_ID],
+        )
+        remaining = await self.query(
+            "SELECT id, property_id, property_source FROM matter_properties", [])
+        self.assertEqual(len(remaining.rows), 1)
+        self.assertEqual(str(remaining.rows[0]["id"]), v1_link_id)
+        self.assertIsNone(remaining.rows[0]["property_source"])
+
+    async def test_audit_writes_stay_inside_scratch_schema(self):
+        # audit_properties_trigger is replicated on the scratch table and
+        # writes scratch.audit_log; public.audit_log is untouched.
+        before = await self.query("SELECT COUNT(*) AS n FROM public.audit_log", [])
+        response = await self.client.post(
+            f"/api/v1/transfers/{TRANSFER_ID}/properties",
+            json={"property": _CAPTURE, "client_request_id": str(uuid.uuid4())},
+            headers=self._headers(),
+        )
+        self.assertEqual(response.status_code, 201)
+        property_pk = response.json()["data"]["property"]["id"]
+        audit = await self.query(
+            """SELECT table_name, action FROM audit_log
+               WHERE table_name = 'properties' AND record_id = $1::uuid""",
+            [property_pk])
+        self.assertEqual(len(audit.rows), 1)
+        self.assertEqual(audit.rows[0]["action"], "INSERT")
+        after = await self.query("SELECT COUNT(*) AS n FROM public.audit_log", [])
+        self.assertEqual(after.rows[0]["n"], before.rows[0]["n"])
 
 
 if __name__ == "__main__":
