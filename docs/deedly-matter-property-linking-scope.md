@@ -103,15 +103,18 @@ GETs are served BFF-locally, matching the parties/milestones precedent.
 
 ### 3.1 `GET /api/v1/properties?query=<text>&limit=<n>` — discovery (authorized selection path)
 
-- Staff-only (`transfers:read`; role-4 denied — the client property-visibility
-  contract is undocumented, so fail closed like the `f016f3e` matter
-  projection).
-- Predicates: `accountable_institution_id = <verified claim>` always;
+- **Explicitly staff-only and ability-gated:** `require_jwt` +
+  `transfers:read`; role-4 denied (the client property-visibility contract is
+  undocumented, so fail closed like the `f016f3e` matter projection). No
+  privileged-role exception — same-institution applies to every role.
+- **Institution-scoped on every query:** `accountable_institution_id =
+  <verified claim>` is always a predicate, never taken from the request;
   `query` matched case-insensitively against `property_id` (business key),
   `street_address`, `erf_number`, `title_deed_number`; `limit` capped (≤ 50,
   default 20). No body, no writes.
-- Returns minimal selection projection: `{id, propertyId, streetAddress,
-  city, province, postalCode, propertyType, erfNumber, status}`.
+- Returns a fixed allow-list selection projection — `{id, propertyId,
+  streetAddress, city, province, postalCode, propertyType, erfNumber,
+  status}` — never a column passthrough.
 - Deliberately thin: this is an authorized *selection* path for the firm's own
   register, not a general property browser (filtering/pagination policy is a
   later decision — D-DISC in §9).
@@ -162,26 +165,29 @@ identical replay → `200` with `created:false` (§6).
 
 ### 3.3 `GET /api/v1/transfers/{id}/properties` — readback
 
-BFF-local. Joins `matter_properties → properties` with
-`accountable_institution_id` predicates on the transfer, the link and the
-property. Staff-only (same precedent). Each row:
+BFF-local. **Explicitly staff-only and ability-gated** (`require_jwt` +
+`transfers:read`; role-4 denied, same precedent) and institution-scoped on
+every join: `accountable_institution_id = <verified claim>` predicates the
+transfer, the `matter_properties` link **and** the `properties` row, so a
+tenant-inconsistent link simply never appears. Each row returns a fixed
+allow-list projection — not every database column:
 
 ```jsonc
 {
   "link": { "id", "propertyKind", "propertySource", "registrationStatus",
             "roleInMatter", "externalPropertyId", "createdAt" },
-  "property": { "id", "propertyId", "streetAddress", "suburb", "city",
-                "province", "postalCode", "country", "propertyType",
-                "erfNumber", "lotNumber", "titleDeedNumber", "yearBuilt",
-                "squareFootage", "extentSqm", "legalDescription", "status",
-                "sourceSystem" },
+  "property": { "id", "propertyId", "streetAddress", "city", "province",
+                "postalCode", "propertyType", "erfNumber", "lotNumber",
+                "yearBuilt", "squareFootage", "legalDescription",
+                "status", "sourceSystem" },
   // property is null only for kind='output' placeholder rows (CHECK-permitted)
 }
 ```
 
 Field values return verbatim — `propertySource`, `registrationStatus`,
-`roleInMatter`, `externalPropertyId` are surfaced as stored (mostly NULL in
-this slice), never reinterpreted.
+`roleInMatter`, `externalPropertyId`, `sourceSystem` are surfaced as stored
+(mostly NULL in this slice), never reinterpreted and never relabelled as
+verification state.
 
 ## 4. Field mapping — all nine StepProperty fields
 
@@ -203,104 +209,172 @@ mandated by constraint; whether conveyancing practice should require more
 (e.g. `erf_number`/`legal_description`) is a business decision — flagged,
 not invented (D-MIN).
 
-## 5. Provenance — manual/unverified without inventing vocabulary
+### 4.1 Ambiguous-field decisions (for Dean/Jordan)
 
-- **Unverified is represented by absence, not a flag.** The schema has no
-  verification-status column; `properties.status` is lifecycle only.
-  A manual property is unverified *because* it has no
-  `external_property_id`/registry link — the same is true of every legacy
-  property, which is why nothing in this slice may treat existing
-  `properties` rows as verified. Verification, when it lands, attaches through
-  `external_property_id`/registry semantics that remain Jordan's/upstream's
-  to define.
+The columns below were conflated by the legacy mapping or carry misleading UI
+labels. The contract corrects each deliberately — **no silent dual-writes, no
+reinterpretation of existing stored values**:
+
+| UI label / field | Stored column | Units / meaning | Current conflation | Recommended correction |
+|---|---|---|---|---|
+| "Lot / Erf Number" (`lotNumber`) | `erf_number` | Erf number — the surveyed land-parcel number | Legacy API dual-writes the same UI value into `erf_number` **and** `lot_number` (`transferApi.ts` mapping) | Write **`erf_number` only**; `lot_number` stays unwritten until a separate UI field/contract exists. Relabel the input "Erf number". |
+| "Legal Description" (`legalDescription`) | `legal_description` | Registered/legal parcel description | Legacy dual-writes into `legal_description` **and** the free-form `description` | Write **`legal_description` only**; `description` stays unwritten. |
+| "Square Footage" (`squareFootage`) | `square_footage` | Building size (NUMERIC(12,2)) | Legacy readback displays `extent_sqm` (land extent, m²) as a fallback for `square_footage` — different quantities | Write/read **`square_footage` only**; never substitute `extent_sqm`. Relabel "Building size (m²)" pending units confirmation. |
+| "Zip Code" (`zipCode`) | `postal_code` | SA 4-digit postal code | Label is the US term; legacy silently nulled non-4-digit input | Relabel "Postal code"; reject malformed input with 422. |
+| "State" (`state`) | `province` | SA province | Label is the US term | Relabel "Province" (cosmetic). |
+| "Property Type" (`propertyType`) | `property_type` | One of the 9 CHECK values (006) | UI list matches the CHECK but the field is not required, while the DB requires it | Make required in manual-capture UI and payload. |
+| "Year Built" (`yearBuilt`) | `year_built` | INTEGER calendar year | None — clarification only | Coerce to integer; non-numeric → 422. |
+
+Existing stored values are **not** repaired or rewritten — e.g. legacy rows
+where `lot_number`/`description`/`extent_sqm` hold dual-written or
+cross-mapped content stay exactly as stored; readback returns them verbatim
+from their own columns.
+
+## 5. Provenance — explicit manual identity, no inferred verification
+
+- **Manual capture must be explicitly identifiable, not merely "no external
+  link."** Proposed representation: `properties.source_system =
+  'manual_capture'` on every v1-captured row. `'manual_capture'` is a
+  **proposed token, not ratified** — its compatibility with the column's
+  import-provenance semantics and its consumers (019's provenance reads, the
+  quarantined legacy paths, any reporting) must be checked with Jordan before
+  implementation (D-PROV). If a different token is chosen the contract
+  substitutes it; the requirement that manual rows carry *an* explicit marker
+  is not negotiable.
+- **Unverified is displayed, not inferred.** Verification is never derived
+  from the presence of `external_property_id` or any other column — the
+  schema has no verification-status field and `properties.status` is
+  lifecycle only. The UI labels manually captured rows "manual — not
+  registry-verified"; readback surfaces `sourceSystem` verbatim so consumers
+  can distinguish provenance without the API asserting a verification claim.
+  Legacy and linked-existing properties are likewise never displayed as
+  verified: nothing in this slice adds, upgrades or implies a verified status
+  for any row.
 - **Link provenance (`matter_properties.property_source`):** v1-written links
   keep `property_source = NULL`. The only extant vocabulary is the trigger's
   `legacy_transfer_<uuid>` tag, whose *purpose* is to mark rows the sync
   trigger owns — applying any look-alike value to v1 rows would expose them
-  to trigger deletion; minting a new token (`'v1_manual'`, …) is vocabulary
-  Jordan must ratify, so NULL is the safe, honest value. NULL is also
-  self-describing in readback: `propertySource: null` + presence of the
-  linked `property` row means "v1-authored link".
-- **Record provenance (`properties.source_system`):** candidate
-  `'manual_capture'` for institution-private rows; the column's existing
-  semantics are import provenance, so the token is flagged for Jordan
-  (D-PROV). Whatever is decided, `source_record_id` is **not** overloaded to
-  carry client keys (§6).
-- **`created_for_transfer_id` is never set by this slice** — it marks
-  auto-scaffolded rows for the legacy delete path; a manually captured,
+  to trigger deletion; minting a new token is vocabulary Jordan must ratify.
+  NULL is also self-describing in readback: `propertySource: null` means
+  "v1-authored link".
+- **Existing provenance is preserved:** legacy `property_source` tags,
+  `source_system`/`source_record_id` import values and
+  `created_for_transfer_id` markers are returned verbatim and never
+  rewritten. `created_for_transfer_id` is **never set** by this slice — it
+  marks auto-scaffolded rows for the legacy delete path; a manually captured,
   potentially shared property must not look scaffolded.
-- UI: the capture panel is labelled "manual — not registry-verified" and the
-  readback shows `propertySource`/verification state verbatim, so the
-  unverified claim is visible rather than implied.
+- **`source_record_id` is not overloaded** to carry client keys (§6).
 
 ## 6. Atomicity, idempotency and retry
+
+**Required precondition — the §6.1 schema change must land with the slice.**
+There is no weaker fallback: without request-level idempotency, a
+lost-response capture retry would mint a second `properties` row, which the
+product requirement forbids. Overloading `source_record_id` or
+`created_for_transfer_id` to carry client keys is rejected — it would
+corrupt provenance semantics.
+
+**Fingerprint composition** (mirrors the 023 party precedent, extended):
+`request_fingerprint` is SHA-256 over a canonical serialization of the
+*validated* operation payload **including the target** — `{operation,
+transfer_id, matter_id?, link|capture, property_id | property{…}}`. Binding
+the target into the fingerprint means the same `client_request_id` replayed
+against a different transfer/matter is a fingerprint mismatch → 409, never a
+link created elsewhere.
+
+**Replay contract** (both paths): every request — first attempt or replay —
+re-runs authorization in full (ability, role-4 denial, transfer tenant, and
+for link/existing-key replay the property's tenant) inside the transaction.
+A replay with matching key **and** fingerprint returns the *original*
+property/link with `200 created:false`; a key reuse with a different
+fingerprint is a **409 idempotency conflict**, never a second write.
 
 **One transaction per request** (`with_transaction`), in this order:
 
 1. `SELECT … FROM transfers WHERE id=$1 AND ai=$2 FOR UPDATE` → 404.
 2. Resolve matter via `transfers.matter_id` (+ AI predicate +
    `matter_type='transfer'`) — deterministic, identical to the `f016f3e`
-   PATCH rule; NULL/inconsistent → error, nothing written.
+   PATCH rule; NULL/inconsistent → error, nothing written. No implicit repair
+   of prototype-era rows.
 3a. *Link path:* `SELECT … FROM properties WHERE id=$3 AND ai=$4` → 404 if
-    absent or cross-tenant; `status='active'` required (§7).
-3b. *Capture path:* validate the §4 payload; replay check first —
-    `SELECT id FROM properties WHERE ai=$4 AND client_request_id=$5` (requires
-    the §6.1 schema addition): fingerprint match → reuse that property id;
-    fingerprint mismatch → 409 idempotency conflict. Otherwise
+    absent or cross-tenant; eligibility check per §7. Then the
+    **replay check on the link row** (`client_request_id` match → fingerprint
+    compare → return original or 409).
+3b. *Capture path:* validate the §4 payload; **replay check on the property
+    row** (`WHERE ai=$4 AND client_request_id=$5` → fingerprint compare →
+    reuse that property id, or 409). Otherwise
     `INSERT INTO properties (property_id = generate_property_id(), …,
-    accountable_institution_id = <verified claim>)`.
-4. Multiplicity check (§7): count existing `input` links for the matter —
-   ≥1 → 409 (race-free under the transfer lock).
-5. `INSERT INTO matter_properties (matter_id, property_id, 'input')
-   ON CONFLICT (matter_id, property_id, property_kind) DO NOTHING` →
-   re-select; conflict ⇒ identical existing link ⇒ `200 created:false`.
+    accountable_institution_id = <verified claim>,
+    client_request_id, request_fingerprint)`.
+4. **Identical-link check before multiplicity:** if a
+   `(matter_id, property_id, 'input')` row already exists, return it as the
+   replay (`200 created:false`) *before* evaluating the multiplicity cap —
+   replaying an existing link must succeed even when the proposed cap is in
+   force.
+5. Multiplicity check (§7, proposal): a second `input` link → 409. Race-free
+   under the `FOR UPDATE` lock held since step 1.
+6. `INSERT INTO matter_properties (matter_id, property_id, 'input',
+   client_request_id, request_fingerprint)` — plain insert; any unexpected
+   conflict after the checks aborts the transaction.
 
 **Orphan safety:** capture and link commit or roll back together — a link
 failure destroys the property insert, so no unlinked "forgotten" property can
-be produced by a failed request. (An existing-property link inserts only the
-link row.)
+be produced by a failed request. A conflicting-reuse 409 similarly rolls back
+with nothing written.
 
-**Replay safety:**
-
-- *Link path* is naturally idempotent on the
-  `UNIQUE(matter_id, property_id, property_kind)` key — no schema needed.
-- *Capture path* needs request-level idempotency; otherwise a lost-response
-  retry mints a second `properties` row (a duplicate record, not just a
-  duplicate link — the product requirement forbids this).
-
-### 6.1 The one schema addition — coordinated with Jordan
-
-Add to `properties`, mirroring the 023 party precedent:
+### 6.1 Minimum schema dependency — for Jordan's coordination
 
 ```sql
-client_request_id UUID,
-request_fingerprint VARCHAR(64),
--- partial unique index:
-UNIQUE (accountable_institution_id, client_request_id) WHERE client_request_id IS NOT NULL
+ALTER TABLE transfers.properties
+    ADD COLUMN client_request_id UUID,
+    ADD COLUMN request_fingerprint VARCHAR(64);
+CREATE UNIQUE INDEX idx_properties_client_request_id
+    ON properties (accountable_institution_id, client_request_id)
+    WHERE client_request_id IS NOT NULL;
+
+ALTER TABLE transfers.matter_properties
+    ADD COLUMN client_request_id UUID,
+    ADD COLUMN request_fingerprint VARCHAR(64);
+CREATE UNIQUE INDEX idx_matter_properties_client_request_id
+    ON matter_properties (accountable_institution_id, client_request_id)
+    WHERE client_request_id IS NOT NULL;
 ```
 
-This is the only schema change the contract asks for; it is filed as a
-coordination item for Jordan (§10), not unilaterally assumed. If it cannot
-land with the slice, the honest fallback is: capture+link stays atomic (no
-orphans), `client_request_id` is still accepted, and replay-after-lost-response
-may create a second property row — a documented degradation, not a silent
-one. That fallback is the only acceptable alternative; storing the key in
-`source_record_id` or `created_for_transfer_id` would overload provenance
-semantics and is rejected.
-
-`matter_properties` itself needs no idempotency column (natural key suffices),
-but the same columns may be added for symmetry — Jordan's call.
+- `properties` columns let a capture replay find its original property row;
+  `matter_properties` columns let a link replay return its original link and
+  let conflicting key reuse fail — including a key replayed against a
+  different target (fingerprint mismatch).
+- Institution-scoped partial uniques mirror migration 023 exactly: a foreign
+  institution reusing the same UUID can neither observe nor collide.
+- The tenant trigger overwrites `matter_properties.accountable_institution_id`
+  *before* insert completes, so the partial index is always evaluated against
+  the parent matter's tenant — no forged-AI key squatting.
+- Numbering: `022` is reserved by the unmerged SARS branch; this would be
+  `024` (or later) and must not reuse `022` (guide §11 item 13).
 
 ## 7. First-slice rules — multiplicity, link kind, eligibility
 
-| Rule | Slice value | Supporting contract |
+The multiplicity cap and the status-eligibility restriction below are
+**proposals, not approved policy** — they ship only if confirmed (D-MULT,
+D-ELIG). Everything else is derived from existing constraints or approved
+policy.
+
+| Rule | Slice value | Status / supporting contract |
 |---|---|---|
-| Link kind written | `property_kind='input'` only | Only evidenced vocabulary for transfer matters (019 backfill + trigger); `output`/development semantics deferred. |
-| Multiplicity | At most **one** `input` link per matter in this slice; a second → 409 | Matches the legacy single-property mental model; schema itself allows many, so this is service-enforced and reversible — confirm with Jordan (D-MULT) whether he wants a partial unique index to make it structural. |
-| Property eligibility | Exists, `accountable_institution_id` = caller's, `status='active'` | Composite FK already enforces the tenant half structurally; the status restriction is the proposed policy — flagged for confirmation (D-ELIG). |
-| Matter eligibility | `transfers.matter_id` resolvable + `matter_type='transfer'` + same AI | Identical to the `f016f3e` PATCH rule; prototype-era `matter_id NULL` rows fail closed (D7 below). |
-| Who may write | `require_jwt` + `transfers:write`; role-4 denied | Same gate as party attach and PATCH; same-institution applies to every role — no privileged exception (approved policy). |
-| Who may read | Staff only (`transfers:read` + tenant) | Client contract undocumented → fail closed, consistent with the matter projection. |
+| Link kind written | `property_kind='input'` only | **Contract** — the only evidenced vocabulary for transfer matters (019 backfill + trigger); `output`/development semantics deferred. |
+| Multiplicity | At most **one** `input` link per matter; a second → 409 | **Proposal** (D-MULT). Matches the legacy single-property model; the schema permits many, so enforcement is service-side under the `FOR UPDATE` transfer lock — check-then-insert is atomic, so the cap is concurrency-safe. Ordering guarantee: the identical-link replay check runs *before* the cap, so replaying an existing link always returns `200` — the cap rejects only genuinely different second links. |
+| Property eligibility | Exists + same `accountable_institution_id` + `status='active'` | Tenant half is **structural** (composite FK); `status='active'` is a **proposal** (D-ELIG). |
+| Matter eligibility | `transfers.matter_id` resolvable + `matter_type='transfer'` + same AI | **Contract** — identical to the `f016f3e` PATCH rule; prototype-era `matter_id NULL` rows fail closed (D7). |
+| Who may write | `require_jwt` + `transfers:write`; role-4 denied | **Approved policy** — same gate as party attach and PATCH; same-institution applies to every role, no privileged exception. |
+| Who may read | Staff only (`transfers:read` + tenant predicates) | **Contract** — client contract undocumented → fail closed, consistent with the matter projection. |
+
+**Existing multi-property matters stay fully readable.** The multiplicity cap
+(if approved) constrains *new writes* only — `GET …/properties` returns every
+link row the tenant predicates allow, however many exist. Matters that already
+hold multiple `input` links (e.g. rows the 019 backfill or trigger created
+across repeated legacy pointers) read back complete; nothing is filtered,
+collapsed or repaired. Detach/relink tooling for such matters is a later
+slice, not an implicit fix here.
 
 **Authorization is rechecked on every request including replays:** caller
 ability + role, transfer tenant (inside the transaction), property tenant,
@@ -330,16 +404,16 @@ slice, and `trg_sync_matter_properties_from_transfer` is untouched:
 
 | # | Decision | Recommendation / owner |
 |---|---|---|
-| D-SCHEMA | §6.1 idempotency columns on `properties` (+ optionally `matter_properties`) | **Jordan coordination** — approve migration addition; else accept the documented replay-duplication fallback. The only schema item in the slice. |
-| D-PROV | `properties.source_system` token for manual rows (candidate `'manual_capture'`) vs NULL | Jordan ratifies vocabulary; `matter_properties.property_source` stays NULL regardless (§5). |
-| D-MULT | One-`input`-per-matter: keep service-enforced, or add partial unique index | Jordan (structural preference); service rule ships either way. |
-| D-ELIG | Attachable `properties.status` set — proposed `'active'` only | PO/Jordan confirm. |
-| D-MAP1 | UI `lotNumber` → `erf_number`, `lot_number`, or both | Business decision — the columns have different conveyancing meanings; legacy dual-writes, v1 should pick deliberately. |
-| D-MAP2 | `legalDescription` → `legal_description` only, or also `description`; `squareFootage` vs `extent_sqm` distinction | Business decision — legacy conflated them. |
+| D-SCHEMA | §6.1 idempotency columns + partial unique indexes on `properties` **and** `matter_properties` — exact DDL in §6.1 | **Jordan coordination — required, no fallback.** Replay duplication is not an acceptable substitute. |
+| D-PROV | `properties.source_system` token for manual rows — `'manual_capture'` proposed | Jordan: check token compatibility with the column's import-provenance semantics and its consumers before implementation; `matter_properties.property_source` stays NULL regardless (§5). |
+| D-MULT | One-`input`-per-matter cap — **proposal**, not approved; service-enforced under the row lock, or partial unique index if preferred | PO/Jordan confirm; service rule ships either way once approved. |
+| D-ELIG | Attachable `properties.status` set — `'active'` only is a **proposal**, not approved | PO/Jordan confirm. |
+| D-MAP1 | `lotNumber` → `erf_number` only (recommended in §4.1) | Confirm recommendation; `lot_number` stays unwritten. |
+| D-MAP2 | `legalDescription` → `legal_description` only; `square_footage` ≠ `extent_sqm` (§4.1) | Confirm recommendations; no dual-writes, no cross-mapping. |
 | D-MIN | Whether `erf_number`/`legal_description` should be required beyond the DB floor | PO decision. |
-| D-ADDR | Should linking/capture sync `transfers.property_address` from `street_address`? | Recommend no — display text is separately editable (PATCH); flag for confirmation. |
+| D-ADDR | Should linking/capture sync `transfers.property_address` from `street_address`? | **Recommend no** — the display text is separately editable via PATCH; no automatic overwrite. Confirm. |
 | D-DISC | Discovery filters/pagination beyond the §3.1 minimum | Product; not blocking. |
-| D7 (carried) | Prototype-era `matter_id NULL` matters: fail closed, or unique-`source_record_id` fallback | Keep fail-closed; bound to model-guide §11.7 which Jordan owns. |
+| D7 (carried) | Prototype-era `matter_id NULL` matters: fail closed, or unique-`source_record_id` fallback | Keep fail-closed — **no implicit repair** of prototype records; bound to model-guide §11.7 which Jordan owns. |
 
 Deferred-vocabulary reminder: `external_property_id`, `role_in_matter`,
 `registration_status`, `property_source` semantics stay unwritten by this
@@ -347,18 +421,19 @@ slice — ratification is model/upstream work, not route work.
 
 ## 10. Boundary list for Dean → Jordan
 
-1. **`properties` schema addition** — `client_request_id` +
-   `request_fingerprint` + institution-scoped partial unique index (§6.1);
-   same columns optionally on `matter_properties`. *The only proposed schema
-   change.*
+1. **Schema addition (required, exact DDL in §6.1)** — `client_request_id` +
+   `request_fingerprint` + institution-scoped partial unique index on both
+   `properties` and `matter_properties`; numbering must skip `022` (reserved
+   by the unmerged SARS branch). *The only proposed schema change.*
 2. `matter_properties` — `UNIQUE(matter_id, property_id, property_kind)`,
    output-CHECK, `fk_matter_properties_property_tenant`,
    `trg_matter_properties_set_tenant`; D-MULT structural-vs-service choice.
 3. `properties` — manual-capture write policy (approved at product level),
-   no dedup constraint acknowledged, `source_system` vocabulary (D-PROV),
-   `status` eligibility (D-ELIG), and the `audit_properties_trigger` →
-   `public.audit_log` side effect on every v1 write (confirm acceptable vs
-   `legitify_auditor` target state).
+   no dedup constraint acknowledged, `source_system='manual_capture'` is a
+   **proposed** token pending compatibility/consumer check (D-PROV),
+   `status` eligibility is a **proposal** (D-ELIG), and the
+   `audit_properties_trigger` → `public.audit_log` side effect on every v1
+   write (confirm acceptable vs `legitify_auditor` target state).
 4. `transfers.property_id` / `matters.property_id` — confirm canonical-only
    writes and the column-retirement path (018/019 notes); trigger untouched.
 5. Dual `transfers.matter_id`/`matters.source_record_id` (guide §11.7) — the
@@ -379,14 +454,21 @@ slice — ratification is model/upstream work, not route work.
    422; `postal_code` not 4 digits → 422 (never nulled); non-numeric
    `year_built`/`square_footage` → 422; negative `square_footage` → 422.
 3. Auth: missing/invalid JWT → 401; no `transfers:write` → 403; role-4 → 403
-   on POST (even when their GR is a party); discovery GET role-4 → 403.
+   on POST (even when their GR is a party); discovery GET and readback GET
+   are role-4 → 403 and `transfers:read`-gated; every response is the fixed
+   allow-list projection — no extra DB columns leak.
 4. Tenant: foreign-AI transfer → 404; foreign-AI `property_id` → 404;
-   replay keyed to foreign institution → 404/no collision.
-5. Idempotency: link replay → 200 `created:false`; capture replay with same
-   key+fingerprint → same property id, 200; same key + different fingerprint →
-   409.
-6. Multiplicity: second `input` link on a matter → 409.
-7. Matter resolution: `matter_id` NULL or non-`transfer` → error, zero writes.
+   replay keyed to foreign institution → 404/no collision; readback joins
+   predicate tenant on transfer, link and property.
+5. Idempotency: link replay → 200 `created:false` returning the original
+   link; capture replay with same key+fingerprint → same property id, 200;
+   same key + different fingerprint (including a key replayed against a
+   different transfer — the fingerprint binds the target) → 409, zero writes.
+6. Multiplicity (if approved): a second, different `input` link → 409, while
+   an identical-link replay still returns 200 — ordering guaranteed; a
+   matter already holding multiple `input` links still reads back complete.
+7. Matter resolution: `matter_id` NULL or non-`transfer` → error, zero
+   writes, no implicit repair.
 
 **BFF route tests:** POST proxy contract; GET readback + discovery tenant
 scoping; client-role projections unchanged.
