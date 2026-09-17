@@ -1,4 +1,4 @@
-# Migration 024 — verification plan and review notes for Jordan
+# Migration 024 — verification plan and review notes
 
 Status: authored, **not executed**. File:
 `src/lib/migrations/024_deedly_property_link_idempotency.sql` on branch
@@ -6,8 +6,8 @@ Status: authored, **not executed**. File:
 file sha256 `fa3f3f59e6fac55420b9e7ea8ffa66f9d8fd1ebbcbb6a80d32cced9afbd47fb5`).
 
 This document is the handoff for running and verifying migration 024. It
-also records findings from the scratch-fixture test run that Jordan should
-be aware of.
+also records findings from the scratch-fixture test run that the reviewing
+engineer should be aware of.
 
 ## 1. What the migration does
 
@@ -165,7 +165,7 @@ and the absence of any application-schema objects in the fixture's write
 path. No application-schema write was issued or observed; treat this as
 supporting evidence, not a formal audit.
 
-## 6. Finding for Jordan — composite FK makes referenced properties undeletable
+## 6. Finding — composite FK makes referenced properties undeletable
 
 `fk_transfers_property_tenant` on `transfers (property_id,
 accountable_institution_id) → properties (id, accountable_institution_id)`
@@ -188,6 +188,6 @@ In production terms: a property row still referenced via the legacy
 `transfers.property_id` pointer is effectively undeletable while the
 reference stands. Whether that is intended, or the FK should become
 `ON DELETE SET NULL (property_id)`, RESTRICT, or be restructured, is a
-separate decision for Jordan — **no FK change belongs in migration 024
+separate schema decision — **no FK change belongs in migration 024
 without approval**, and none was made. Discovered via fixture cleanup
 ordering; reproduced only in scratch.
