@@ -63,8 +63,11 @@ function makeApi(t) {
       return r.fulfill(json({ message: 'OK', data: { token: 'pw-access-token', expires: Math.floor(Date.now() / 1000) + 3600 } }))
     }
     if (path === '/api/v1/transfers/' && method === 'GET') {
-      // The persistence probe keys on envelope.success.
-      return r.fulfill(json({ success: true, message: 'OK', data: { transfers: [], total: 0 } }))
+      // Matches the real v1 list contract exactly: { message, data } with
+      // no `success` flag. An earlier mock invented success:true, which
+      // masked the probeMatterPersistence envelope defect — earlier pass
+      // results depended on that inaccuracy.
+      return r.fulfill(json({ message: 'OK', data: { transfers: [], pagination: { page: 1, limit: 1, total: 0, totalPages: 0 } } }))
     }
     if (path === '/api/v1/transfers/' && method === 'POST') {
       calls.createMatter.push(JSON.parse(r.request().postData() || '{}'))
