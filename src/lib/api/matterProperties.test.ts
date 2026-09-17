@@ -111,4 +111,93 @@ describe('matter–property API calls', () => {
     const response = await TransferApi.getMatterProperties('transfer-uuid')
     assert.equal(response.data?.length, 2)
   })
+
+  it('exposes data.id/data.created — the v1 envelope the wizard keys on', async () => {
+    // v1 success bodies are { message, data }; there is no `success` flag.
+    // The wizard's corrected check (created.data?.id / attached.data?.id)
+    // must not be confused by its absence.
+    const created = respond(
+      { message: 'Created', data: { id: 'link-1', created: true, property: { id: 'p-1' } } },
+      201,
+    )
+    const response = await TransferApi.attachMatterProperty('transfer-uuid', {
+      client_request_id: 'req-1', property_id: 'prop-uuid',
+    })
+    assert.equal(response.data?.id, 'link-1')
+    assert.equal(response.data?.created, true)
+    assert.ok(!('success' in response))
+    created.mock.restore()
+
+    respond({ message: 'OK', data: { id: 'link-1', created: false } })
+    const replay = await TransferApi.attachMatterProperty('transfer-uuid', {
+      client_request_id: 'req-1', property_id: 'prop-uuid',
+    })
+    assert.equal(replay.data?.id, 'link-1')
+    assert.equal(replay.data?.created, false)
+  })
+
+  it('a failed attach rejects and mutates nothing — the caller can resubmit the same key', async () => {
+    const request = { client_request_id: 'req-lost', property_id: 'prop-uuid' }
+    const snapshot = JSON.stringify(request)
+    respond({ error: 'client_request_id was already used with a different payload' }, 409)
+    await assert.rejects(
+      TransferApi.attachMatterProperty('transfer-uuid', request),
+      (error: unknown) => {
+        assert.ok(error instanceof Error)
+        assert.match(error.message, /409/)
+        return true
+      },
+    )
+    // The request object is untouched after a failure — entries are preserved
+    // and a resubmission repeats the identical body with the identical key.
+    assert.equal(JSON.stringify(request), snapshot)
+  })
+
+  it('a retried request after a lost response resends the identical body and key', async () => {
+    const request = buildManualPropertyRequest(DETAILS, 'req-stable')
+    assert.ok(!('error' in request))
+    if ('error' in request) return
+
+    const bodies: string[] = []
+    let calls = 0
+    mock.method(globalThis, 'fetch', async (_url: string, init?: RequestInit) => {
+      calls += 1
+      bodies.push(String(init?.body))
+      if (calls === 1) {
+        // Lost response: the write may have committed; the caller retries.
+        return Promise.reject(new TypeError('fetch failed'))
+      }
+      return new Response(JSON.stringify({ message: 'OK', data: { id: 'link-9', created: false } }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      })
+    })
+    await assert.rejects(TransferApi.attachMatterProperty('transfer-uuid', request))
+    const retry = await TransferApi.attachMatterProperty('transfer-uuid', request)
+    assert.equal(calls, 2)
+    assert.equal(bodies[0], bodies[1])
+    assert.match(bodies[1], /req-stable/)
+    // The server deduplicates the identical key+fingerprint as a replay.
+    assert.equal(retry.data?.id, 'link-9')
+    assert.equal(retry.data?.created, false)
+  })
+
+  it('createMatter resolves the { message, data } envelope the corrected wizard reads', async () => {
+    const fetchMock = respond(
+      { message: 'Created', data: { id: 'matter-transfer-uuid', transferId: 'TRF-1', created: true } },
+      201,
+    )
+    const response = await TransferApi.createMatter({
+      client_request_id: 'req-matter',
+      property_address: '12 Test Street',
+      purchase_price: 100,
+    })
+    // The wizard's corrected success check reads data?.id — not a `success`
+    // flag that v1 responses do not carry.
+    assert.equal(response.data?.id, 'matter-transfer-uuid')
+    assert.equal(response.data?.created, true)
+    assert.ok(!('success' in response))
+    const [url, init] = fetchMock.mock.calls[0].arguments as unknown as [string, RequestInit]
+    assert.equal(url, '/api/v1/transfers/')
+    assert.equal(JSON.parse(init.body as string).client_request_id, 'req-matter')
+  })
 })

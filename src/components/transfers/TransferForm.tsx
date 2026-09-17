@@ -265,9 +265,10 @@ const TransferContext = createContext<{
   dispatch: React.Dispatch<TransferAction>
 } | null>(null)
 
-// Provider
-export const TransferProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  const [state, dispatch] = useReducer(transferReducer, initialState)
+// Provider. initialValue seeds state for tests/server rendering only —
+// production mounts omit it.
+export const TransferProvider: React.FC<{ children: ReactNode; initialValue?: TransferState }> = ({ children, initialValue }) => {
+  const [state, dispatch] = useReducer(transferReducer, initialValue ?? initialState)
 
   return (
     <TransferContext.Provider value={{ state, dispatch }}>

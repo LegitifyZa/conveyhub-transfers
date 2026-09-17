@@ -8,6 +8,7 @@ guarantee for manual capture. Entities is guarded so any unexpected call fails.
 import time
 import unittest
 from contextlib import ExitStack
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from uuid import UUID
@@ -382,6 +383,28 @@ class ManualPartyRouteTests(unittest.IsolatedAsyncioTestCase):
             headers=self._headers(),
         )
         self.assertEqual(conflict.status_code, 409)
+
+    async def test_create_replay_serializes_real_uuid_and_datetime(self):
+        """Regresses the raw-JSONResponse defect shared with the property
+        replay path: a replayed create returns real asyncpg UUID/datetime
+        values, and plain json.dumps cannot encode them (TypeError → 500)."""
+        row = transfer_row(OWN, 5)
+        row["id"] = UUID(OWN)
+        row["matter_id"] = UUID("44444444-4444-4444-8444-444444444444")
+        row["created_at"] = datetime(2026, 1, 1, 8, 0, tzinfo=timezone.utc)
+        row["updated_at"] = datetime(2026, 1, 2, 9, 30, tzinfo=timezone.utc)
+        self.create_matter.return_value = (row, False)
+        replay = await self.client.post(
+            "/api/v1/transfers/",
+            json={"property_address": "12 Test Street", "purchase_price": 100,
+                  "client_request_id": REQUEST_ID},
+            headers=self._headers(),
+        )
+        self.assertEqual(replay.status_code, 200, replay.text)
+        data = replay.json()["data"]
+        self.assertEqual(data["id"], OWN)
+        self.assertFalse(data["created"])
+        self.assertTrue(data["createdAt"].startswith("2026-01-01"))
 
     async def test_attach_requires_authentication_and_ability(self):
         body = {"party_source": "manual", "entity_type": "person", "role": "transferor",

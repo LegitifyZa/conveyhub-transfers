@@ -11,6 +11,7 @@ is mocked — these are non-DB tests.
 import time
 import unittest
 from contextlib import ExitStack
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from uuid import UUID
@@ -177,6 +178,22 @@ class CaptureValidationTests(unittest.TestCase):
         )
 
 
+class ProjectionContractTests(unittest.TestCase):
+    """Regression guard for the real-DB bug where request_fingerprint was
+    absent from the read projections: replay compares the STORED
+    fingerprint, so both allow-listed SELECTs must return it (mocked rows
+    that always carry the field masked its absence). The column is still
+    never emitted in API responses — see the route tests."""
+
+    def test_read_projections_select_request_fingerprint(self):
+        for columns in (
+            matter_property_service.LINK_READ_COLUMNS,
+            matter_property_service.PROPERTY_READ_COLUMNS,
+        ):
+            names = {c.strip() for c in columns.split(",")}
+            self.assertIn("request_fingerprint", names)
+
+
 class ServiceTransactionTests(unittest.IsolatedAsyncioTestCase):
     """The service contract with db.query/with_transaction mocked."""
 
@@ -322,6 +339,39 @@ class ServiceTransactionTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(created)
         self.assertEqual(link["id"], LINK_ID)
         self.assertEqual(prop["status"], "sold")
+        self.assertEqual(self.inserted, [])
+
+    async def test_replay_compares_fingerprint_from_projected_columns(self):
+        """Regresses the real-DB defect masked by whole-row mocks: the stored
+        row is restricted to exactly the columns LINK_READ_COLUMNS selects,
+        so a missing request_fingerprint column makes this replay raise."""
+        projected = {
+            c.strip() for c in matter_property_service.LINK_READ_COLUMNS.split(",")
+        }
+        stored_link = {
+            k: v
+            for k, v in link_row(
+                client_request_id=REQUEST_ID, request_fingerprint="fp-1"
+            ).items()
+            if k in projected
+        }
+        self.assertIn("request_fingerprint", stored_link)
+
+        async def replay(text, params=None, **kwargs):
+            params = params or []
+            if "FROM matter_properties" in text and "client_request_id = $2" in text:
+                return db.QueryResult(rows=[stored_link], row_count=1)
+            if "FROM properties" in text and "id = $1" in text:
+                return db.QueryResult(rows=[property_row()], row_count=1)
+            return await self._fixture(text, params, **kwargs)
+
+        self.query.side_effect = replay
+        link, _prop, created = await link_existing_property_to_matter(
+            UUID(OWN), UUID(PROPERTY_ID), 5,
+            client_request_id=UUID(REQUEST_ID), request_fingerprint="fp-1",
+        )
+        self.assertFalse(created)
+        self.assertEqual(link["id"], LINK_ID)
         self.assertEqual(self.inserted, [])
 
     async def test_conflicting_request_key_fails(self):
@@ -496,6 +546,10 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data["propertyKind"], "input")
         self.assertEqual(data["property"]["id"], PROPERTY_ID)
         self.assertTrue(data["property"]["manual"])
+        # The fingerprint is never exposed, on creation or replay.
+        for forbidden in ("request_fingerprint", "requestFingerprint"):
+            self.assertNotIn(forbidden, data)
+            self.assertNotIn(forbidden, data["property"])
         # Replays reauthorize: the caller's verified AI is passed through.
         self.assertEqual(self.link.call_args.args[2], 5)
 
@@ -517,6 +571,46 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertFalse(response.json()["data"]["created"])
+
+    async def test_post_replay_serializes_real_uuid_and_datetime(self):
+        """Regresses the raw-JSONResponse defect: asyncpg returns real UUID
+        and datetime objects, and the 200 replay path must encode them —
+        plain json.dumps cannot (it raised TypeError → 500)."""
+        stored_link = link_row(
+            id=UUID(LINK_ID),
+            matter_id=UUID(MATTER_ID),
+            property_id=UUID(PROPERTY_ID),
+            client_request_id=UUID(REQUEST_ID),
+            request_fingerprint="fp-stored",
+            created_at=datetime(2026, 1, 1, 8, 0, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 1, 2, 9, 30, tzinfo=timezone.utc),
+        )
+        stored_property = property_row(
+            id=UUID(PROPERTY_ID),
+            client_request_id=UUID(REQUEST_ID),
+            request_fingerprint="fp-stored",
+            created_at=datetime(2026, 1, 1, 8, 0, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 1, 1, 8, 0, tzinfo=timezone.utc),
+        )
+        self.link.return_value = (stored_link, stored_property, False)
+        response = await self.client.post(
+            f"/api/v1/transfers/{OWN}/properties",
+            json={"property_id": PROPERTY_ID, "client_request_id": REQUEST_ID},
+            headers=self._headers(),
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        data = response.json()["data"]
+        self.assertEqual(data["id"], LINK_ID)
+        self.assertEqual(data["matterId"], MATTER_ID)
+        self.assertEqual(data["clientRequestId"], REQUEST_ID)
+        self.assertTrue(data["createdAt"].startswith("2026-01-01"))
+        self.assertEqual(data["property"]["id"], PROPERTY_ID)
+        self.assertTrue(data["property"]["manual"])
+        # The stored fingerprint is a server-side idempotency detail — it
+        # must never appear in API responses.
+        for forbidden in ("request_fingerprint", "requestFingerprint"):
+            self.assertNotIn(forbidden, data)
+            self.assertNotIn(forbidden, data["property"])
 
     async def test_post_conflict_mapping(self):
         for exc, status in (
@@ -617,8 +711,10 @@ class RouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(link["property"]["status"], "sold")
         self.assertTrue(link["property"]["manual"])
         self.assertEqual(link["property"]["erfNumber"], "1234")
-        # Allow-list: no raw tenant/audit columns leak.
-        for forbidden in ("password_hash", "transfer_id"):
+        # Allow-list: no raw tenant/audit columns or idempotency internals leak.
+        for forbidden in (
+            "password_hash", "transfer_id", "request_fingerprint", "requestFingerprint",
+        ):
             self.assertNotIn(forbidden, link)
             self.assertNotIn(forbidden, link["property"])
 
