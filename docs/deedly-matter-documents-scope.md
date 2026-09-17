@@ -69,7 +69,7 @@ branch.
 
 - **Bytes:** local disk only. Node writes `<repo>/uploads/transfers/<transferUuid>/<ts>-<rand>.<ext>` (`server/routes/transfers.ts:12,237`); the FastAPI legacy handler writes a **different** directory, `python_server/uploads/transfers/<uuid>/` (`routers/transfers.py:20`). Filenames are sanitised to `[a-zA-Z0-9_.-]`; content is a base64 data-URL inside the JSON body. **No endpoint serves file bytes back** — no `res.download`, `sendFile`, or `createReadStream` exists anywhere in `server/`. Uploads are write-only artifacts today.
 - **Metadata:** `transfers.transfer_documents` (migration `005`, moved to the `transfers` schema in `010`, `uploaded_by_user_id` added in `013`): `id`, `transfer_id → transfers ON DELETE CASCADE`, `catalogue_document_id → document_catalogue ON DELETE SET NULL`, `name`, `status CHECK (pending, uploaded, verified, rejected, not_required) DEFAULT 'pending'`, `notes`, `file_path TEXT`, `file_size`, `file_type`, `original_file_name`, `uploaded_by → users SET NULL`, `uploaded_at`, timestamps, `UNIQUE (transfer_id, catalogue_document_id)`, `updated_at` trigger.
-- **Tenant scoping:** `transfer_documents` has **no** `accountable_institution_id` — scoping exists only via the parent transfer join. It also has **no audit trigger** (the `audit_trigger` is on `public.documents`, which this flow never writes).
+- **Tenant scoping:** `transfer_documents` has **no** `accountable_institution_id` — scoping is inherited through the parent transfer join. That is not in itself a proven vulnerability: the live v1 metadata GET already enforces tenancy by authorizing the parent transfer before reading document rows. What it means is that every future document query path (list, download, upload, status writes) must apply the same parent-transfer authorization — a boundary to **verify** for each new endpoint rather than assume. It also has **no audit trigger** (the `audit_trigger` is on `public.documents`, which this flow never writes).
 - **Catalogue:** `document_catalogue` + `document_catalogue_fields` + `document_catalogue_requirements` + `document_templates`/`_versions` + `document_parties` (migrations `003`, `004` seeds, `007`).
 
 ## 4. Failure, retry and orphan behavior (dead-code analysis)
@@ -140,16 +140,34 @@ endpoints; honest failure (no optimistic success), retry with the same
 the DB row `pending` first; store the file; mark `uploaded` only after
 storage confirms. On storage failure the row stays `pending` with no
 `file_path` (retryable, no orphan DB side); on DB failure after a
-successful store, delete the stored object (compensating action) or record
-it for a cleanup sweep. Replacement uploads must delete or tombstone the
-prior object. Idempotency via `client_request_id` + fingerprint, as in the
-property slice — likely a follow-on schema dependency.
+successful store, attempt a compensating delete of the stored object.
+A compensating delete alone does not fully solve orphan recovery:
 
-**File-safety dependencies (decisions needed):** storage provider (local
-disk is unserved and duplicated across two directories today — object
-storage or a single configured root is required before download can be
-honest), malware scanning (external dependency — flag), max size and type
-allow-list, retention/deletion policy.
+- If the compensating delete itself fails (storage unreachable, crash
+  mid-cleanup), the object remains orphaned with no DB row pointing at
+  it — recovery needs a reconciliation path (sweep comparing stored
+  objects against `file_path` references, or a tombstone/pending-cleanup
+  record the sweep can find).
+- If the upload succeeds but the response is lost, the client retries:
+  the `client_request_id` must resolve to the already-persisted row and
+  stored object (replay), not write a second file or second row. The
+  idempotency record must be able to find the stored object — store the
+  storage reference on the row as part of the same idempotent write.
+
+Replacement uploads must delete or tombstone the prior object (with the
+same sweep fallback). Idempotency via `client_request_id` + fingerprint,
+as in the property slice — likely a follow-on schema dependency.
+
+**File-safety dependencies — all explicitly pending decisions:**
+storage provider (local disk is unserved and duplicated across two
+directories today — object storage or a single configured root is
+required before download can be honest), malware scanning (external
+dependency — flag), max size and type allow-list, retention/deletion
+policy, and download authorization semantics (who may fetch file bytes —
+staff only? reviewers? clients? — undecided). Document-status transitions
+and any gating are likewise undecided (§7); the slice above persists only
+`pending`/`uploaded` as direct consequences of row creation and a
+successful upload.
 
 **Focused test coverage:** unit (validation, allow-list, authz matrix,
 projection excludes `file_path`/`uploaded_by`, replay/conflict), guarded
@@ -192,16 +210,19 @@ fate (read only by the quarantined `GET /api/documents`).
 
 ## 9. Known side-findings
 
-- **Wizard save lane permanently disabled on main (confirmed defect).**
-  `probeMatterPersistence` (`src/lib/api/serviceStatus.ts:17`) keys on
-  `response.success`, but every v1 success envelope is `{message, data}`
-  with no `success` field (`server/routes/v1/transfers.ts:255` and
-  siblings). A healthy probe therefore always returns a failure →
-  `isPersistenceDisabled` → **Save Draft and Submit are disabled whenever
-  the wizard loads**, blocking the entire save path that any documents
-  slice would build on. My earlier browser check only passed because its
-  mock returned `success: true`. This needs a fix independent of the
-  documents scope (treat `2xx + data` as success, or align the envelope).
+- **Wizard save lane permanently disabled on main (confirmed defect,
+  fix under review).** `probeMatterPersistence`
+  (`src/lib/api/serviceStatus.ts:17`) keys on `response.success`, but
+  every v1 success envelope is `{message, data}` with no `success` field
+  (`server/routes/v1/transfers.ts:255` and siblings). A healthy probe
+  therefore always returns a failure → `isPersistenceDisabled` →
+  **Save Draft and Submit are disabled whenever the wizard loads**,
+  blocking the entire save path that any documents slice would build on.
+  The earlier browser check only passed because its mock returned
+  `success: true`. Fixed on `fix/probe-matter-persistence-envelope`
+  (`d34d510`, unmerged) — the probe now validates that
+  `data.transfers` is an array and fails closed otherwise; the corrected
+  harness mock was replayed green against it on the property branch.
 - `python_server/tests/test_v1_transfers.py` `test_legacy_documents_embedded_unchanged`
   still expects `GET /api/transfers/{id}` → 200 — stale vs. quarantine.
 - Node and FastAPI legacy upload handlers write to **different**
