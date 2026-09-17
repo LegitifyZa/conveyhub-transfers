@@ -6,6 +6,7 @@ import healthRouter from './routes/health'
 import transfersRouter from './routes/transfers'
 import v1TransfersRouter from './routes/v1/transfers'
 import v1GoldenRecordsRouter from './routes/v1/goldenRecords'
+import v1PropertiesRouter from './routes/v1/properties'
 import milestonesRouter from './routes/milestones'
 import documentCatalogueRouter from './routes/documentCatalogue'
 import addressRouter from './routes/address'
@@ -35,6 +36,7 @@ app.use('/api/health', healthRouter)
 app.use('/api/transfers', transfersRouter)
 app.use('/api/v1/transfers', v1TransfersRouter)
 app.use('/api/v1/golden-records', v1GoldenRecordsRouter)
+app.use('/api/v1/properties', v1PropertiesRouter)
 app.use('/api', milestonesRouter)
 app.use('/api/catalogue', documentCatalogueRouter)
 app.use('/api/address', addressRouter)

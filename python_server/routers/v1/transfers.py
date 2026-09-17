@@ -22,6 +22,18 @@ from services.matter_service import (
     create_transfer_matter,
     update_core_matter_fields,
 )
+from services.matter_property_service import (
+    MANUAL_CAPTURE_SOURCE_SYSTEM,
+    MatterPropertyServiceError,
+    PropertyConflictError,
+    PropertyIdempotencyConflictError,
+    PropertyNotEligibleError,
+    PropertyValidationError,
+    capture_and_link_property_to_matter,
+    link_existing_property_to_matter,
+    list_matter_properties,
+    validate_capture_payload,
+)
 from services.matter_specialist_service import (
     MatterSpecialistServiceError,
     create_estate_context,
@@ -1316,3 +1328,224 @@ async def attach_transfer_party(
         raise HTTPException(status_code=404, detail="Not found")
 
     return {"message": "Created", "data": _map_transfer_party(row)}
+
+
+# ---- Matter–property linking and readback (P0 Property Integration) ----
+
+
+def _map_property(row: Optional[dict]) -> Optional[dict]:
+    """Allow-listed property projection. `manual` marks institution-private
+    manual capture (unverified); verification is never inferred from
+    external_property_id or any other field."""
+    if row is None:
+        return None
+    row = dict(row)
+    return {
+        "id": row.get("id"),
+        "propertyId": row.get("property_id"),
+        "erfNumber": row.get("erf_number"),
+        "streetAddress": row.get("street_address"),
+        "suburb": row.get("suburb"),
+        "city": row.get("city"),
+        "postalCode": row.get("postal_code"),
+        "province": row.get("province"),
+        "country": row.get("country"),
+        "propertyType": row.get("property_type"),
+        "legalDescription": row.get("legal_description"),
+        "yearBuilt": row.get("year_built"),
+        "squareFootage": (
+            float(row["square_footage"]) if row.get("square_footage") is not None else None
+        ),
+        "extentSqm": (
+            float(row["extent_sqm"]) if row.get("extent_sqm") is not None else None
+        ),
+        "status": row.get("status"),
+        "sourceSystem": row.get("source_system"),
+        "manual": row.get("source_system") == MANUAL_CAPTURE_SOURCE_SYSTEM,
+        "accountableInstitutionId": row.get("accountable_institution_id"),
+        "clientRequestId": str(row["client_request_id"]) if row.get("client_request_id") else None,
+        "createdAt": row.get("created_at"),
+        "updatedAt": row.get("updated_at"),
+    }
+
+
+def _map_matter_property_link(row: dict, property_row: Optional[dict]) -> dict:
+    """Allow-listed relationship projection with the linked property nested."""
+    row = dict(row)
+    return {
+        "id": row["id"],
+        "matterId": row["matter_id"],
+        "propertyId": row["property_id"],
+        "propertyKind": row["property_kind"],
+        "registrationStatus": row.get("registration_status"),
+        "roleInMatter": row.get("role_in_matter"),
+        "externalPropertyId": row.get("external_property_id"),
+        "propertySource": row.get("property_source"),
+        "accountableInstitutionId": row.get("accountable_institution_id"),
+        "clientRequestId": str(row["client_request_id"]) if row.get("client_request_id") else None,
+        "createdAt": row.get("created_at"),
+        "updatedAt": row.get("updated_at"),
+        "property": _map_property(property_row),
+    }
+
+
+def _map_matter_property_readback(row: dict) -> dict:
+    """Map the flat joined readback row (link_* / p_* aliases) to the link
+    projection with the nested allow-listed property."""
+    property_row = None
+    if row.get("p_id") is not None:
+        property_row = {
+            key[2:]: row[key] for key in row.keys() if key.startswith("p_")
+        }
+    return _map_matter_property_link(
+        {
+            "id": row["link_id"],
+            "matter_id": row["matter_id"],
+            "property_id": row["link_property_id"],
+            "property_kind": row["property_kind"],
+            "registration_status": row.get("registration_status"),
+            "role_in_matter": row.get("role_in_matter"),
+            "external_property_id": row.get("external_property_id"),
+            "property_source": row.get("property_source"),
+            "accountable_institution_id": row.get("link_accountable_institution_id"),
+            "client_request_id": row.get("link_client_request_id"),
+            "created_at": row.get("link_created_at"),
+            "updated_at": row.get("link_updated_at"),
+        },
+        property_row,
+    )
+
+
+@router.get("/{id}/properties")
+async def get_transfer_properties(
+    id: str,
+    user: CurrentUser = Depends(require_jwt),
+):
+    """Matter–property readback: link + allow-listed property projection.
+
+    Staff-only and institution-scoped; clients fail closed. Existing links
+    remain readable regardless of the property's current status, and a matter
+    with multiple links returns all of them. A transfer without a resolvable
+    matter link yields an empty list — prototype-era rows are never repaired.
+    """
+    if user.is_client:
+        raise HTTPException(status_code=404, detail="Not found")
+    if not user.has_ability("transfers:read"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    transfer = await _authorize_transfer(user, id)
+    if not transfer:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    rows = await list_matter_properties(
+        uuid.UUID(id), user.accountable_institution_id
+    )
+    return {
+        "message": "OK",
+        "data": {"properties": [_map_matter_property_readback(row) for row in rows]},
+    }
+
+
+@router.post("/{id}/properties", status_code=201)
+async def attach_transfer_property(
+    id: str,
+    body: dict,
+    user: CurrentUser = Depends(require_jwt),
+):
+    """Link an existing same-institution property OR capture a manual
+    institution-private property and link it — atomically, in one request.
+
+    Exactly one of `property_id` or `property` must be supplied. New links
+    require an active property; stored links replay unchanged even if the
+    property later became inactive. client_request_id replays return the
+    original rows (200) and conflicting reuse fails 409.
+    """
+    _require_transfers_write(user)
+
+    transfer = await _authorize_transfer(user, id)
+    if not transfer:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    _require_body_keys(
+        body,
+        required=set(),
+        optional={"property_id", "property", "client_request_id"},
+    )
+
+    has_property_id = body.get("property_id") is not None
+    has_capture = body.get("property") is not None
+    if has_property_id == has_capture:
+        raise HTTPException(
+            status_code=422,
+            detail="Exactly one of property_id or property must be supplied",
+        )
+
+    client_request_id = _optional_uuid_field(body, "client_request_id")
+    # _authorize_transfer already proved the transfer belongs to the caller's
+    # verified institution; the service re-locks and re-checks it in the txn.
+    accountable_institution_id = user.accountable_institution_id
+
+    validated_capture = None
+    property_id = None
+    if has_property_id:
+        property_id = _require_uuid_field(body, "property_id")
+        operation = "link"
+    else:
+        try:
+            validated_capture = validate_capture_payload(body["property"])
+        except PropertyValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+        operation = "capture"
+
+    fingerprint = _request_fingerprint(
+        {
+            "operation": operation,
+            "transfer_id": id,
+            "matter_id": str(transfer["matter_id"]) if transfer.get("matter_id") else None,
+            "property_id": property_id,
+            "property": validated_capture,
+        }
+    )
+
+    try:
+        if operation == "link":
+            link_row, property_row, created = await link_existing_property_to_matter(
+                uuid.UUID(id),
+                uuid.UUID(property_id),
+                accountable_institution_id,
+                client_request_id=uuid.UUID(client_request_id) if client_request_id else None,
+                request_fingerprint=fingerprint,
+            )
+        else:
+            link_row, property_row, created = await capture_and_link_property_to_matter(
+                uuid.UUID(id),
+                validated_capture,
+                accountable_institution_id,
+                client_request_id=uuid.UUID(client_request_id) if client_request_id else None,
+                request_fingerprint=fingerprint,
+            )
+    except PropertyValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    except PropertyIdempotencyConflictError:
+        return JSONResponse(
+            status_code=409,
+            content={"success": False, "error": "client_request_id was already used with a different payload"},
+        )
+    except PropertyNotEligibleError:
+        return JSONResponse(
+            status_code=400,
+            content={"success": False, "error": "Unknown or ineligible property"},
+        )
+    except PropertyConflictError as exc:
+        return JSONResponse(
+            status_code=409,
+            content={"success": False, "error": str(exc)},
+        )
+    except MatterPropertyServiceError:
+        raise HTTPException(status_code=404, detail="Not found") from None
+
+    data = _map_matter_property_link(link_row, property_row)
+    data["created"] = created
+    if not created:
+        return JSONResponse(status_code=200, content={"message": "OK", "data": data})
+    return {"message": "Created", "data": data}

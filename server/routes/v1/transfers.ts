@@ -3,6 +3,7 @@ import { query, withTransaction } from '../../db'
 import { requireJwt } from '../../auth/requireJwt'
 import { asyncHandler } from '../../utils/asyncHandler'
 import { CurrentUser } from '../../auth/currentUser'
+import { mapProperty } from './properties'
 
 const router = Router()
 
@@ -970,6 +971,120 @@ router.post(
       return
     }
     await proxyDeedly(req, res, `/${id}/parties`, 'POST')
+  })
+)
+
+// Allow-listed matter–property readback (link + property projection).
+// Staff-only: the client property contract is undocumented, so clients fail
+// closed like the other staff surfaces.
+function mapMatterPropertyLink(row: any) {
+  const property = row.p_id
+    ? mapProperty(
+        Object.fromEntries(
+          Object.entries(row)
+            .filter(([key]) => key.startsWith('p_'))
+            .map(([key, value]) => [key.slice(2), value])
+        )
+      )
+    : null
+  return {
+    id: row.link_id,
+    matterId: row.matter_id,
+    propertyId: row.link_property_id,
+    propertyKind: row.property_kind,
+    registrationStatus: row.registration_status,
+    roleInMatter: row.role_in_matter,
+    externalPropertyId: row.external_property_id,
+    propertySource: row.property_source,
+    accountableInstitutionId: row.link_accountable_institution_id,
+    clientRequestId: row.link_client_request_id ? String(row.link_client_request_id) : null,
+    createdAt: row.link_created_at,
+    updatedAt: row.link_updated_at,
+    property,
+  }
+}
+
+router.get(
+  '/:id/properties',
+  requireJwt,
+  asyncHandler(async (req: Request, res: Response) => {
+    const user = req.currentUser!
+    const { id } = req.params
+
+    if (user.isClient) {
+      res.status(404).json({ success: false, error: 'Not found' })
+      return
+    }
+
+    if (!user.hasAbility('transfers:read')) {
+      res.status(403).json({ success: false, error: 'Forbidden' })
+      return
+    }
+
+    const transfer = await authorizeTransfer(user, id)
+    if (!transfer) {
+      res.status(404).json({ success: false, error: 'Not found' })
+      return
+    }
+
+    // Deterministic resolution through transfers.matter_id only: a transfer
+    // without a resolvable same-institution matter link yields an empty list
+    // rather than falling back to prototype-era source_record_id rows.
+    const linksQuery = `
+      SELECT
+        mp.id AS link_id, mp.matter_id, mp.property_id AS link_property_id,
+        mp.property_kind, mp.registration_status, mp.role_in_matter,
+        mp.external_property_id, mp.property_source,
+        mp.accountable_institution_id AS link_accountable_institution_id,
+        mp.client_request_id AS link_client_request_id,
+        mp.created_at AS link_created_at, mp.updated_at AS link_updated_at,
+        p.id AS p_id, p.property_id AS p_property_id, p.erf_number AS p_erf_number,
+        p.street_address AS p_street_address, p.suburb AS p_suburb,
+        p.city AS p_city, p.postal_code AS p_postal_code,
+        p.province AS p_province, p.country AS p_country,
+        p.property_type AS p_property_type,
+        p.legal_description AS p_legal_description,
+        p.year_built AS p_year_built, p.square_footage AS p_square_footage,
+        p.extent_sqm AS p_extent_sqm, p.status AS p_status,
+        p.source_system AS p_source_system,
+        p.accountable_institution_id AS p_accountable_institution_id,
+        p.client_request_id AS p_client_request_id,
+        p.created_at AS p_created_at, p.updated_at AS p_updated_at
+      FROM matter_properties mp
+      JOIN matters m
+        ON m.id = mp.matter_id
+       AND m.accountable_institution_id = $2
+       AND m.matter_type = 'transfer'
+      JOIN transfers t
+        ON t.matter_id = mp.matter_id
+       AND t.id = $1
+       AND t.accountable_institution_id = $2
+      LEFT JOIN properties p
+        ON p.id = mp.property_id
+       AND p.accountable_institution_id = mp.accountable_institution_id
+      WHERE mp.accountable_institution_id = $2
+      ORDER BY mp.created_at, mp.id
+    `
+    const linksResult = await query(linksQuery, [id, user.accountable_institution_id])
+
+    res.json({
+      message: 'OK',
+      data: { properties: linksResult.rows.map(mapMatterPropertyLink) },
+    })
+  })
+)
+
+router.post(
+  '/:id/properties',
+  requireJwt,
+  asyncHandler(async (req: Request, res: Response) => {
+    if (denyClientWrite(req, res)) return
+    const { id } = req.params
+    if (!isUuid(id)) {
+      res.status(404).json({ success: false, error: 'Not found' })
+      return
+    }
+    await proxyDeedly(req, res, `/${id}/properties`, 'POST')
   })
 )
 

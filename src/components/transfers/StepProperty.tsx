@@ -1,12 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
-import { Building, MapPin, Home, FileText, Map as MapIcon, Search } from 'lucide-react'
+import { Building, MapPin, Home, FileText, Map as MapIcon, Search, Link2, X } from 'lucide-react'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui'
 import { Input } from '@/components/ui'
 import { apiRequest } from '@/lib/api/http'
 import { serviceUnavailableMessage } from '@/lib/api/serviceStatus'
+import { TransferApi, PROPERTY_TYPES, type PropertyRecordApi } from '@/lib/api/transferApi'
 import { useTransfer, PropertyDetails } from './TransferForm'
 
 const StepProperty: React.FC = () => {
@@ -174,17 +175,75 @@ const StepProperty: React.FC = () => {
     updatePropertyDetails('address', value)
   }
 
-  const propertyTypes = [
-    'Freehold',
-    'Sectional Title',
-    'Share Block',
-    'Life Rights',
-    'Agricultural Holding',
-    'Farm',
-    'Commercial',
-    'Mixed Use',
-    'Vacant Land'
-  ]
+  // Existing-property discovery: selecting a result links that property on
+  // save instead of capturing a manual record. Only active properties are
+  // selectable — the API enforces the same eligibility on link.
+  const [propertySearch, setPropertySearch] = useState('')
+  const [propertyResults, setPropertyResults] = useState<PropertyRecordApi[]>([])
+  const [isPropertySearching, setIsPropertySearching] = useState(false)
+  const [propertySearchError, setPropertySearchError] = useState('')
+  const propertySearchTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const linkedOrSelected = Boolean(state.persistedPropertyLinkId || state.selectedPropertyId)
+
+  useEffect(() => {
+    if (propertySearchTimeout.current) {
+      clearTimeout(propertySearchTimeout.current)
+    }
+    setPropertySearchError('')
+    if (linkedOrSelected || propertySearch.trim().length < 3) {
+      setPropertyResults([])
+      return
+    }
+    setIsPropertySearching(true)
+    propertySearchTimeout.current = setTimeout(async () => {
+      try {
+        const response = await TransferApi.searchProperties(propertySearch.trim())
+        setPropertyResults(response.data ?? [])
+      } catch (err) {
+        setPropertyResults([])
+        setPropertySearchError(serviceUnavailableMessage('Property search', err))
+      } finally {
+        setIsPropertySearching(false)
+      }
+    }, 400)
+    return () => {
+      if (propertySearchTimeout.current) {
+        clearTimeout(propertySearchTimeout.current)
+      }
+    }
+  }, [propertySearch, linkedOrSelected])
+
+  const selectExistingProperty = (property: PropertyRecordApi) => {
+    if (property.status !== 'active') return
+    dispatch({
+      type: 'UPDATE_PROPERTY_LINK',
+      payload: {
+        selectedPropertyId: property.id,
+        linkedProperty: {
+          id: property.id,
+          streetAddress: property.streetAddress || '',
+          city: property.city || '',
+          province: property.province || '',
+          postalCode: property.postalCode || '',
+          propertyType: property.propertyType || '',
+          status: property.status || '',
+          manual: property.manual
+        }
+      }
+    })
+    setPropertySearch('')
+    setPropertyResults([])
+  }
+
+  const clearSelectedProperty = () => {
+    dispatch({
+      type: 'UPDATE_PROPERTY_LINK',
+      payload: { selectedPropertyId: undefined, linkedProperty: undefined }
+    })
+  }
+
+  const propertyTypes = [...PROPERTY_TYPES]
 
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-right-5 duration-500">
@@ -198,7 +257,108 @@ const StepProperty: React.FC = () => {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Linked / selected property */}
+        {linkedOrSelected && state.linkedProperty && (
+          <Card variant="premium" className="lg:col-span-2">
+            <CardHeader>
+              <CardTitle className="flex items-center space-x-2">
+                <Link2 className="h-5 w-5 text-teal-600 dark:text-teal-400" />
+                <span>{state.persistedPropertyLinkId ? 'Linked property' : 'Selected property'}</span>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="flex items-start justify-between">
+                <div className="space-y-1">
+                  <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                    {state.linkedProperty.streetAddress || '—'}
+                  </p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    {[state.linkedProperty.city, state.linkedProperty.province, state.linkedProperty.postalCode].filter(Boolean).join(', ')}
+                  </p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    {state.linkedProperty.propertyType || '—'}
+                    {state.linkedProperty.manual && (
+                      <span className="ml-2 inline-block rounded bg-amber-100 px-1.5 py-0.5 text-[11px] font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-200">
+                        Manually captured — unverified
+                      </span>
+                    )}
+                  </p>
+                </div>
+                {!state.persistedPropertyLinkId && (
+                  <button
+                    type="button"
+                    onClick={clearSelectedProperty}
+                    className="inline-flex items-center space-x-1 rounded-lg border border-gray-300 px-2 py-1 text-xs text-gray-600 hover:bg-gray-50 dark:border-navy-600 dark:text-gray-300 dark:hover:bg-navy-700"
+                  >
+                    <X className="h-3 w-3" />
+                    <span>Change</span>
+                  </button>
+                )}
+              </div>
+              {state.persistedPropertyLinkId && (
+                <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+                  Saved links cannot be removed here; additional properties can be attached from the matter page.
+                </p>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Existing property discovery */}
+        {!linkedOrSelected && (
+          <Card variant="premium" className="lg:col-span-2">
+            <CardContent className="pt-6">
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                Link an existing property (optional)
+              </label>
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
+                <Input
+                  variant="premium"
+                  placeholder="Search your institution's properties by address, city, erf or reference..."
+                  value={propertySearch}
+                  onChange={(e) => setPropertySearch(e.target.value)}
+                  className="pl-10 transition-all duration-200 focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
+                />
+              </div>
+              {isPropertySearching && (
+                <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">Searching...</p>
+              )}
+              {propertySearchError && (
+                <p className="mt-2 text-xs text-red-600 dark:text-red-400">{propertySearchError}</p>
+              )}
+              {propertyResults.length > 0 && (
+                <div className="mt-2 max-h-60 overflow-auto rounded-lg border border-gray-200 dark:border-navy-700">
+                  {propertyResults.map((property) => (
+                    <button
+                      key={property.id}
+                      type="button"
+                      disabled={property.status !== 'active'}
+                      onClick={() => selectExistingProperty(property)}
+                      className="w-full text-left px-4 py-2 border-b border-gray-100 dark:border-navy-700 last:border-0 hover:bg-gray-50 dark:hover:bg-navy-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <p className="text-sm text-gray-900 dark:text-gray-100">
+                        {property.streetAddress || property.propertyId || property.id}
+                      </p>
+                      <p className="text-xs text-gray-500 dark:text-gray-400">
+                        {[property.city, property.province].filter(Boolean).join(', ')}
+                        {property.propertyType ? ` · ${property.propertyType}` : ''}
+                        {property.status && property.status !== 'active' ? ` · ${property.status} (not linkable)` : ''}
+                        {property.manual ? ' · manual — unverified' : ''}
+                      </p>
+                    </button>
+                  ))}
+                </div>
+              )}
+              <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+                Or capture a new property below. Manually captured properties are private to your institution and are not verified against any registry.
+              </p>
+            </CardContent>
+          </Card>
+        )}
+
         {/* Address Information */}
+        {!linkedOrSelected && (<>
         <Card variant="premium" className="lg:col-span-2">
           <CardHeader>
             <CardTitle className="flex items-center space-x-2">
@@ -288,7 +448,7 @@ const StepProperty: React.FC = () => {
 
               <div>
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                  ZIP Code *
+                  Postal code *
                 </label>
                 <Input
                   variant="premium"
@@ -313,7 +473,7 @@ const StepProperty: React.FC = () => {
           <CardContent className="space-y-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                Property Type
+                Property Type *
               </label>
               <select
                 value={propertyDetails.propertyType}
@@ -331,11 +491,11 @@ const StepProperty: React.FC = () => {
 
             <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                Lot Number
+                Erf number
               </label>
               <Input
                 variant="premium"
-                placeholder="Lot 12, Block 5"
+                placeholder="Erf 1234"
                 value={propertyDetails.lotNumber}
                 onChange={(e) => updatePropertyDetails('lotNumber', e.target.value)}
                 className="transition-all duration-200 focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
@@ -355,17 +515,24 @@ const StepProperty: React.FC = () => {
               />
             </div>
 
+            {/* Area capture is deferred: the field stays visible so captured
+                values are preserved, but it is not editable in this slice and
+                is never written to square_footage or extent_sqm. */}
             <div>
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                Square Meterage
+              <label className="block text-sm font-medium text-gray-500 dark:text-gray-400 mb-2">
+                Area (m²)
               </label>
               <Input
                 variant="premium"
-                placeholder="2,500"
+                placeholder="Not available"
                 value={propertyDetails.squareFootage}
-                onChange={(e) => updatePropertyDetails('squareFootage', e.target.value)}
-                className="transition-all duration-200 focus:ring-2 focus:ring-teal-500 focus:border-teal-500"
+                disabled
+                readOnly
+                className="opacity-60 cursor-not-allowed"
               />
+              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                Area capture is unavailable in this step. Existing values are preserved unchanged.
+              </p>
             </div>
           </CardContent>
         </Card>
@@ -393,6 +560,7 @@ const StepProperty: React.FC = () => {
             </div>
           </CardContent>
         </Card>
+        </>)}
       </div>
 
       {/* Validation Summary */}
