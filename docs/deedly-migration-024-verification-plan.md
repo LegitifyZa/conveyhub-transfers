@@ -38,7 +38,8 @@ engineer should be aware of.
    Neon database used for scratch-fixture testing
    (`ep-billowing-sound-*.neon.tech/neondb`) held application data at
    inspection time (8 transfers, 20 audit rows); it is a candidate only if
-   Dean explicitly approves it as disposable. Until rows are identified as
+   the project owner explicitly approves it as disposable. Until rows are
+   identified as
    synthetic or expendable, treat every existing row as data of unknown
    provenance — not as fixture material.
 3. **Recorded baseline.** Before running, record: the exact commit, the
