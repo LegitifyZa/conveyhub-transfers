@@ -1,7 +1,8 @@
 # Authenticated Matter–Property Linking and Readback — Implementation Contract
 
-**Status:** scoped contract for review, not implemented. P0 – Property
-Integration.
+**Status:** implemented for review on
+`deedly/mvp0/properties/manual-capture-and-linking` at `bae5185` — migration
+024 is authored, not executed. P0 – Property Integration.
 **Source commit:** `f016f3e73dbf698e2a668c13a47110c33668bccb` (`origin/main`).
 **Model reference:** `docs/deedly-core-transfer-matter-data-model.md` (this
 branch) — schema checkpoint `f5c6a33`, runtime checkpoint `f016f3e`.
@@ -10,6 +11,15 @@ manual property records and link them to the institution's matters. Manual
 capture requires no prior search, external response or Golden Record, makes no
 upstream writes, and carries no implied registry verification. External
 verification/linking remains separate work.
+**Approved rule updates (this slice):** multiple `input` properties per matter
+(no cap); new links require an `active` same-institution property while
+existing links stay readable regardless of current status; "Erf number" writes
+only `erf_number`; legal description writes only `legal_description`; UI
+labels are "Province" and "Postal code"; malformed supplied postcodes are
+rejected explicitly; property type is required; editable area capture is
+deferred — visibly unavailable, existing values preserved, no
+`square_footage`/`extent_sqm` cross-mapping; `transfers.property_address` and
+the legacy property pointers are never synchronized or modified.
 **Auth note:** Production Authentication remains **Blocked**; this slice sits
 behind the same mock-tested browser JWT wiring pending the deployed upstream
 contract and the external-ingress/key-rotation HOLD (`AGENTS.md`).
@@ -140,11 +150,11 @@ party attach):
     "postal_code": "7701",                  // optional; when present must satisfy
                                             //   the 4-digit CHECK — malformed → 422,
                                             //   never silently nulled (legacy did)
-    "erf_number": "1234",                   // optional
-    "lot_number": null,                     // optional — see D-MAP1 in §9
-    "year_built": 2003,                     // optional integer
-    "square_footage": 210.5,                // optional finite ≥ 0
-    "legal_description": "Erf 1234 ..."     // optional — see D-MAP2 in §9
+    "erf_number": "1234",                   // optional — writes erf_number ONLY
+    "legal_description": "Erf 1234 ...",    // optional — writes legal_description ONLY
+    "suburb": null,                         // optional string
+    "country": null,                        // optional string; defaults 'South Africa'
+    "year_built": 2003                      // optional integer
   }
 }
 ```
@@ -153,15 +163,21 @@ Not accepted (allow-list 422): `property_kind`, `role_in_matter`,
 `registration_status`, `external_property_id`, `property_source`,
 `accountable_institution_id`, `status`, `property_id` inside `property`
 (caller never sets the business key), and every `properties` column not listed
-(`suburb`, `title_deed_number`, `rates_number`, `municipal_valuation`,
-`extent_sqm`, `zoning`, `sectional_title_*`, `latitude/longitude`,
-`created_for_transfer_id`, `source_system`, `source_record_id`, `description`,
-etc.) — **unsupported fields are rejected, not ignored.** The UI marks the
+(`lot_number`, `description`, `title_deed_number`, `rates_number`,
+`municipal_valuation`, `square_footage`, `extent_sqm`, `zoning`,
+`sectional_title_*`, `latitude/longitude`, `created_for_transfer_id`,
+`source_system`, `source_record_id`, etc.) — **unsupported fields are
+rejected, not ignored.** `square_footage`/`extent_sqm` are deliberately
+outside the allow-list: editable area capture is deferred, so neither column
+is writable in this slice and no cross-mapping is possible. The UI marks the
 equivalent inputs unavailable so captured data is never silently discarded.
 
-Response: `201` `{link: {id, matterId, propertyId, propertyKind,
-propertySource, createdAt}, property: <§3.3 projection>, created: true}`;
-identical replay → `200` with `created:false` (§6).
+Response: `201` `{id, matterId, propertyId, propertyKind,
+registrationStatus, roleInMatter, externalPropertyId, propertySource,
+accountableInstitutionId, clientRequestId, createdAt, updatedAt,
+property: <§3.3 projection>, created: true}` — the allow-listed link
+projection with the property nested; identical replay → `200` with
+`created:false` (§6).
 
 ### 3.3 `GET /api/v1/transfers/{id}/properties` — readback
 
@@ -174,15 +190,23 @@ allow-list projection — not every database column:
 
 ```jsonc
 {
-  "link": { "id", "propertyKind", "propertySource", "registrationStatus",
-            "roleInMatter", "externalPropertyId", "createdAt" },
-  "property": { "id", "propertyId", "streetAddress", "city", "province",
-                "postalCode", "propertyType", "erfNumber", "lotNumber",
-                "yearBuilt", "squareFootage", "legalDescription",
-                "status", "sourceSystem" },
+  "id", "matterId", "propertyId", "propertyKind", "registrationStatus",
+  "roleInMatter", "externalPropertyId", "propertySource",
+  "accountableInstitutionId", "clientRequestId", "createdAt", "updatedAt",
+  "property": { "id", "propertyId", "streetAddress", "suburb", "city",
+                "province", "postalCode", "country", "propertyType",
+                "erfNumber", "legalDescription", "yearBuilt",
+                "squareFootage", "extentSqm", "status", "sourceSystem",
+                "manual", "accountableInstitutionId", "clientRequestId",
+                "createdAt", "updatedAt" },
   // property is null only for kind='output' placeholder rows (CHECK-permitted)
 }
 ```
+
+`manual` is `true` only for `source_system='manual_capture'` rows — the
+explicit unverified-capture marker. `squareFootage`/`extentSqm` are returned
+verbatim from their own columns (readback only — never cross-mapped and never
+writable in this slice).
 
 Field values return verbatim — `propertySource`, `registrationStatus`,
 `roleInMatter`, `externalPropertyId`, `sourceSystem` are surfaced as stored
@@ -198,32 +222,30 @@ verification state.
 | `state` | `properties.province` | **DB req** | `province` | Same. |
 | `zipCode` | `properties.postal_code` | UI req, DB opt | `postalCode` | 4-digit CHECK when present; malformed → 422 (legacy create silently nulled it — do not repeat). |
 | `propertyType` | `properties.property_type` | **DB req** | `propertyType` | UI list already equals the 9 CHECK values verbatim; **UI must make it required when capturing a manual property** (today it isn't — gap closed here). |
-| `lotNumber` | `properties.erf_number` (+ `lot_number`? — D-MAP1) | opt | `erfNumber`/`lotNumber` | Legacy API maps UI `lotNumber` into **both** `erf_number` and `lot_number`; single UI field can't feed two semantic columns — flag which is canonical (D-MAP1). |
-| `yearBuilt` | `properties.year_built` | opt | `yearBuilt` | INTEGER; UI string → server coerces, non-numeric → 422. |
-| `squareFootage` | `properties.square_footage` | opt | `squareFootage` | NUMERIC(12,2) (003). Legacy readback falls back to `extent_sqm` — a distinct column with its own meaning; v1 does not cross-map them (D-MAP2). |
-| `legalDescription` | `properties.legal_description` | opt | `legalDescription` | Legacy also copied it into `description` — dual-write question flagged (D-MAP2). |
+| `lotNumber` (UI label "Erf number") | `properties.erf_number` only | opt | `erfNumber` | **Approved:** `lot_number` is never written. |
+| `yearBuilt` | `properties.year_built` | opt | `yearBuilt` | INTEGER; UI string → validated integer, non-numeric → 422. |
+| `squareFootage` (UI label "Area (m²)", unavailable) | none — deferred | — | `squareFootage`/`extentSqm` verbatim | **Approved:** editable area capture deferred; field rendered unavailable, existing values preserved, `square_footage`/`extent_sqm` never cross-mapped and neither is writable in this slice. |
+| `legalDescription` | `properties.legal_description` only | opt | `legalDescription` | **Approved:** `description` is never written. |
 
-**Minimum required payload for manual capture:** `street_address`, `city`,
-`province`, `property_type` — the DB NOT NULLs (002/006/019). No other field is
-mandated by constraint; whether conveyancing practice should require more
-(e.g. `erf_number`/`legal_description`) is a business decision — flagged,
-not invented (D-MIN).
+**Minimum required payload for manual capture (approved):** `street_address`,
+`city`, `province`, `property_type` — the DB NOT NULLs (002/006/019). No other
+field is mandated.
 
-### 4.1 Ambiguous-field decisions (for Dean/Jordan)
+### 4.1 Ambiguous-field decisions (approved)
 
 The columns below were conflated by the legacy mapping or carry misleading UI
-labels. The contract corrects each deliberately — **no silent dual-writes, no
+labels. Each correction is **approved** — **no silent dual-writes, no
 reinterpretation of existing stored values**:
 
-| UI label / field | Stored column | Units / meaning | Current conflation | Recommended correction |
+| UI label / field | Stored column | Units / meaning | Current conflation | Approved correction |
 |---|---|---|---|---|
-| "Lot / Erf Number" (`lotNumber`) | `erf_number` | Erf number — the surveyed land-parcel number | Legacy API dual-writes the same UI value into `erf_number` **and** `lot_number` (`transferApi.ts` mapping) | Write **`erf_number` only**; `lot_number` stays unwritten until a separate UI field/contract exists. Relabel the input "Erf number". |
+| "Erf number" (`lotNumber`) | `erf_number` | Erf number — the surveyed land-parcel number | Legacy API dual-writes the same UI value into `erf_number` **and** `lot_number` (`transferApi.ts` mapping) | Write **`erf_number` only**; `lot_number` stays unwritten until a separate UI field/contract exists. Input relabelled "Erf number". |
 | "Legal Description" (`legalDescription`) | `legal_description` | Registered/legal parcel description | Legacy dual-writes into `legal_description` **and** the free-form `description` | Write **`legal_description` only**; `description` stays unwritten. |
-| "Square Footage" (`squareFootage`) | `square_footage` | Building size (NUMERIC(12,2)) | Legacy readback displays `extent_sqm` (land extent, m²) as a fallback for `square_footage` — different quantities | Write/read **`square_footage` only**; never substitute `extent_sqm`. Relabel "Building size (m²)" pending units confirmation. |
-| "Zip Code" (`zipCode`) | `postal_code` | SA 4-digit postal code | Label is the US term; legacy silently nulled non-4-digit input | Relabel "Postal code"; reject malformed input with 422. |
-| "State" (`state`) | `province` | SA province | Label is the US term | Relabel "Province" (cosmetic). |
-| "Property Type" (`propertyType`) | `property_type` | One of the 9 CHECK values (006) | UI list matches the CHECK but the field is not required, while the DB requires it | Make required in manual-capture UI and payload. |
-| "Year Built" (`yearBuilt`) | `year_built` | INTEGER calendar year | None — clarification only | Coerce to integer; non-numeric → 422. |
+| "Area (m²)" (`squareFootage`, unavailable) | none in this slice | Building size vs land extent are distinct columns | Legacy readback displays `extent_sqm` (land extent, m²) as a fallback for `square_footage` — different quantities | **Deferred:** the input is visibly unavailable; existing stored values are preserved; `square_footage`/`extent_sqm` are never cross-mapped and neither is writable in this slice. |
+| "Postal code" (`zipCode`) | `postal_code` | SA 4-digit postal code | Label was the US term; legacy silently nulled non-4-digit input | Relabelled "Postal code"; a supplied malformed value → 422. |
+| "Province" (`state`) | `province` | SA province | Label was the US term | Relabelled "Province" (cosmetic; the state field name stays internal). |
+| "Property Type" (`propertyType`) | `property_type` | One of the 9 CHECK values (006) | UI list matches the CHECK but the field was not required, while the DB requires it | Required in manual-capture UI and payload. |
+| "Year Built" (`yearBuilt`) | `year_built` | INTEGER calendar year | None — clarification only | Coerced to integer; non-numeric → 422. |
 
 Existing stored values are **not** repaired or rewritten — e.g. legacy rows
 where `lot_number`/`description`/`extent_sqm` hold dual-written or
@@ -232,15 +254,15 @@ from their own columns.
 
 ## 5. Provenance — explicit manual identity, no inferred verification
 
-- **Manual capture must be explicitly identifiable, not merely "no external
-  link."** Proposed representation: `properties.source_system =
-  'manual_capture'` on every v1-captured row. `'manual_capture'` is a
-  **proposed token, not ratified** — its compatibility with the column's
-  import-provenance semantics and its consumers (019's provenance reads, the
-  quarantined legacy paths, any reporting) must be checked with Jordan before
-  implementation (D-PROV). If a different token is chosen the contract
-  substitutes it; the requirement that manual rows carry *an* explicit marker
-  is not negotiable.
+- **Manual capture is explicitly identifiable, not merely "no external
+  link."** Implemented as `properties.source_system = 'manual_capture'` on
+  every v1-captured row. The compatibility/consumer check was performed before
+  adoption: no runtime code reads `properties.source_system` (every code
+  reference is `matters.source_record_id`, a different column; the only
+  schema-level consumer is migration 003's provenance intent). The token
+  remains subject to Jordan's ratification as model vocabulary — substituting
+  it later is a one-word change in `matter_property_service.py`; the
+  requirement that manual rows carry *an* explicit marker is unchanged.
 - **Unverified is displayed, not inferred.** Verification is never derived
   from the presence of `external_property_id` or any other column — the
   schema has no verification-status field and `properties.status` is
@@ -296,26 +318,31 @@ fingerprint is a **409 idempotency conflict**, never a second write.
    `matter_type='transfer'`) — deterministic, identical to the `f016f3e`
    PATCH rule; NULL/inconsistent → error, nothing written. No implicit repair
    of prototype-era rows.
-3a. *Link path:* `SELECT … FROM properties WHERE id=$3 AND ai=$4` → 404 if
-    absent or cross-tenant; eligibility check per §7. Then the
-    **replay check on the link row** (`client_request_id` match → fingerprint
-    compare → return original or 409).
-3b. *Capture path:* validate the §4 payload; **replay check on the property
-    row** (`WHERE ai=$4 AND client_request_id=$5` → fingerprint compare →
-    reuse that property id, or 409). Otherwise
-    `INSERT INTO properties (property_id = generate_property_id(), …,
-    accountable_institution_id = <verified claim>,
+3. **Replay check on the link row, before anything else**
+   (`WHERE ai AND client_request_id` → fingerprint compare → return the
+   original link + property as `200 created:false`, or 409 on mismatch).
+   This runs *before* property resolution and eligibility on purpose: a
+   stored link replays even if the property has since gone inactive —
+   eligibility governs new links, never history.
+4a. *Link path:* `SELECT … FROM properties WHERE id AND ai` → 404 if absent
+    or cross-tenant; `status='active'` required for a new link → 400
+    otherwise ("Unknown or ineligible property").
+4b. *Capture path:* **replay check on the property row**
+    (`WHERE ai AND client_request_id` → fingerprint compare → reuse that
+    property, or 409) — defence-in-depth for a key whose link never
+    committed; otherwise `INSERT INTO properties (property_id =
+    generate_property_id(), …, status='active', source_system=
+    'manual_capture', accountable_institution_id=<verified claim>,
     client_request_id, request_fingerprint)`.
-4. **Identical-link check before multiplicity:** if a
-   `(matter_id, property_id, 'input')` row already exists, return it as the
-   replay (`200 created:false`) *before* evaluating the multiplicity cap —
-   replaying an existing link must succeed even when the proposed cap is in
-   force.
-5. Multiplicity check (§7, proposal): a second `input` link → 409. Race-free
-   under the `FOR UPDATE` lock held since step 1.
-6. `INSERT INTO matter_properties (matter_id, property_id, 'input',
-   client_request_id, request_fingerprint)` — plain insert; any unexpected
-   conflict after the checks aborts the transaction.
+5. `INSERT INTO matter_properties (matter_id, property_id, 'input',
+   client_request_id, request_fingerprint) ON CONFLICT (matter_id,
+   property_id, property_kind) DO NOTHING` → a conflict re-selects and
+   returns the identical stored link as `200 created:false`. There is no
+   multiplicity cap — multiple `input` links per matter are approved.
+6. A `UniqueViolationError` on either unique key resolves after rollback by
+   re-reading the keyed rows and comparing fingerprints — **no
+   duplicate-on-lost-replay fallback**: if nothing stored the key, the error
+   propagates.
 
 **Orphan safety:** capture and link commit or roll back together — a link
 failure destroys the property insert, so no unlinked "forgotten" property can
@@ -349,28 +376,27 @@ CREATE UNIQUE INDEX idx_matter_properties_client_request_id
 - The tenant trigger overwrites `matter_properties.accountable_institution_id`
   *before* insert completes, so the partial index is always evaluated against
   the parent matter's tenant — no forged-AI key squatting.
-- Numbering: `022` is reserved by the unmerged SARS branch; this would be
-  `024` (or later) and must not reuse `022` (guide §11 item 13).
+- Numbering: `022` is reserved by the unmerged SARS branches; the migration
+  was checked across active branches and authored as **`024`** —
+  `src/lib/migrations/024_deedly_property_link_idempotency.sql`, schema-
+  qualified, pending DB certification. Execution is not authorized yet.
 
 ## 7. First-slice rules — multiplicity, link kind, eligibility
 
-The multiplicity cap and the status-eligibility restriction below are
-**proposals, not approved policy** — they ship only if confirmed (D-MULT,
-D-ELIG). Everything else is derived from existing constraints or approved
-policy.
+All rules below are **approved policy** or derived from existing constraints.
 
 | Rule | Slice value | Status / supporting contract |
 |---|---|---|
 | Link kind written | `property_kind='input'` only | **Contract** — the only evidenced vocabulary for transfer matters (019 backfill + trigger); `output`/development semantics deferred. |
-| Multiplicity | At most **one** `input` link per matter; a second → 409 | **Proposal** (D-MULT). Matches the legacy single-property model; the schema permits many, so enforcement is service-side under the `FOR UPDATE` transfer lock — check-then-insert is atomic, so the cap is concurrency-safe. Ordering guarantee: the identical-link replay check runs *before* the cap, so replaying an existing link always returns `200` — the cap rejects only genuinely different second links. |
-| Property eligibility | Exists + same `accountable_institution_id` + `status='active'` | Tenant half is **structural** (composite FK); `status='active'` is a **proposal** (D-ELIG). |
+| Multiplicity | **Multiple `input` links per matter; no cap** | **Approved** — the earlier one-input proposal was rescinded; the schema already permits many. |
+| Property eligibility | New links: exists + same `accountable_institution_id` + `status='active'` | **Approved** — tenant half is also **structural** (composite FK). Eligibility is evaluated only when creating a link: a replayed `client_request_id` or an identical-link retry returns the stored link even if the property has since gone inactive — replay restores history, it does not re-validate it. |
+| Existing-link readability | Every stored link reads back regardless of current `status` | **Approved** — `GET …/properties` predicates tenant on transfer + link + property but never `status`. |
 | Matter eligibility | `transfers.matter_id` resolvable + `matter_type='transfer'` + same AI | **Contract** — identical to the `f016f3e` PATCH rule; prototype-era `matter_id NULL` rows fail closed (D7). |
 | Who may write | `require_jwt` + `transfers:write`; role-4 denied | **Approved policy** — same gate as party attach and PATCH; same-institution applies to every role, no privileged exception. |
 | Who may read | Staff only (`transfers:read` + tenant predicates) | **Contract** — client contract undocumented → fail closed, consistent with the matter projection. |
 
-**Existing multi-property matters stay fully readable.** The multiplicity cap
-(if approved) constrains *new writes* only — `GET …/properties` returns every
-link row the tenant predicates allow, however many exist. Matters that already
+**Existing multi-property matters stay fully readable.** `GET …/properties`
+returns every link row the tenant predicates allow, however many exist. Matters that already
 hold multiple `input` links (e.g. rows the 019 backfill or trigger created
 across repeated legacy pointers) read back complete; nothing is filtered,
 collapsed or repaired. Detach/relink tooling for such matters is a later
@@ -400,18 +426,26 @@ slice, and `trg_sync_matter_properties_from_transfer` is untouched:
   `legacy_transfer_` source tag — NULL-`property_source` v1 links are never
   matched, so later legacy-path activity cannot strip them.
 
-## 9. Genuinely unresolved decisions (nothing else blocks)
+## 9. Decision ledger — resolved vs still open
 
-| # | Decision | Recommendation / owner |
+**Approved and implemented:**
+
+| # | Decision | Resolution |
 |---|---|---|
-| D-SCHEMA | §6.1 idempotency columns + partial unique indexes on `properties` **and** `matter_properties` — exact DDL in §6.1 | **Jordan coordination — required, no fallback.** Replay duplication is not an acceptable substitute. |
-| D-PROV | `properties.source_system` token for manual rows — `'manual_capture'` proposed | Jordan: check token compatibility with the column's import-provenance semantics and its consumers before implementation; `matter_properties.property_source` stays NULL regardless (§5). |
-| D-MULT | One-`input`-per-matter cap — **proposal**, not approved; service-enforced under the row lock, or partial unique index if preferred | PO/Jordan confirm; service rule ships either way once approved. |
-| D-ELIG | Attachable `properties.status` set — `'active'` only is a **proposal**, not approved | PO/Jordan confirm. |
-| D-MAP1 | `lotNumber` → `erf_number` only (recommended in §4.1) | Confirm recommendation; `lot_number` stays unwritten. |
-| D-MAP2 | `legalDescription` → `legal_description` only; `square_footage` ≠ `extent_sqm` (§4.1) | Confirm recommendations; no dual-writes, no cross-mapping. |
-| D-MIN | Whether `erf_number`/`legal_description` should be required beyond the DB floor | PO decision. |
-| D-ADDR | Should linking/capture sync `transfers.property_address` from `street_address`? | **Recommend no** — the display text is separately editable via PATCH; no automatic overwrite. Confirm. |
+| D-SCHEMA | §6.1 idempotency columns + partial unique indexes on `properties` **and** `matter_properties` | **Required — no fallback.** Authored as migration `024` (`024_deedly_property_link_idempotency.sql`); execution awaits DB certification with Jordan through Dean. |
+| D-PROV | `properties.source_system` token for manual rows | **Adopted `'manual_capture'`** after checking consumers — no runtime code reads `properties.source_system` (all `source_*` code references are `matters.source_record_id`). Still subject to Jordan's vocabulary ratification. |
+| D-MULT | Multiplicity | **Approved: multiple `input` links per matter, no cap** (proposal rescinded). |
+| D-ELIG | Attachable `properties.status` set | **Approved: `status='active'` for new links only**; existing links stay readable regardless of status, and stored-link replay never re-validates eligibility. |
+| D-MAP1 | `lotNumber` mapping | **Approved: `erf_number` only**; `lot_number` never written; input labelled "Erf number". |
+| D-MAP2 | `legalDescription` / area mapping | **Approved: `legal_description` only**; no `description` dual-write; editable area deferred — `square_footage`/`extent_sqm` preserved verbatim, never cross-mapped, neither writable. |
+| D-MIN | Fields beyond the DB floor | **Resolved: DB floor only** — `street_address`, `city`, `province`, `property_type`. |
+| D-ADDR | Sync `transfers.property_address` on link/capture | **Approved as recommended: no** — the display text stays independently PATCH-editable; nothing writes it here. |
+| Pointers | `transfers.property_id` / `matters.property_id` / sync trigger | **Approved as recommended: untouched** (§8). |
+
+**Still open (not blocking this slice):**
+
+| # | Decision | Owner |
+|---|---|---|
 | D-DISC | Discovery filters/pagination beyond the §3.1 minimum | Product; not blocking. |
 | D7 (carried) | Prototype-era `matter_id NULL` matters: fail closed, or unique-`source_record_id` fallback | Keep fail-closed — **no implicit repair** of prototype records; bound to model-guide §11.7 which Jordan owns. |
 
@@ -421,26 +455,30 @@ slice — ratification is model/upstream work, not route work.
 
 ## 10. Boundary list for Dean → Jordan
 
-1. **Schema addition (required, exact DDL in §6.1)** — `client_request_id` +
-   `request_fingerprint` + institution-scoped partial unique index on both
-   `properties` and `matter_properties`; numbering must skip `022` (reserved
-   by the unmerged SARS branch). *The only proposed schema change.*
+1. **Schema addition (required, authored not executed)** — migration `024`
+   (`024_deedly_property_link_idempotency.sql`) adds `client_request_id` +
+   `request_fingerprint` + institution-scoped partial unique indexes on both
+   `properties` and `matter_properties`; numbering skips `022` (reserved by
+   the unmerged SARS branches). *The only schema change.* Certification and
+   execution need Jordan's sign-off through Dean.
 2. `matter_properties` — `UNIQUE(matter_id, property_id, property_kind)`,
    output-CHECK, `fk_matter_properties_property_tenant`,
-   `trg_matter_properties_set_tenant`; D-MULT structural-vs-service choice.
-3. `properties` — manual-capture write policy (approved at product level),
-   no dedup constraint acknowledged, `source_system='manual_capture'` is a
-   **proposed** token pending compatibility/consumer check (D-PROV),
-   `status` eligibility is a **proposal** (D-ELIG), and the
+   `trg_matter_properties_set_tenant`; multiplicity is now approved product
+   policy (multiple `input` links, no cap) — no structural change needed.
+3. `properties` — manual-capture write policy (approved), no dedup
+   constraint acknowledged, `source_system='manual_capture'` adopted after a
+   consumer check found no runtime readers (still his vocabulary to ratify),
+   `status='active'` new-link eligibility approved, and the
    `audit_properties_trigger` → `public.audit_log` side effect on every v1
    write (confirm acceptable vs `legitify_auditor` target state).
-4. `transfers.property_id` / `matters.property_id` — confirm canonical-only
-   writes and the column-retirement path (018/019 notes); trigger untouched.
+4. `transfers.property_id` / `matters.property_id` — canonical-only writes
+   confirmed for this slice; neither column nor the sync trigger is touched
+   (approved); column-retirement path stays his (018/019 notes).
 5. Dual `transfers.matter_id`/`matters.source_record_id` (guide §11.7) — the
    link-resolution rule follows the PATCH precedent; D7 stays his.
 6. `erf_number`/`lot_number`, `legal_description`/`description`,
-   `square_footage`/`extent_sqm` semantics (D-MAP1/2) — model-level column
-   meaning, his certification territory.
+   `square_footage`/`extent_sqm` semantics — corrected mappings approved and
+   implemented; underlying column-meaning certification stays his.
 7. No reference-table seeding needed (`property_kind` CHECK is
    self-contained; no new FK targets or definitions).
 
@@ -464,9 +502,10 @@ slice — ratification is model/upstream work, not route work.
    link; capture replay with same key+fingerprint → same property id, 200;
    same key + different fingerprint (including a key replayed against a
    different transfer — the fingerprint binds the target) → 409, zero writes.
-6. Multiplicity (if approved): a second, different `input` link → 409, while
-   an identical-link replay still returns 200 — ordering guaranteed; a
-   matter already holding multiple `input` links still reads back complete.
+6. Multiplicity (approved): multiple distinct `input` links on one matter
+   attach and read back complete; an identical-link retry returns the stored
+   link as `200 created:false`; a link replay succeeds even after the
+   property goes `inactive`.
 7. Matter resolution: `matter_id` NULL or non-`transfer` → error, zero
    writes, no implicit repair.
 
