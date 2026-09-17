@@ -1,7 +1,16 @@
 # Authenticated Core Matter Editing and Readback — Scope Proposal
 
-**Status:** proposal for review, not implemented. P0 – Matter Creation &
-Party Management.
+**Status:** **implemented** — merged on `main` at
+`f016f3e73dbf698e2a668c13a47110c33668bccb` ("Merge authenticated core matter
+editing and readback", reviewed at `249469f`). Deltas from this proposal:
+`purchase_price` was dropped from the merged slice (dependency D2 below remains
+unresolved, so `transfers.purchase_price` vs `transfer_financials` divergence is
+still an open decision), and the concurrency contract uses **two** required
+tokens — `expected_updated_at` + `expected_matter_updated_at`, both verified
+under row locks — instead of the single token drafted in §3. The linked matter
+is resolved deterministically via `transfers.matter_id`; a missing or
+inconsistent link fails closed. Q1 resolved as proposed: no cross-institution
+writes. P0 – Matter Creation & Party Management.
 **Source commit:** `f5c6a338543ca43c5a7b227a82df30214d3e183e` (`origin/main`).
 **Model reference:** `docs/deedly-core-transfer-matter-data-model.md` (this
 branch, @ `60dc6e3`). Jordan owns the Certified Core Transfer / Matter Model —

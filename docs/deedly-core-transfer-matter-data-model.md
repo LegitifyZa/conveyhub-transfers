@@ -1,8 +1,14 @@
 # DEEDLY Core Transfer / Matter Data Model
 
 **Project:** P0 — Transfers Backend & Core Data Model
-**Derived from:** `origin/main` @ `f5c6a338543ca43c5a7b227a82df30214d3e183e`
-**Date:** 2026-09-16
+**Derived from:** `origin/main` — **schema checkpoint**
+`f5c6a338543ca43c5a7b227a82df30214d3e183e` (migrations 001–021 + 023 as listed in
+§3; unchanged since) with **runtime update**
+`f016f3e73dbf698e2a668c13a47110c33668bccb` ("Merge authenticated core matter
+editing and readback"), which landed no migration — it added the v1
+`PATCH /api/v1/transfers/{id}` writer and the staff `matter` readback projection
+annotated in §5, §10 and §12.
+**Date:** 2026-09-16 (runtime-update annotations 2026-09-17)
 **Status:** Documentation only. This is a model guide, not certification evidence. It
 describes the schema and runtime validation *as implemented*; it does not redesign
 anything, and it does not attest live database or upstream-service state.
@@ -42,7 +48,8 @@ internals, and the documents/clauses catalogue internals beyond what
 
 **Document status.** This file (`deedly-core-transfer-matter-data-model.md`,
 with `deedly-core-transfer-matter-data-model.svg`) is the **current** model
-reference for the P0 data model at `f5c6a33`. Historical companions —
+reference for the P0 data model at schema checkpoint `f5c6a33` / runtime
+checkpoint `f016f3e`. Historical companions —
 authoritative when written, now superseded in part and kept for provenance:
 `docs/ERD.md`, `docs/ERD_Art.md`, `docs/ERD_Mermaid.md`,
 `docs/Database_Schema.md`, `README_Database.md` (pre-DEEDLY model);
@@ -276,9 +283,14 @@ create) **and** `matters.source_record_id = transfers.id::text` (varchar, no
 constraint). Runtime reads key on `source_record_id` — the v1 milestones query and
 the legacy delete path both use it — because the migrated prototype dataset has
 `matter_id` NULL and `source_record_id` has no UNIQUE constraint (callers add
-`accountable_institution_id` as defence in depth). A future cleanup could promote
-one link and drop the other; today both must be maintained, and both create paths
-set both.
+`accountable_institution_id` as defence in depth). The v1 PATCH added at `f016f3e`
+takes the opposite choice for *writes*: it resolves the linked matter
+deterministically through `transfers.matter_id` (plus the tenant predicate and
+`matter_type='transfer'`) and fails with no partial write when the pointer is
+missing or inconsistent — so prototype-era rows with `matter_id` NULL cannot be
+edited through v1 even though their matter is reachable via `source_record_id`.
+A future cleanup could promote one link and drop the other; today both must be
+maintained, and both create paths set both.
 
 ## 6. Identifiers: internal vs user-facing vs external
 
@@ -427,7 +439,7 @@ Required = enforced at the DB level; *runtime-stricter* cases are marked.
 |---|---|---|---|---|
 | `id` | uuid | PK | system (`uuid_generate_v4`) | Internal surrogate key; target of all transfer FKs |
 | `transfer_id` | varchar(50) | req, UNIQUE | system (`generate_transfer_id()` on v1) | User-facing `TRF-YYYY-…` reference; also copied into `matters.reference_number` |
-| `property_address` | text | req | user | Display address; v1 requires non-empty string |
+| `property_address` | text | req | user | Display address; v1 create requires non-empty string; editable via v1 PATCH (f016f3e) — denormalised text only, not the canonical property link (§10.4) |
 | `purchase_price` | decimal(12,2) | req | user | v1: number, finite, ≥ 0 |
 | `status` | varchar(50) | req | system `'in_progress'` | CHECK `in {in_progress, complete}` (016). ⚠ column **default still `'draft'`** — see §11 |
 | `current_step` / `total_steps` / `progress` | int | req | system 1/5/0 | Legacy wizard fields; `progress` recomputed by `update_transfer_progress` trigger on `current_step` changes |
@@ -450,6 +462,16 @@ v1 `POST /api/v1/transfers` accepts exactly: `property_address`,
 `client_request_id`, `accountable_institution_id` (optional; AI must equal the
 verified claim). Any other key → 422 (allow-list body validation).
 
+v1 `PATCH /api/v1/transfers/{id}` (merged `f016f3e`) accepts exactly:
+`property_address`, `firm_reference`, `title` (at least one required), plus the
+mandatory concurrency preconditions `expected_updated_at` and
+`expected_matter_updated_at` — both verified under `transfers`-then-`matters`
+row locks in one transaction, so a stale copy conflicts (409) on either row,
+including matter-only edits. `purchase_price` was proposed for this slice but
+excluded from the merge (dual storage vs `transfer_financials` unresolved —
+§12). Status, classification, progress counters, ids, `reference_number` and
+tenant ownership stay immutable by the allow-list.
+
 ### 10.2 `transfers.matters` — the workflow container
 
 | Field | Type | Req | Source | Purpose / rules |
@@ -457,7 +479,7 @@ verified claim). Any other key → 422 (allow-list body validation).
 | `id` | uuid | PK | system | Internal key |
 | `reference_number` | varchar(100) | req | system | Set to the transfer's `TRF-…` by both create paths. UNIQUE `(firm_id, reference_number)` — **ineffective for DEEDLY rows** (`firm_id` NULL ⇒ never collides); see §11 |
 | `matter_type` | varchar(50) | req | system `'transfer'` | CHECK `transfer|bond|cancellation|general`; gates the status CHECK and classification CHECK |
-| `title` | varchar(255) | opt | system | `"Transfer {transfer_id}"` |
+| `title` | varchar(255) | opt | system→user | `"Transfer {transfer_id}"` default; editable via v1 PATCH (f016f3e); empty → NULL |
 | `description` | text | opt | user | Unused by v1 create |
 | `status` | varchar(50) | req | system `'in_progress'` | Transfer matters: CHECK `in_progress|complete` (016); other types keep the 7-value legacy list. ⚠ column default `'draft'` unchanged — §11 |
 | `priority` | varchar(20) | req | system `'medium'` | CHECK `low|medium|high|urgent`; unused by v1 |
@@ -468,7 +490,7 @@ verified claim). Any other key → 422 (allow-list body validation).
 | `assigned_to` / `created_by` | uuid→`public.users` | opt | legacy | Deprecated local-user FKs |
 | `assigned_to_user_id` / `created_by_user_id` | int | opt | derived (JWT) | Platform actor ids; no FK |
 | `classification_code` | varchar(100) | opt | user | FK → `matter_classification_options(canonical_code)` UPDATE CASCADE; CHECK: only allowed when `matter_type='transfer'`; v1 requires the option be `category='transfer'`, selectable and active |
-| `firm_reference` | varchar(100) | opt | user | Firm's own reference string |
+| `firm_reference` | varchar(100) | opt | user | Firm's own reference string; settable at v1 create and editable via v1 PATCH (f016f3e); empty → NULL |
 | `opened_date` | date | req | system `CURRENT_DATE` | — |
 | `due_date` / `completed_date` | date | opt | user/system | — |
 | `metadata` | jsonb | req | system `'{}'` | Free-form extension point |
@@ -724,7 +746,12 @@ lists the supporting migration/runtime location and the affected behavior.
    has no UNIQUE.
    *Affected behavior:* a documented transition state — both links must be
    maintained by every writer, and readers must predicate on
-   `source_record_id` + `accountable_institution_id` for prototype data.
+   `source_record_id` + `accountable_institution_id` for prototype data. Since
+   `f016f3e` the links are also read-*asymmetric*: the v1 PATCH resolves the
+   matter only through `transfers.matter_id`, so prototype rows whose pointer is
+   NULL are read-reachable but not v1-editable. The same question will recur
+   for property linking — see
+   `docs/deedly-matter-property-linking-scope.md` (this branch).
 8. **`transfers.property_id` vs `matter_properties`.**
    *Evidence:* `002` adds the legacy pointer; `018` creates
    `matter_properties`; `019` backfills, adds the one-way sync trigger
@@ -733,8 +760,9 @@ lists the supporting migration/runtime location and the affected behavior.
    `routers/v1/transfers.py` has no `matter_properties` writer.
    *Affected behavior:* a v1-created transfer currently has neither a
    `properties` row nor a `matter_properties` row — the canonical table is
-   populated only via the legacy path (now quarantined) or the trigger.
-   Tracked under the authenticated-matter-saving work in §12.
+   populated only via the legacy path (now quarantined) or the trigger. Still
+   true at `f016f3e`; the scoped follow-up is
+   `docs/deedly-matter-property-linking-scope.md` (this branch).
 9. **`transfer_parties.accountable_institution_id` is app-derived, not
    FK-derived.**
    *Evidence:* `008` adds the column with no composite FK to the parent;
@@ -824,22 +852,31 @@ model — do not code against them:
   exist, semantics deliberately unresolved.
 - **`transfers.property_id` removal** — deferred until consumers migrate to
   `matter_properties` (019 contract note).
-- **Authenticated matter saving — the remaining half of "durable matter
-  attachment."** Party attachment itself is **implemented on main** (merged
-  before this guide's source checkpoint): v1
-  `POST /api/v1/transfers/{transfer_id}/parties` durably persists both Golden
-  Record parties (with the verified display-minimal cache) and manual persons,
-  with institution-scoped idempotent replay. What remains deferred is the
-  broader authenticated save of the *rest* of the matter payload:
-  `matter_properties` links and property scaffolding, `transfer_financials`,
-  `matter_milestones`/`milestone_history`, `transfer_documents` rows, and any
-  update/patch of existing transfer or matter fields — capabilities that
-  existed only on the now-quarantined legacy `/api/transfers` routes
-  (evidence: `routers/v1/transfers.py` exposes no such writers;
+- **Authenticated matter saving — partially landed at `f016f3e`.** Party
+  attachment itself is **implemented on main** (merged before this guide's
+  schema checkpoint): v1 `POST /api/v1/transfers/{transfer_id}/parties`
+  durably persists both Golden Record parties (with the verified
+  display-minimal cache) and manual persons, with institution-scoped
+  idempotent replay. Core-field editing and readback **landed at runtime
+  update `f016f3e`**: `PATCH /api/v1/transfers/{id}` writes
+  `transfers.property_address`, `matters.firm_reference` and `matters.title`
+  under dual `updated_at` optimistic-concurrency tokens, and `GET /{id}`
+  returns the staff-only `matter` projection both servers echo as the
+  concurrency tokens. Still deferred: `matter_properties` links and property
+  scaffolding (scoped separately in
+  `docs/deedly-matter-property-linking-scope.md`, this branch),
+  `transfer_financials`, `matter_milestones`/`milestone_history`,
+  `transfer_documents` rows, `purchase_price` editing (proposed for the
+  editing slice but excluded at merge — the `transfers.purchase_price` vs
+  `transfer_financials.purchase_price` dual-storage question in
+  `deedly-authenticated-matter-editing-scope.md` D2 is unresolved), and status
+  or classification changes — capabilities that existed only on the
+  now-quarantined legacy `/api/transfers` routes (evidence:
   `src/lib/api/transferApi.ts` still points the SPA's document/milestone calls
-  at the quarantined endpoints). Until it lands, the only live write paths in
-  the **ordinary matter-creation flow** are `POST /api/v1/transfers`
-  (transfer+matter pair) and `POST /api/v1/transfers/{id}/parties`.
+  at the quarantined endpoints). The live write paths in the **ordinary
+  matter-creation flow** are now `POST /api/v1/transfers` (transfer+matter
+  pair), `POST /api/v1/transfers/{id}/parties`, and
+  `PATCH /api/v1/transfers/{id}` (three fields).
   Separately, the specialist write surface in §11 item 14 is implemented:
   `POST …/estate-contexts` and `POST …/representative-assignments` exist on
   the FastAPI service only (the BFF exposes their GETs but not their POSTs),
@@ -857,19 +894,29 @@ model — do not code against them:
 
 ## 13. Source commit and provenance
 
-- Inspected commit: `origin/main` = `f5c6a338543ca43c5a7b227a82df30214d3e183e`
-  (merge of `deedly/mvp0/auth/production-authentication`).
+- Inspected commit: `origin/main` schema checkpoint =
+  `f5c6a338543ca43c5a7b227a82df30214d3e183e` (merge of
+  `deedly/mvp0/auth/production-authentication`); runtime-update checkpoint =
+  `f016f3e73dbf698e2a668c13a47110c33668bccb` (merge of
+  `deedly/mvp0/matters/core-editing-readback`; no migration content — the
+  §3 sequence is unchanged).
 - Migration sequence inspected: `001`–`021`, `023` in
   `src/lib/migrations/` (applied in filename order by `scripts/migrate.mjs`;
   ledger `public.transfers_schema_migrations`).
-- Runtime inspected: `python_server/routers/v1/transfers.py`,
+- Runtime inspected: `python_server/routers/v1/transfers.py` (incl. the
+  `f016f3e` PATCH handler and staff `matter` GET projection),
   `python_server/services/{matter_service,transfer_party_service,
-  matter_specialist_service,golden_record_visibility}.py`,
+  matter_specialist_service,golden_record_visibility}.py` (incl. `f016f3e`
+  `matter_service.update_core_matter_fields`),
   `python_server/repositories/{transfer_parties,matter_specialist_contexts}.py`,
   `python_server/auth/{policy,current_user,dependencies}.py`,
   `python_server/routers/transfers.py` (quarantined legacy),
-  `server/routes/v1/transfers.ts`, `server/routes/transfers.ts` (quarantined),
-  `src/lib/utils/partyDuplicates.ts`.
+  `server/routes/v1/transfers.ts` (incl. `f016f3e` PATCH proxy and full-precision
+  `updated_at` matter readback), `server/routes/transfers.ts` (quarantined),
+  `src/lib/utils/partyDuplicates.ts`, and for the `f016f3e` update
+  `src/lib/api/transferApi.ts` (`getMatterCore`/`updateMatterCore`),
+  `src/pages/TransferMilestones.tsx` (three-field details panel) and
+  `src/pages/Transfers.tsx` (v1 matter create/attach flow).
 - Design docs cross-referenced for the deferred inventory:
   `docs/deedly-party-role-contract-audit.md`,
   `docs/deedly-specialist-role-capacity-contract.md`,
