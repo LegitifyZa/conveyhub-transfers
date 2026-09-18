@@ -10,6 +10,31 @@ Status of surrounding work: Property Capture and Linking — In Review
 (unmerged). Production Authentication — Blocked. This document proposes
 nothing that requires either to land first.
 
+---
+
+## 0. Approval record (2026-09-18)
+
+The decisions below were reviewed and **approved with the following
+outcomes**; implementation proceeded on
+`deedly/mvp0/documents/upload-and-readback` (commit `f9c33d3`). Where the
+approval differs from the recommendation in the table, the approval wins.
+
+| Item | Approved outcome |
+|---|---|
+| D1 Storage provider | **Provider abstraction** with one configured local development adapter now; files-service/S3-compatible backend prepared behind the interface — direct S3 access is NOT assumed to replace the files-service contract. `FilesServiceStorage` client shell exists and fails closed until `FILES_SERVICE_BASE_URL` is configured. |
+| D2 Provisioning | **Clive still needs to confirm the non-production endpoint and credentials.** The documented port 8005 is not confirmation of a deployed service. Files-service integration remains unverified. |
+| D3 File types | **PDF, DOCX, JPG/JPEG, PNG only**, server-side content validation (magic-byte sniffing; DOCX additionally requires the `.docx` name since it is a ZIP container). |
+| D4 File size | **Hard 25 MB per-file limit enforced during upload.** |
+| D5 Scanning | **Malware-scanner interface + ClamAV adapter** (clamd INSTREAM). Files remain unavailable until a clean result; scanner failure/unavailability never releases them. The no-scanner-fallback in the original D5 row is superseded — storage, scanning and human-review states are kept separate; human verification/rejection is outside this slice. |
+| D6–D8 Permissions | Staff upload: `transfers:write` + same-institution matter. Staff list/download: `transfers:read` + same-institution. **Client document access remains excluded.** |
+| Download links | **Short-lived secure links issued after authorization** — opaque HMAC bearer token, 5-minute default TTL, no individual revocation before expiry (documented limitation); document clean/uploaded state re-checked at retrieval; internal paths/storage keys never exposed. "Link issued" and "file retrieved" are distinct audit events. |
+| Retry/recovery | Established idempotency pattern, bound to institution + matter + document + file fingerprint; same key with changed content conflicts; retries return the same document/object. Partial failures recorded durably in `document_operation_log` with identifiers/outcome for reconciliation — no file contents, credentials or tokens logged. |
+| Replacement/retention | **No replacement, version overwrite, physical deletion or automatic object cleanup in this slice.** Metadata cascades must not silently destroy the only record of retained files — the `transfer_id ON DELETE CASCADE` risk is flagged for Jordan's review in migration 025 §E. |
+| Audit | Platform audit logger contract is a **flagged missing integration** (`legitify_auditor`/`AUDIT_DATABASE_URL` unconfirmed); the slice's adapter is `document_operation_log`. Audit-delivery failure behavior is explicit: it does not roll back the business operation and is surfaced for reconciliation. |
+| Required documents | **Included in P0** — baseline requirements per classification plus conditional additions, evaluated by a rules engine. **Dean will supply the approved catalogue and rule definitions** — the mechanism ships with an empty rules table; the bond-approval-letter example remains illustrative only. Seeding is idempotent; a requirement is distinct from an uploaded file; recalculation preserves existing uploads; a requirement that stops applying is withdrawn in place and its evidence is never auto-deleted. Submission/milestone gates and waiver permissions remain undecided product questions (§4). |
+| Schema | Migration 025 authored for review (not executed): `accountable_institution_id` on `transfer_documents`, idempotency/storage/scan columns, `document_requirement_rules`, `transfer_document_requirements`, `document_operation_log`, and the proposed cascade-path change — all coordinated through Dean to Jordan. |
+
+
 ## 1. Evidence base
 
 What source material already establishes:

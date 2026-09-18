@@ -1,8 +1,11 @@
 # Authenticated Matter Documents — scope and readiness review
 
-**Status:** inspection and documentation only. Implementation scope is **not
-approved**. No runtime changes, database activity, migrations, storage
-calls, deployment or merge were performed.
+**Status:** scope review complete; the decisions in
+`deedly-matter-documents-decisions.md` were **approved on 2026-09-18** and a
+bounded implementation now exists on
+`deedly/mvp0/documents/upload-and-readback` (`f9c33d3`, unmerged). The scope
+findings below describe the pre-implementation state and remain accurate as
+of `f016f3e`.
 
 **Base:** freshly fetched `main` at `f016f3e73dbf698e2a668c13a47110c33668bccb`.
 Branch: `docs/deedly-matter-documents-scope`. The property branch
