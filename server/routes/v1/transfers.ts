@@ -225,7 +225,7 @@ const isUuid = (value: string): boolean => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-
 const SELECT_TRANSFER_COLUMNS = `
   SELECT t.id, t.transfer_id, t.matter_id, t.property_address, t.purchase_price, t.status,
          t.current_step, t.total_steps, t.progress, t.created_at, t.updated_at,
-         t.updated_at::text AS updated_at_text
+         t.updated_at::text AS updated_at_text, t.accountable_institution_id
 `
 
 // All callers are scoped to their verified institution — there is no

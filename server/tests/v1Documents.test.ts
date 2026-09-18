@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { createServer, IncomingMessage, Server, ServerResponse, request as httpRequest } from 'node:http'
 import { randomUUID } from 'node:crypto'
-import { after, before, beforeEach, describe, it } from 'node:test'
+import { after, before, beforeEach, describe, it, mock } from 'node:test'
 
 import jwt from 'jsonwebtoken'
 
@@ -33,6 +33,63 @@ let upstreamResponse: { status: number; body: unknown; contentType?: string }
 
 const TRANSFER_ID = '22222222-2222-4222-8222-222222222222'
 const DOC_ID = '55555555-5555-4555-8555-555555555555'
+const MATTER_ID = '44444444-4444-4444-8444-444444444444'
+
+// GET /documents is DB-direct (not proxied): the pool is mocked with a
+// fixture dispatcher. Same mocked-db caveat as the FastAPI suite — this
+// verifies route behavior, not a live schema.
+let docGetScenario = {
+  matterClassification: 'sale' as string | null,
+  bondPresent: true,
+  financialsRow: null as { loan_amount: number | null } | null,
+  rules: [] as { rule_key: string; classification_code: string | null; condition_key: string | null }[],
+}
+
+async function docFixtureQuery(text: string, params: unknown[] = []) {
+  if (text.includes('FROM transfers t') && text.includes('t.id = $1')) {
+    // The authorizing SELECT must carry t.accountable_institution_id — the
+    // requirements/flags queries dereference it from the returned row. A
+    // fixture row once supplied the key out-of-band of the real select
+    // list, masking a live regression; assert it on the SQL text.
+    assert.match(text, /t\.accountable_institution_id/)
+    const rows =
+      params[0] === TRANSFER_ID && params[1] === 5
+        ? [{
+            id: TRANSFER_ID, transfer_id: 'TRF-TEST', matter_id: MATTER_ID,
+            property_address: '12 Test Street', status: 'in_progress',
+            accountable_institution_id: 5,
+          }]
+        : []
+    return { rows, rowCount: rows.length }
+  }
+  if (text.includes('FROM transfer_document_requirements')) {
+    return { rows: [], rowCount: 0 }
+  }
+  if (text.includes('FROM transfer_documents')) {
+    return { rows: [], rowCount: 0 }
+  }
+  if (text.includes('FROM matters')) {
+    return { rows: [{ classification_code: docGetScenario.matterClassification }], rowCount: 1 }
+  }
+  if (text.includes('FROM bonds')) {
+    const rows = docGetScenario.bondPresent ? [{ present: 1 }] : []
+    return { rows, rowCount: rows.length }
+  }
+  if (text.includes('FROM transfer_financials')) {
+    const rows = docGetScenario.financialsRow ? [docGetScenario.financialsRow] : []
+    return { rows, rowCount: rows.length }
+  }
+  if (text.includes('FROM document_requirement_rules')) {
+    return { rows: docGetScenario.rules, rowCount: docGetScenario.rules.length }
+  }
+  throw new Error(`Unexpected query: ${text}`)
+}
+
+mock.method(pool, 'query', docFixtureQuery as typeof pool.query)
+mock.method(pool, 'connect', (async () => ({
+  query: (text: string, params?: unknown[]) => docFixtureQuery(text, params),
+  release: () => {},
+})) as typeof pool.connect)
 
 function makeToken(abilities: string[] = ['api', 'transfers:read', 'transfers:write'], role = 3, ai = 5) {
   return jwt.sign(
@@ -118,6 +175,7 @@ after(async () => {
   server.close()
   upstream.close()
   await pool.end()
+  mock.restoreAll()
 })
 
 describe('v1 document BFF proxies', async () => {
@@ -286,5 +344,72 @@ describe('v1 document BFF proxies', async () => {
     )
     assert.equal(res.status, 503)
     assert.equal(res.body.success, false)
+  })
+})
+
+describe('v1 GET documents readback', async () => {
+  beforeEach(() => {
+    docGetScenario = {
+      matterClassification: 'sale',
+      bondPresent: true,
+      financialsRow: null,
+      rules: [],
+    }
+  })
+
+  async function getDocuments() {
+    const res = await fetch(`${baseUrl}/api/v1/transfers/${TRANSFER_ID}/documents`, {
+      headers: { Authorization: `Bearer ${makeToken()}` },
+    })
+    return { status: res.status, body: await res.json() }
+  }
+
+  it('flags missing classification as visibly unevaluated', async () => {
+    // Matter row exists but classification is NULL: classification-scoped
+    // rules are flagged and the missing fact is reported — never a silent
+    // empty/complete requirement set.
+    docGetScenario.matterClassification = null
+    docGetScenario.rules = [
+      { rule_key: 'fica', classification_code: null, condition_key: null },
+      { rule_key: 'sale_addendum', classification_code: 'sale', condition_key: null },
+      { rule_key: 'bond_letter', classification_code: null, condition_key: 'has_bond' },
+    ]
+    const res = await getDocuments()
+    assert.equal(res.status, 200)
+    const data = res.body.data
+    assert.ok(Array.isArray(data.documents))
+    assert.ok(Array.isArray(data.requirements))
+    assert.ok(data.unevaluatedFacts.includes('classification_code'))
+    // A bond row exists, so has_bond itself is not a missing fact.
+    assert.ok(!data.unevaluatedFacts.includes('has_bond'))
+    const flagged = new Set(data.unevaluatedRules.map((r: { ruleKey: string }) => r.ruleKey))
+    assert.ok(flagged.has('sale_addendum'))
+    assert.ok(!flagged.has('bond_letter'))
+  })
+
+  it('flags an unsupported condition rather than dropping it', async () => {
+    docGetScenario.rules = [
+      { rule_key: 'fica', classification_code: 'sale', condition_key: null },
+      { rule_key: 'specialist_letter', classification_code: null, condition_key: 'requires_specialist_confirm' },
+    ]
+    const res = await getDocuments()
+    assert.equal(res.status, 200)
+    const data = res.body.data
+    assert.deepEqual(data.unevaluatedFacts, [])
+    assert.deepEqual(data.unevaluatedRules, [
+      { ruleKey: 'specialist_letter', conditionKey: 'requires_specialist_confirm' },
+    ])
+  })
+
+  it('reports empty flags on a complete evaluation', async () => {
+    docGetScenario.rules = [
+      { rule_key: 'fica', classification_code: 'sale', condition_key: null },
+      { rule_key: 'bond_letter', classification_code: null, condition_key: 'has_bond' },
+    ]
+    const res = await getDocuments()
+    assert.equal(res.status, 200)
+    const data = res.body.data
+    assert.deepEqual(data.unevaluatedFacts, [])
+    assert.deepEqual(data.unevaluatedRules, [])
   })
 })

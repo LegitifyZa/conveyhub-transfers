@@ -353,6 +353,106 @@ class DocumentRouteAuthTests(RouteTestBase):
         self.assertNotEqual(response.status_code, 413)
 
 
+class GetDocumentsRouteTests(RouteTestBase):
+    """GET /documents readback — evaluation flags through the real route.
+
+    Route-level queries (authorize, document list) go through the base
+    fixture; requirement/context queries are service-level stubs — same
+    mocked-db caveat as the rest of the module. Scenario knobs are set per
+    test: matter classification, financing facts and the active rule set.
+    """
+
+    async def asyncSetUp(self):
+        # Scenario knobs — tests override before the GET.
+        self.matter_classification = "sale"
+        self.bond_present = True
+        self.financials_row = None  # None => no row; {"loan_amount": x} => row
+        self.rules = []
+        await super().asyncSetUp()
+        self.stack.enter_context(
+            patch.object(svc.db, "query", AsyncMock(side_effect=self._svc_fixture))
+        )
+
+    async def _fixture(self, text, params=None, **kwargs):
+        # The authorizing SELECT must carry t.accountable_institution_id —
+        # the requirements/flags queries dereference it from the returned
+        # row. Fixtures once supplied the key out-of-band of the real select
+        # list, which masked a live regression; assert it on the SQL text.
+        if "FROM transfers t" in text and "t.id = $1" in text:
+            self.assertIn("t.accountable_institution_id", text)
+        return await super()._fixture(text, params, **kwargs)
+
+    async def _svc_fixture(self, text, params=None, **kwargs):
+        if "FROM transfer_document_requirements" in text:
+            return db.QueryResult(rows=[], row_count=0)
+        if "FROM matters" in text:
+            return db.QueryResult(
+                rows=[{"classification_code": self.matter_classification}], row_count=1
+            )
+        if "FROM bonds" in text:
+            rows = [{"present": 1}] if self.bond_present else []
+            return db.QueryResult(rows=rows, row_count=len(rows))
+        if "FROM transfer_financials" in text:
+            rows = [self.financials_row] if self.financials_row else []
+            return db.QueryResult(rows=rows, row_count=len(rows))
+        if "FROM document_requirement_rules" in text:
+            return db.QueryResult(rows=list(self.rules), row_count=len(self.rules))
+        raise AssertionError(f"Unexpected query: {text}")
+
+    async def test_get_missing_classification_is_visibly_unevaluated(self):
+        # Matter row exists but classification is NULL: classification-scoped
+        # rules are flagged and the missing fact is reported — never a
+        # silent empty/complete requirement set.
+        self.matter_classification = None
+        self.rules = [
+            {"rule_key": "fica", "classification_code": None, "condition_key": None},
+            {"rule_key": "sale_addendum", "classification_code": "sale", "condition_key": None},
+            {"rule_key": "bond_letter", "classification_code": None, "condition_key": "has_bond"},
+        ]
+        response = await self.client.get(
+            f"/api/v1/transfers/{OWN}/documents", headers=self._headers()
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()["data"]
+        self.assertIn("documents", data)
+        self.assertIn("requirements", data)
+        self.assertIn("classification_code", data["unevaluatedFacts"])
+        # A bond row exists, so has_bond itself is not a missing fact.
+        self.assertNotIn("has_bond", data["unevaluatedFacts"])
+        flagged = {r["ruleKey"] for r in data["unevaluatedRules"]}
+        self.assertIn("sale_addendum", flagged)
+        self.assertNotIn("bond_letter", flagged)
+
+    async def test_get_unsupported_condition_is_flagged_not_dropped(self):
+        self.rules = [
+            {"rule_key": "fica", "classification_code": "sale", "condition_key": None},
+            {"rule_key": "specialist_letter", "classification_code": None, "condition_key": "requires_specialist_confirm"},
+        ]
+        response = await self.client.get(
+            f"/api/v1/transfers/{OWN}/documents", headers=self._headers()
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()["data"]
+        self.assertEqual(data["unevaluatedFacts"], [])
+        self.assertEqual(
+            data["unevaluatedRules"],
+            [{"ruleKey": "specialist_letter", "conditionKey": "requires_specialist_confirm"}],
+        )
+
+    async def test_get_complete_evaluation_reports_empty_flags(self):
+        self.rules = [
+            {"rule_key": "fica", "classification_code": "sale", "condition_key": None},
+            {"rule_key": "bond_letter", "classification_code": None, "condition_key": "has_bond"},
+        ]
+        response = await self.client.get(
+            f"/api/v1/transfers/{OWN}/documents", headers=self._headers()
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()["data"]
+        self.assertEqual(data["unevaluatedFacts"], [])
+        self.assertEqual(data["unevaluatedRules"], [])
+
+
 class CreateDocumentServiceTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.queries = []

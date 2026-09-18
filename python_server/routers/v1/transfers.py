@@ -61,7 +61,8 @@ DEFAULT_SORT_COLUMNS = ["created_at", "updated_at", "property_address", "status"
 
 SELECT_TRANSFER_COLUMNS = """
     SELECT t.id, t.transfer_id, t.matter_id, t.property_address, t.purchase_price, t.status,
-           t.current_step, t.total_steps, t.progress, t.created_at, t.updated_at
+           t.current_step, t.total_steps, t.progress, t.created_at, t.updated_at,
+           t.accountable_institution_id
 """
 
 
