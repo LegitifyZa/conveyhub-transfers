@@ -130,6 +130,14 @@ Office rejections. Full record: scope doc §10.1; implementation belongs
 to the future generated-document/template slice, not this upload/readback
 slice.
 
+**Catalogue template prepared:** `docs/deedly-document-catalogue-template.md`
+gives Dean a fill-in table aligned with the implemented engine, flags the
+columns the engine cannot yet persist (per-party/property scope, stage,
+approval states, rule version, condition sources) and defines import
+validation (duplicate codes, unsupported conditions, repeat imports, rule
+updates/retirement — uploaded evidence is never touched). Rows stay
+explicitly `PENDING` where decisions are unresolved; nothing is seeded.
+
 ## 5. Schema/storage dependencies — Dean → Jordan
 
 - `transfer_documents`: `storage_key` + `file_instance_id` nullable
