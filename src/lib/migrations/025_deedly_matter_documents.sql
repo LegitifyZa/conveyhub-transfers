@@ -181,11 +181,25 @@ CREATE INDEX IF NOT EXISTS idx_doc_op_log_operation_time
 -- ---------------------------------------------------------------------------
 -- E. PROPOSED for Jordan's review — deletion path for retained files
 -- ---------------------------------------------------------------------------
--- transfer_documents.transfer_id is ON DELETE CASCADE (migration 005). A
--- transfer delete therefore destroys the rows that are the only metadata
--- record of retained storage objects — the exact "metadata cascade silently
--- destroys the only record" risk. No delete endpoint exists in this slice, so
--- the risk is latent (any future transfer-deletion path triggers it).
+-- transfer_documents.transfer_id is ON DELETE CASCADE (constraint
+-- transfer_documents_transfer_id_fkey, created in migration 005; the table
+-- moved to the transfers schema in 010). A transfer delete therefore
+-- destroys the rows that are the only metadata record of retained storage
+-- objects — the exact "metadata cascade silently destroys the only record"
+-- risk. NOTE: this comment is a proposal, NOT active protection.
+--
+-- Documented parent-deletion paths (all currently non-operational):
+--   1. DELETE /api/transfers/:id — quarantined on BOTH the BFF and FastAPI
+--      (401/503), but live handlers exist behind the quarantine and would
+--      issue DELETE FROM transfers, cascading here if ever re-enabled.
+--   2. TransferService.deleteTransfer (src/lib/services/transferService.ts)
+--      — reachable only via path 1.
+--   3. Frontend useTransfers.deleteTransfer → the quarantined endpoint.
+--   4. Linked-matter deletion inside the quarantined handlers
+--      (DELETE FROM matters WHERE id = $1) removes the matter row too.
+--   5. DatabaseUtils.cleanupOldRecords (src/lib/utils/databaseUtils.ts) —
+--      latent, never called; would bulk-delete 'cancelled' transfers.
+--   6. Direct SQL/operator — only the FK action itself decides the outcome.
 --
 -- Proposal A (preferred): forbid deleting transfers that still have document
 -- metadata; archive instead. Requires product confirmation that transfer
@@ -200,7 +214,11 @@ CREATE INDEX IF NOT EXISTS idx_doc_op_log_operation_time
 --   rows and orphan the storage objects under an explicit retention run.
 --
 -- The same decision applies to transfer_document_requirements (currently
--- CASCADE above, matching the parent convention). Jordan owns the choice;
--- do not apply either variant without approval.
+-- CASCADE above, matching the parent convention).
+-- document_operation_log.transfer_id is deliberately FK-free so
+-- audit/reconciliation rows survive parent deletion. Jordan owns the
+-- choice; do not apply either variant
+-- without approval. Physical object deletion is disabled in this slice —
+-- the storage interface has no delete operation.
 
 COMMIT;
