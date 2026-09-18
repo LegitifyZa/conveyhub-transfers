@@ -121,6 +121,15 @@ Explicitly pending — none are invented here: reviewer permission model
 per classification, submission/milestone gating, replacement policy for
 verified docs, retention schedule, client document access.
 
+**Dean-supplied requirement recorded (implementation pending):** signature
+dates must render the month in full words (`17 September 2026`, never
+`17/9/2026` or `17 Sep 2026`) across generated-document templates,
+PDF/export output and document-review guidance — already-signed uploaded
+documents are never altered automatically. Intended to prevent Deeds
+Office rejections. Full record: scope doc §10.1; implementation belongs
+to the future generated-document/template slice, not this upload/readback
+slice.
+
 ## 5. Schema/storage dependencies — Dean → Jordan
 
 - `transfer_documents`: `storage_key` + `file_instance_id` nullable

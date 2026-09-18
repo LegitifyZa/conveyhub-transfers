@@ -231,7 +231,41 @@ fate (read only by the quarantined `GET /api/documents`).
 - Node and FastAPI legacy upload handlers write to **different**
   directories — a real dual-write hazard if ever unquarantined as-is.
 
-## 10. Certification boundary
+## 10. Dean-supplied requirements & guidance (implementation pending)
+
+Recorded requirements supplied by Dean for P0 – Documents & Document
+Requirements. These are approved guidance, not proposals — implementation
+is pending and listed under the backlog/future tasks.
+
+### 10.1 Signature dates must spell the month in full words
+
+**Requirement (Dean-supplied, 2026-09-18):** signature dates on DEEDLY
+documents must render the month in full words — e.g. **17 September
+2026** — never `17/9/2026` and never an abbreviated month (`17 Sep
+2026`). Purpose: prevent Deeds Office rejections of lodged documents.
+
+**Carries into:**
+
+- Generated-document templates (`document_templates` /
+  `document_template_versions` and the `documentGenerator` lane).
+- PDF/export output (any date placeholder rendered for signature blocks).
+- Document-review guidance (reviewers should flag numeric/abbreviated
+  signature dates on uploaded evidence).
+
+**Explicit boundary:** already-signed uploaded documents are **not**
+altered automatically — the rule applies to what DEEDLY generates and to
+review guidance, not to rewriting third-party signed files.
+
+**Status:** recorded, implementation pending — no runtime change made in
+this step.
+
+**Relevant future implementation task:** when the generated-document /
+template pipeline slice is scheduled, add a shared signature-date
+formatter (full month name, `d MMMM yyyy`) used by every template
+placeholder and PDF/export path, plus a review-guidance note; verify no
+existing template emits numeric or abbreviated months.
+
+## 11. Certification boundary
 
 This review is static code inspection on `f016f3e` plus prior mock/unit
 evidence. The browser-harness document behavior was simulated; no live
