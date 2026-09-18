@@ -27,7 +27,7 @@ Migration 024 adds institution-scoped request idempotency columns (`client_reque
    - **Discovered Defect (Blocking for Property Capture)**: `public.generate_property_id()` (authored in Migration 002) fails with `AmbiguousColumnError: column reference "property_id" is ambiguous` when executed against PostgreSQL 16+. The PL/pgSQL variable `property_id` collides with column `properties.property_id` in `WHERE property_id = property_id`.
    - **Why Missed in Previous Testing**: The scratch DB test suite (`test_v1_matter_properties_db.py`) replaced `generate_property_id()` with a synthetic mock, masking the bug.
    - **Compatibility with Disambiguated Function**: When `generate_property_id()` was temporarily patched with a disambiguated variable (`v_property_id`), the entire FastAPI service and HTTP surface (`POST /api/v1/transfers/{id}/properties`, `GET /api/v1/transfers/{id}/properties`) passed all checks: 201 creation, 200 idempotent replay, 409 conflict on altered payload, cross-institution isolation, and atomic rollback on failure.
-   - **Required Action Before Feature Launch**: Author and execute a migration to replace `public.generate_property_id()` with disambiguated variable references. Migration 024 itself should not be polluted with this unrelated fix. *(Update: authored as `src/lib/migrations/026_deedly_generate_property_id_ambiguity_fix.sql` — 025 was already reserved for the documents slice; pending approved execution.)*
+   - **Required Action Before Feature Launch**: Author and execute a migration (e.g. Migration 025 or prerequisite fix) to replace `public.generate_property_id()` with disambiguated variable references. Migration 024 itself should not be polluted with this unrelated fix.
 
 ---
 
@@ -205,8 +205,8 @@ With `generate_property_id()` temporarily patched in `conveyhub_isolated`, the f
 The following areas remain outside the bounded database verification scope:
 1. **Upstream External Authentication**: Tests used local signed JWTs matching BFF verification rules; live upstream Legitify S2S authentication and key rotation remain under integration HOLD.
 2. **Production Postal Code Validation**: Verified `validate_sa_postal_code()` on standard 4-digit codes; postal codes outside South Africa or non-standard formats were not certified.
-3. **Legacy Composite FK Deletion**: Deleting a property still referenced via `transfers.property_id` fails due to `ON DELETE SET NULL` on non-nullable `accountable_institution_id` (direct evidence: composite tenant FKs `fk_transfers_property_tenant` / `fk_matters_property_tenant` in `src/lib/migrations/019_deedly_property_tenant_isolation.sql` use blanket `SET NULL` over `(property_id, accountable_institution_id)`, and `src/lib/migrations/012_backfill_qa_tenant_and_enforce_ownership.sql` made those tenant columns `NOT NULL`). This remains an independent schema issue.
-4. **`public.generate_property_id()` Defect Fix**: Requires an approved migration before the manual property capture feature can be released to staging or production. Authored as `src/lib/migrations/026_deedly_generate_property_id_ambiguity_fix.sql` (numbering confirmed against all active branches — 022 SARS, 023 parties, 024 this feature, 025 documents; 026 was next free).
+3. **Legacy Composite FK Deletion**: Deleting a property still referenced via `transfers.property_id` fails due to `ON DELETE SET NULL` on non-nullable `accountable_institution_id` (documented in `docs/legacy-property-fk-delete-review.md`). This remains an independent schema issue.
+4. **`public.generate_property_id()` Defect Fix**: Requires an approved migration before the manual property capture feature can be released to staging or production.
 
 ---
 
@@ -216,3 +216,40 @@ The following areas remain outside the bounded database verification scope:
 - **Idempotency & Tenant Isolation**: **CERTIFIED**
 - **Existing Data Safety**: **CERTIFIED**
 - **Deployment Recommendation**: **CONDITIONAL PASS** (Approve Migration 024 DDL; schedule prerequisite fix for `generate_property_id()` before feature launch).
+
+---
+
+## Addendum — corrections recorded by Devin (Cognition), 2026-09-18
+
+*Jordan's acknowledgment of this addendum is pending.*
+
+The following corrections were identified during review of this report.
+They are recorded here rather than edited into the original text so that
+the verification evidence retains Jordan's provenance. No statement in
+the report above was altered, including the disclosure that the
+application-level checks ran against a temporarily patched
+`generate_property_id()`.
+
+1. **§8.3 citation does not resolve.** `docs/legacy-property-fk-delete-review.md`
+   does not exist in this repository on any branch or in history. The
+   underlying claim is independently accurate — direct references:
+   composite tenant FKs `fk_transfers_property_tenant` /
+   `fk_matters_property_tenant` in
+   `src/lib/migrations/019_deedly_property_tenant_isolation.sql` use a
+   blanket `ON DELETE SET NULL` over `(property_id,
+   accountable_institution_id)`, and
+   `src/lib/migrations/012_backfill_qa_tenant_and_enforce_ownership.sql`
+   made those tenant columns `NOT NULL`.
+2. **Executive-summary numbering suggestion.** The "e.g. Migration 025"
+   suggestion collided with `025_deedly_matter_documents.sql` on
+   `deedly/mvp0/documents/upload-and-readback`. The generator fix has
+   since been authored as
+   `src/lib/migrations/026_deedly_generate_property_id_ambiguity_fix.sql`
+   — 026 was the next free number across all active branches at
+   authoring time (022 SARS, 023 parties, 024 this feature, 025
+   documents). Deployment ordering recorded in the file: apply before
+   manual property capture is enabled.
+3. **Verification-plan checksum.** `docs/deedly-migration-024-verification-plan.md`
+   cited `fa3f3f59…`; corrected to `c280d874…` (the file's invariant hash
+   since `bae5185c`) with a dated note in that document, matching this
+   report's own §1 correction.

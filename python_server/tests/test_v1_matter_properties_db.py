@@ -35,14 +35,17 @@ MATTER_ID = "44444444-4444-4444-8444-444444444444"
 _DDL = """
 CREATE SCHEMA {s};
 
--- Faithful replica of migration 026's public.generate_property_id() —
--- the corrected PL/pgSQL body, verbatim except the schema substitution
--- transfers.properties -> {s}.properties. The earlier synthetic SQL
--- substitute ('PROP-TEST-...') never executed the real uniqueness probe,
--- which masked the migration-002 variable/column ambiguity defect found
--- by the 024 verification run. Because the scratch properties table has a
--- real property_id column, a reintroduced ambiguous reference fails here
--- exactly as it does in production.
+-- Schema-adjusted copy of migration 026's public.generate_property_id()
+-- — the corrected PL/pgSQL body, verbatim except the schema substitution
+-- transfers.properties -> {s}.properties. This is collision coverage of
+-- the corrected probe shape, NOT verification that migration 026 itself
+-- executes: that requires Jordan's run of the actual file and the
+-- installed public.generate_property_id() without substitute. The
+-- earlier synthetic SQL stub ('PROP-TEST-...') never executed the real
+-- uniqueness probe, which masked the migration-002 variable/column
+-- ambiguity defect found by the 024 verification run. Because the
+-- scratch properties table has a real property_id column, a reintroduced
+-- ambiguous reference fails here exactly as it does in production.
 CREATE FUNCTION {s}.generate_property_id() RETURNS TEXT AS $$
 DECLARE
     v_year_part TEXT;
@@ -492,10 +495,17 @@ class MatterPropertyDbTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(seen), 25)
 
     async def test_generate_property_id_probe_skips_taken_identifiers(self):
-        # Deterministic collision coverage on the verbatim function body:
-        # occupy every candidate except -9999 for the current year, so the
-        # uniqueness probe must loop until it lands on the only free id.
-        # A broken probe that returns a taken identifier fails the equality.
+        # Collision coverage against a schema-adjusted COPY of the
+        # migration-026 function body — this is NOT verification that
+        # migration 026 itself executes (that requires running the actual
+        # file and the installed public.generate_property_id()).
+        #
+        # Occupying every candidate except -9999 makes the RESULT
+        # deterministic but NOT the runtime: the number of random draws is
+        # unbounded by construction (expected ~10k probe iterations). A
+        # database-side statement_timeout therefore bounds execution, and
+        # the seeded rows are removed in finally so the fixture cleans up
+        # even on failure or timeout.
         year_row = await self.query(
             "SELECT EXTRACT(YEAR FROM CURRENT_DATE)::int AS y", [])
         yy = year_row.rows[0]["y"]
@@ -510,8 +520,16 @@ class MatterPropertyDbTests(unittest.IsolatedAsyncioTestCase):
             """,
             [str(yy)],
         )
-        row = await self.query("SELECT generate_property_id() AS pid", [])
-        self.assertEqual(row.rows[0]["pid"], f"PROP-{yy}-9999")
+        try:
+            await self.query("SET statement_timeout = '15s'", [])
+            row = await self.query("SELECT generate_property_id() AS pid", [])
+            self.assertEqual(row.rows[0]["pid"], f"PROP-{yy}-9999")
+        finally:
+            await self.query("SET statement_timeout = 0", [])
+            await self.query(
+                "DELETE FROM properties WHERE property_id LIKE $1",
+                [f"PROP-{yy}-%"],
+            )
 
     async def test_link_existing_active_property(self):
         await self.query(
