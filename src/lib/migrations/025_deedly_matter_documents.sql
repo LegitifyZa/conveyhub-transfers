@@ -13,6 +13,12 @@
 
 BEGIN;
 
+-- Schema targeting: every object below lives in the transfers schema (tables
+-- moved there in migration 010). scripts/migrate.mjs does NOT preset a
+-- search_path, so this migration must run identically regardless of the
+-- caller's — mirroring the 023/024 convention.
+SET LOCAL search_path TO transfers, public;
+
 -- ---------------------------------------------------------------------------
 -- A. transfer_documents additions
 -- ---------------------------------------------------------------------------
@@ -22,49 +28,49 @@ BEGIN;
 -- scoped idempotency keys and unambiguous storage/audit attribution.
 -- NOTE (Jordan review): the NOT NULL backfill below assumes every existing row
 -- has a parent transfers row — the FK guarantees this.
-ALTER TABLE transfer_documents
+ALTER TABLE transfers.transfer_documents
     ADD COLUMN IF NOT EXISTS accountable_institution_id INTEGER;
 
-UPDATE transfer_documents td
+UPDATE transfers.transfer_documents td
 SET accountable_institution_id = t.accountable_institution_id
-FROM transfers t
+FROM transfers.transfers t
 WHERE td.transfer_id = t.id
   AND td.accountable_institution_id IS NULL;
 
-ALTER TABLE transfer_documents
+ALTER TABLE transfers.transfer_documents
     ALTER COLUMN accountable_institution_id SET NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_transfer_documents_ai
-    ON transfer_documents (accountable_institution_id);
+    ON transfers.transfer_documents (accountable_institution_id);
 
 -- Idempotency (mirrors the 023 transfers / 024 property pattern).
-ALTER TABLE transfer_documents
+ALTER TABLE transfers.transfer_documents
     ADD COLUMN IF NOT EXISTS client_request_id UUID,
     ADD COLUMN IF NOT EXISTS request_fingerprint TEXT;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_transfer_documents_client_request
-    ON transfer_documents (accountable_institution_id, client_request_id)
+    ON transfers.transfer_documents (accountable_institution_id, client_request_id)
     WHERE client_request_id IS NOT NULL;
 
 -- Requirement satisfaction link. A requirement is a rule-driven obligation;
 -- the uploaded document remains a separate record. NULL = free-form upload.
-ALTER TABLE transfer_documents
+ALTER TABLE transfers.transfer_documents
     ADD COLUMN IF NOT EXISTS requirement_key VARCHAR(150);
 
 CREATE INDEX IF NOT EXISTS idx_transfer_documents_requirement
-    ON transfer_documents (transfer_id, requirement_key)
+    ON transfers.transfer_documents (transfer_id, requirement_key)
     WHERE requirement_key IS NOT NULL;
 
 -- Storage abstraction fields. storage_key is internal-only and must never be
 -- projected to clients (mirrors the file_path rule in the v1 list queries).
-ALTER TABLE transfer_documents
+ALTER TABLE transfers.transfer_documents
     ADD COLUMN IF NOT EXISTS storage_key TEXT,
     ADD COLUMN IF NOT EXISTS file_instance_id UUID,
     ADD COLUMN IF NOT EXISTS sha256 VARCHAR(64);
 
 -- Scan state is deliberately separate from the document lifecycle status and
 -- from any future human review state. 'not_scanned' rows have no stored file.
-ALTER TABLE transfer_documents
+ALTER TABLE transfers.transfer_documents
     ADD COLUMN IF NOT EXISTS scan_status VARCHAR(30) NOT NULL DEFAULT 'not_scanned'
         CHECK (scan_status IN ('not_scanned', 'pending', 'clean', 'infected', 'error')),
     ADD COLUMN IF NOT EXISTS scan_result VARCHAR(255),
@@ -85,7 +91,7 @@ ALTER TABLE transfer_documents
 --                          matter_document_service; unrecognised keys are
 --                          inert, never silently treated as applicable).
 
-CREATE TABLE IF NOT EXISTS document_requirement_rules (
+CREATE TABLE IF NOT EXISTS transfers.document_requirement_rules (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     rule_key VARCHAR(150) UNIQUE NOT NULL,
     display_name VARCHAR(255) NOT NULL,
@@ -99,7 +105,7 @@ CREATE TABLE IF NOT EXISTS document_requirement_rules (
 
 -- ILLUSTRATIVE ONLY — not an approved production requirement. Pending Dean's
 -- catalogue, this stays commented out:
--- INSERT INTO document_requirement_rules
+-- INSERT INTO transfers.document_requirement_rules
 --     (rule_key, display_name, classification_code, condition_key, sequence_number)
 -- VALUES
 --     ('example_bond_approval_letter', 'Bond approval letter (EXAMPLE)', NULL, 'has_bond', 10)
@@ -114,9 +120,9 @@ CREATE TABLE IF NOT EXISTS document_requirement_rules (
 -- touched. A withdrawn requirement that becomes applicable again is
 -- reactivated in place, preserving its history window.
 
-CREATE TABLE IF NOT EXISTS transfer_document_requirements (
+CREATE TABLE IF NOT EXISTS transfers.transfer_document_requirements (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    transfer_id UUID NOT NULL REFERENCES transfers(id) ON DELETE CASCADE,
+    transfer_id UUID NOT NULL REFERENCES transfers.transfers(id) ON DELETE CASCADE,
     accountable_institution_id INTEGER NOT NULL,
     requirement_key VARCHAR(150) NOT NULL,
     display_name VARCHAR(255) NOT NULL,
@@ -131,9 +137,9 @@ CREATE TABLE IF NOT EXISTS transfer_document_requirements (
 );
 
 CREATE INDEX IF NOT EXISTS idx_transfer_doc_requirements_transfer
-    ON transfer_document_requirements (transfer_id);
+    ON transfers.transfer_document_requirements (transfer_id);
 CREATE INDEX IF NOT EXISTS idx_transfer_doc_requirements_ai
-    ON transfer_document_requirements (accountable_institution_id);
+    ON transfers.transfer_document_requirements (accountable_institution_id);
 
 -- ---------------------------------------------------------------------------
 -- D. document_operation_log — durable reconciliation + audit trail
@@ -148,7 +154,7 @@ CREATE INDEX IF NOT EXISTS idx_transfer_doc_requirements_ai
 -- HARD RULE: never write file contents, credentials, or download tokens into
 -- detail. Identifiers and outcomes only.
 
-CREATE TABLE IF NOT EXISTS document_operation_log (
+CREATE TABLE IF NOT EXISTS transfers.document_operation_log (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     occurred_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     operation VARCHAR(40) NOT NULL CHECK (operation IN (
@@ -172,11 +178,11 @@ CREATE TABLE IF NOT EXISTS document_operation_log (
 );
 
 CREATE INDEX IF NOT EXISTS idx_doc_op_log_transfer
-    ON document_operation_log (transfer_id);
+    ON transfers.document_operation_log (transfer_id);
 CREATE INDEX IF NOT EXISTS idx_doc_op_log_document
-    ON document_operation_log (document_id);
+    ON transfers.document_operation_log (document_id);
 CREATE INDEX IF NOT EXISTS idx_doc_op_log_operation_time
-    ON document_operation_log (operation, occurred_at);
+    ON transfers.document_operation_log (operation, occurred_at);
 
 -- ---------------------------------------------------------------------------
 -- E. PROPOSED for Jordan's review — deletion path for retained files
@@ -205,10 +211,11 @@ CREATE INDEX IF NOT EXISTS idx_doc_op_log_operation_time
 -- metadata; archive instead. Requires product confirmation that transfer
 -- deletion is never a valid operation once documents exist:
 --
---   ALTER TABLE transfer_documents
+--   ALTER TABLE transfers.transfer_documents
 --       DROP CONSTRAINT transfer_documents_transfer_id_fkey,
 --       ADD CONSTRAINT transfer_documents_transfer_id_fkey
---           FOREIGN KEY (transfer_id) REFERENCES transfers(id) ON DELETE RESTRICT;
+--           FOREIGN KEY (transfer_id) REFERENCES transfers.transfers(id)
+--           ON DELETE RESTRICT;
 --
 -- Proposal B: keep CASCADE but require the deleting path to first tombstone
 --   rows and orphan the storage objects under an explicit retention run.
