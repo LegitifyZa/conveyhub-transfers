@@ -9,19 +9,57 @@ proposed, not executed). Import coordination: Dean → Jordan.
 
 ## 1. The fill-in table
 
-One row per requirement. Copy this table and fill it in. Cells Dean cannot
-decide yet should read `PENDING` — unresolved entries stay explicitly
-pending rather than being guessed.
+One row per **requirement rule** — not one row per document. The same
+document can need several rules (different classifications or conditions);
+each rule gets its own stable `rule_key`, while `doc_code` identifies the
+document itself. See §1.1 for the distinction and the gap it exposes.
 
-| doc_code | display_name | classification | required_when | condition | condition_source | scope | required_by_stage | satisfied_by | approval_status | rule_version |
-|---|---|---|---|---|---|---|---|---|---|---|
-| (stable code) | (UI name) | (code or `*`) | always / conditional | (engine key) | (authoritative data source) | per_matter / per_party / per_property | (stage) | (what satisfies it) | draft / approved | (e.g. 1) |
+Copy this table and fill it in. Cells Dean cannot decide yet should read
+`PENDING` — unresolved entries stay explicitly pending rather than being
+guessed.
+
+| rule_key | doc_code | display_name | classification | required_when | condition | condition_source | scope | required_by_stage | satisfied_by | approval_status | rule_version |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| (stable rule key) | (stable document code) | (UI name) | (code or `*`) | always / conditional | (engine key) | (authoritative data source) | per_matter / per_party / per_property | (stage) | (what satisfies it) | draft / approved | (e.g. 1) |
+
+### 1.1 Document code vs requirement-rule key
+
+Two distinct stable identities — do not conflate them:
+
+- **`doc_code`** — catalogue-level identity of the *document* itself
+  (e.g. `fica` for "FICA documents"). Human/business vocabulary; Dean
+  assigns it.
+- **`rule_key`** — the *requirement rule's* stable key, and the only one
+  the schema actually persists: `UNIQUE` on
+  `document_requirement_rules`, copied onto each
+  `transfer_document_requirements` row as `requirement_key`, and the
+  value `transfer_documents.requirement_key` links an uploaded file to.
+
+**What the existing schema supports:** many rules, any
+classification/condition combination, and `rule_key` uniqueness. It does
+**not** support a shared `doc_code` — there is no such column anywhere.
+Two rules that name the same `doc_code` are, to the engine, two unrelated
+requirements with two requirement instances per matter.
+
+**Gap — flagged, not expanded:** satisfaction linkage is per `rule_key`.
+An uploaded file linked to rule A does **not** satisfy rule B even when
+both rules share a `doc_code` — the reviewer would see the second
+requirement as unsatisfied until a file is linked to it too. If the
+catalogue needs "one upload satisfies the document wherever it is
+required," that is a schema/engine decision for Jordan (a real
+`doc_code` column or a satisfaction mapping) — recorded as an open item
+in §5, not implemented here.
+
+**Naming convention for filling the table:** give each rule an explicit
+`rule_key` that encodes its scope (e.g. `fica_sale`,
+`fica_donation_cash`), so two rules for one document can never collide.
 
 ### Column → engine mapping
 
 | Catalogue column | Engine field | Supported? |
 |---|---|---|
-| `doc_code` | `rule_key` VARCHAR(150) UNIQUE | Yes — stable snake_case code; never reused for a different requirement |
+| `rule_key` | `rule_key` VARCHAR(150) UNIQUE | Yes — one row per rule; never reused for a different rule |
+| `doc_code` | — | **Not persisted** — catalogue-level grouping only (see §1.1). If Dean needs it queryable or linked for satisfaction, that is a schema gap for Jordan |
 | `display_name` | `display_name` VARCHAR(255) | Yes |
 | `classification` | `classification_code` VARCHAR(100) | Yes — a matter classification code, or `*`/blank for all classifications. A classification-scoped rule on a matter with no recorded classification is **unevaluated**, never silently skipped |
 | `required_when` | `condition_key` NULL vs set | Yes — `always` → NULL (baseline rule); `conditional` → the `condition` column's engine key |
@@ -55,74 +93,122 @@ where persistence awaits an engine extension.
 
 ## 3. Import / validation contract
 
-Proposed behavior for the eventual catalogue seed (expected to be a
-reviewed migration through Dean → Jordan, not a runtime import):
+Two layers must not be conflated: what the engine **already does and is
+tested for**, versus the **proposed** behaviour of a future catalogue
+import that does not exist yet.
 
-- **Duplicate `doc_code`:** `UNIQUE(rule_key)` enforces one row per code.
-  Import is an upsert: `ON CONFLICT (rule_key) DO UPDATE` of
-  `display_name`, `classification_code`, `condition_key`,
-  `sequence_number`. Re-importing identical rows is a no-op. A code
-  reused for a *different* requirement is a conflict for human review —
-  never a silent rename.
-- **Unsupported `condition`:** import **rejects** the row — the engine
-  cannot evaluate it, so seeding it would manufacture a permanently
-  unevaluated rule on every matter. Supported keys today: `has_bond`,
-  `cash_purchase`. New conditions require an engine extension
+### 3.1 Implemented and tested today (no importer involved)
+
+These are live engine semantics, covered by the service/route test
+suites on `deedly/mvp0/documents/upload-and-readback`:
+
+- Recalculation upserts `transfer_document_requirements` via
+  `ON CONFLICT (transfer_id, requirement_key) DO UPDATE` — re-running
+  recalculation is idempotent and refreshes `display_name` in place.
+- A rule that stops applying marks its instance `withdrawn` in place —
+  never deleted; `applied_at`/`withdrawn_at` history is preserved.
+- Unevaluated rules (unsupported `condition_key`, missing facts) are
+  surfaced via `unevaluatedRules`/`unevaluatedFacts` and excluded from
+  the withdrawal set — never silently "not required".
+- `rule_key` uniqueness on `document_requirement_rules` is enforced by
+  the `UNIQUE` constraint itself.
+- Evidence preservation: nothing in the requirement lane ever touches
+  `transfer_documents`. An uploaded document linked via
+  `requirement_key` keeps its row and storage object regardless of
+  requirement changes.
+
+### 3.2 Proposed import behaviour — not implemented, not tested
+
+The catalogue is expected to arrive as a **reviewed migration through
+Dean → Jordan**, not a runtime importer. The following is the proposed
+contract for that seed — none of it exists yet:
+
+- **Duplicate `rule_key`:** the proposed upsert is
+  `ON CONFLICT (rule_key) DO UPDATE` of `display_name`,
+  `classification_code`, `condition_key`, `sequence_number` —
+  re-importing identical rows is a no-op and repeat imports are
+  idempotent. A `rule_key` reused for a *different* requirement is a
+  conflict for human review — never a silent rename. Because upsert keys
+  on `rule_key` (not `doc_code`), two rules sharing one `doc_code` never
+  collide with each other — see the §4 example.
+- **Unsupported `condition`:** the proposal is that import **rejects**
+  the row — seeding it would manufacture a permanently unevaluated rule
+  on every matter. Supported keys today: `has_bond`, `cash_purchase`.
+  New conditions require an engine extension
   (`_SUPPORTED_CONDITIONS` + fact source) before the catalogue may use
   them.
 - **Missing facts:** not an import concern — runtime evaluation
   surfaces `unevaluatedFacts`; rules are never silently applied or
   withdrawn on missing data.
-- **Repeat imports:** idempotent via the `rule_key` upsert — safe to
-  re-run the same seed.
-- **Rule updates:** edit in place. The next recalculation refreshes
-  `display_name` on existing requirement instances; requirement history
-  (`applied_at`/`withdrawn_at`) is preserved.
-- **Retiring a rule:** set `status='retired'` — it drops out of the
-  active set entirely. Its existing requirement instances are **left
-  untouched** (a retired rule is outside both the applicable and
-  withdrawal sets). Whether retired-rule instances should be swept is an
-  open decision — today they remain visible with their history.
-- **Evidence preservation:** requirement withdrawal, retirement and
-  updates never touch `transfer_documents`. An uploaded document linked
-  via `requirement_key` keeps its row and storage object regardless of
-  catalogue changes.
+- **Rule updates:** proposed in-place edits; existing instances pick up
+  the change on the next recalculation (implemented, §3.1) — the
+  import-side mechanics are not built.
+- **Retiring a rule — explicitly UNRESOLVED.** `status='retired'` drops
+  a rule out of the active set: it stops being evaluated *and* falls
+  outside the withdrawal set, so its existing requirement instances are
+  left untouched. Whether that is the desired end-state is undecided —
+  outstanding instances may need to be withdrawn, swept, or preserved
+  for history, and that decision belongs to Dean/Louis before any
+  retirement is exercised. Do not treat "retired leaves instances
+  untouched" as approved behaviour.
 
 ## 4. Synthetic example — TEST ONLY
 
 Illustrative rows for development/test fixtures. **Not approved
 production rules; do not seed into any production catalogue.** The
-`has_bond` heuristic is an implementation placeholder pending Dean's
-approved mapping — see decisions doc §8.
+`has_bond`/`cash_purchase` heuristics are implementation placeholders
+pending Dean's approved mappings — see decisions doc §8.
+
+The example deliberately puts **one document (`doc_code` = `fica`) under
+two rules** with different classifications and different requirement
+logic: `fica_sale` is baseline on `sale` matters, while
+`fica_donation_cash` applies only on `donation` matters purchased for
+cash. Each rule has its own `rule_key`, so the proposed
+`ON CONFLICT (rule_key)` import upsert touches neither rule when the
+other is (re-)imported — the shared `doc_code` causes no collision and
+no overwrite.
 
 ```sql
 -- TEST FIXTURE ONLY — illustrative, not approved production content.
 INSERT INTO transfers.document_requirement_rules
     (rule_key, display_name, classification_code, condition_key, sequence_number)
 VALUES
-    -- Baseline: required on every matter regardless of classification.
-    ('test_fica_documents', 'FICA documents (TEST ONLY)', '*', NULL, 10),
-    -- Conditional: only when the matter has a bond (heuristic, unapproved).
-    ('test_bond_approval_letter', 'Bond approval letter (TEST ONLY)', NULL, 'has_bond', 20)
+    -- Same document, sale matters: always required (baseline).
+    ('fica_sale', 'FICA documents (TEST ONLY)', 'sale', NULL, 10),
+    -- Same document, donation matters: only when a cash purchase
+    -- (heuristic, unapproved).
+    ('fica_donation_cash', 'FICA documents (TEST ONLY)', 'donation', 'cash_purchase', 20)
 ON CONFLICT (rule_key) DO NOTHING;
 ```
 
 Filled template row equivalents:
 
-| doc_code | display_name | classification | required_when | condition | condition_source | scope | required_by_stage | satisfied_by | approval_status | rule_version |
-|---|---|---|---|---|---|---|---|---|---|---|
-| `test_fica_documents` | FICA documents (TEST ONLY) | `*` | always | — | — | per_matter | PENDING | uploaded clean file linked to `test_fica_documents` | test-fixture | n/a |
-| `test_bond_approval_letter` | Bond approval letter (TEST ONLY) | `*` | conditional | `has_bond` | `bonds` row / `loan_amount` (heuristic, unapproved) | per_matter | PENDING | uploaded clean file linked to `test_bond_approval_letter` | test-fixture | n/a |
+| rule_key | doc_code | display_name | classification | required_when | condition | condition_source | scope | required_by_stage | satisfied_by | approval_status | rule_version |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| `fica_sale` | `fica` | FICA documents (TEST ONLY) | `sale` | always | — | — | per_matter | PENDING | uploaded clean file linked to `fica_sale` | test-fixture | n/a |
+| `fica_donation_cash` | `fica` | FICA documents (TEST ONLY) | `donation` | conditional | `cash_purchase` | `bonds`/`loan_amount` (heuristic, unapproved) | per_matter | PENDING | uploaded clean file linked to `fica_donation_cash` | test-fixture | n/a |
+
+Note the §1.1 gap applies here: the engine treats these as two unrelated
+requirements — a file linked to `fica_sale` does not satisfy
+`fica_donation_cash`.
 
 ## 5. Open items for Dean/Louis
 
-1. The catalogue rows themselves (this template, filled in).
+1. The catalogue rows themselves (this template, filled in). Production
+   `document_requirement_rules` stays **empty** until the approved
+   catalogue is supplied.
 2. Whether `has_bond`/`cash_purchase` heuristics match the approved
    business definitions — new conditions need engine work first.
-3. Per-party/per-property requirement scope — engine extension decision.
-4. Stage/due-state semantics — product decision on gating.
-5. Approval-workflow states and rule versioning — schema decisions for
+3. **`doc_code` persistence/satisfaction gap (§1.1):** whether one
+   upload may satisfy multiple rules sharing a document — schema/engine
+   decision for Jordan; not implemented.
+4. Per-party/per-property requirement scope — engine extension decision.
+5. Stage/due-state semantics — product decision on gating.
+6. **Rule-retirement semantics (§3.2):** unresolved — decide the effect
+   on outstanding requirement instances before any retirement is
+   exercised.
+7. Approval-workflow states and rule versioning — schema decisions for
    Jordan.
-6. Signature-date formatting (full month words) — recorded in scope doc
+8. Signature-date formatting (full month words) — recorded in scope doc
    §10.1; implemented with the generated-document/template slice, not
    this catalogue.
