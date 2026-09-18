@@ -205,6 +205,14 @@ success. Blocked on the platform contract: AuditLogger interface +
 credentials, event-schema mapping, and platform delivery/retry
 semantics.
 
+**Open reconciliation case:** when storage succeeds but BOTH the document
+row persist and the op-log write fail, the stderr alert is the only
+recovery signal — nothing durable records the orphan. If no user retry
+follows, the stored object and its missing metadata remain unreconciled
+indefinitely; closing that gap requires manual reconciliation from the
+alert output (or a platform audit lane once contracted). This is kept
+open deliberately — it is not claimed resolved by the retry path.
+
 Log content rule: never file contents, credentials, bearer tokens, or
 client-visible paths. `storage_key`/`file_instance_id` appear only as
 internal reconciliation identifiers and are never projected to clients.
@@ -231,12 +239,20 @@ created for it, and an existing requirement bound to it is **excluded
 from the withdrawal set** — an unevaluated rule is never silently
 treated as "not required".
 
+Unevaluated facts: GET `/documents` and the recalculate response both
+carry `unevaluatedFacts` (missing matter facts — e.g. no recorded
+`classification_code`, or indeterminate bond/financing status) alongside
+`unevaluatedRules`. `MatterDocumentsSection` renders an amber
+"requirement evaluation is incomplete" notice when either is non-empty —
+a missing classification is visibly unevaluated on readback, never
+presented as "no requirements" or a complete list.
+
 Withdrawal: only requirements bound to **evaluable** rules whose
 condition stopped applying are marked `withdrawn` in place
 (`withdrawn_at` set); nothing is deleted and `transfer_documents` evidence
 linked via `requirement_key` is never touched.
 
-## 9. Post-review implementation notes (feature branch `f719672`)
+## 9. Post-review implementation notes (feature branch, through `1e0be33`)
 
 - **Concurrency:** content-addressed storage keys plus a single-winner
   persist (`UPDATE ... WHERE sha256 IS NULL`). Concurrent identical
@@ -263,6 +279,24 @@ linked via `requirement_key` is never touched.
   overhead before proxying; FastAPI refuses the same before reading;
   actual bytes are capped during read (`MAX_FILE_BYTES + 1`) → 422;
   content sniffed against the allow-list.
+- **Actual-size enforcement for undeclared bodies:** chunked/missing
+  Content-Length bypasses the declared check, so the BFF counts streamed
+  bytes through a `Transform` (abort upstream fetch on overflow, answer
+  413 while continuing to drain — stopping reads or closing early RSTs
+  the socket mid-response and the client sees ECONNRESET instead of
+  413); FastAPI bounds the same path with a pure-ASGI byte-counting
+  middleware before multipart parsing can spool the body. The BFF
+  test's "upstream stub received zero bytes" result is **test-specific
+  evidence for that scenario**, not a general streaming-proxy guarantee.
+- **Storage test labelling:** `LocalStorageBehaviorTests` exercises the
+  real local adapter on a real temp filesystem with real threads —
+  real-filesystem evidence for the dev adapter only, distinct from the
+  `FakeStorage`-mocked service tests; the files-service adapter's
+  atomicity/concurrency contract remains unverified.
+- **Unevaluated display:** `unevaluatedFacts`/`unevaluatedRules` are
+  returned on both GET `/documents` (via `evaluation_flags`) and
+  recalculate, and rendered as an amber notice in
+  `MatterDocumentsSection` — see §8.
 - **DOCX:** requires `.docx` suffix **and** a readable ZIP containing
   `[Content_Types].xml` + `word/document.xml` — a renamed ZIP is rejected.
 - **Browser evidence:** real download event asserted — suggested filename
