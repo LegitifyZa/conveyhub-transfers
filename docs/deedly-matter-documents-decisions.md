@@ -130,3 +130,143 @@ verified docs, retention schedule, client document access.
   scope doc §3 — the join-based scoping must be verified regardless).
 - Storage provider interface + credentials config.
 - Migration numbering coordination as before.
+
+---
+
+## 6. Retained metadata — deletion-path inventory and schema dependency
+
+Recorded after the implementation review (feature branch `f719672`). The
+commented `ON DELETE RESTRICT` proposal in migration 025 §E is a proposal,
+**not active protection**. What is actively true today:
+
+- **No code-level deletion path is operational.** Every route that can
+  reach `DELETE FROM transfers` is quarantined or inert, and the storage
+  provider interface has **no delete operation at all** — physical object
+  deletion is disabled by design, not by convention.
+- **The FK cascade remains the only protection-relevant fact.** It is a
+  liability, not protection: any path below that becomes operational
+  silently destroys document metadata.
+
+### 6.1 Parent-transfer deletion paths
+
+| # | Path | Status | Effect if executed |
+|---|---|---|---|
+| 1 | `DELETE /api/transfers/:id` (BFF + FastAPI) | **Quarantined** — listed in `server/index.ts` and `python_server/main.py` quarantine tables → 401/503 | Live handlers exist behind the quarantine (`server/routes/transfers.ts`, `python_server/routers/transfers.py delete_transfer`) issuing `DELETE FROM transfers WHERE id = $1` — cascades to `transfer_documents` and `transfer_document_requirements` if ever re-enabled |
+| 2 | `TransferService.deleteTransfer` (`src/lib/services/transferService.ts`) | Reachable only via path 1 | Same `DELETE FROM transfers WHERE id = $1` |
+| 3 | Frontend `useTransfers.deleteTransfer` → `TransferApi.deleteTransfer` | Calls path 1 | Blocked by the quarantine today |
+| 4 | Linked-matter deletion inside the quarantined handlers | Quarantined with path 1 | `DELETE FROM matters WHERE id = $1` for the matter linked via `source_record_id` — removes the matter row with the transfer |
+| 5 | `DatabaseUtils.cleanupOldRecords` (`src/lib/utils/databaseUtils.ts`) | **Latent — defined, never called** | Bulk-deletes `transfers WHERE status='cancelled'` — would cascade document rows wholesale if ever invoked |
+| 6 | Direct SQL / operator | Always possible outside the app | Only the FK action itself decides what happens to document metadata |
+| 7 | Test-fixture deletes (DB integration tests) | Non-production | Synthetic data only |
+
+### 6.2 Exact schema dependency for Jordan
+
+- `transfer_documents_transfer_id_fkey` —
+  `transfer_documents.transfer_id UUID NOT NULL REFERENCES transfers(id)
+  ON DELETE CASCADE`, created in migration
+  `005_transfer_documents.sql`; the table was moved into the `transfers`
+  schema by migration 010.
+- `transfer_document_requirements.transfer_id` — declared
+  `ON DELETE CASCADE` in migration 025 (mirrors the parent convention;
+  the same decision applies).
+- `document_operation_log.transfer_id` — plain `UUID`, deliberately
+  **no FK**: audit/reconciliation rows must survive parent deletion.
+- `transfer_documents.accountable_institution_id` (new in 025) — lets
+  reconciliation find orphaned metadata tenant-scoped without the
+  parent join.
+
+The choice remains migration 025 §E Proposal A (`ON DELETE RESTRICT` —
+preferred; requires product confirmation that transfer deletion is never
+valid once documents exist) vs Proposal B (tombstone-before-delete under
+an explicit retention run). **Neither is applied; the comment is not
+protection.** The active interim protection is the quarantine plus the
+absence of any delete operation in the slice. Jordan owns the FK
+decision; 025 is coordinated separately from property migration 024.
+
+## 7. Audit delivery status
+
+**Platform audit delivery is UNVERIFIED.** No confirmed `AuditLogger`/
+`legitify_auditor` contract, endpoint or credentials exists in this repo.
+The slice's durable evidence is `document_operation_log` (migration 025).
+
+Events durably retained locally: `document_created`,
+`file_uploaded` (success/failure — failure carries `stage`, `storage_key`,
+`file_instance_id` for reconciliation), `scan_completed` (success/failure,
+signature), `upload_rejected` (size/type/conflict/concurrency),
+`download_link_issued`, `download_retrieved` (with `jti`),
+`download_denied` (with reason), `requirements_recalculated` (with
+applicable + unevaluated keys).
+
+Delivery-failure semantics: `record_operation` never raises — an op-log
+write failure prints to stderr (observable, alarmable) and does **not**
+roll back the business operation. There is no retry queue: a missing
+op-log row is a reconciliation gap surfaced for alarm, not a hidden
+success. Blocked on the platform contract: AuditLogger interface +
+credentials, event-schema mapping, and platform delivery/retry
+semantics.
+
+Log content rule: never file contents, credentials, bearer tokens, or
+client-visible paths. `storage_key`/`file_instance_id` appear only as
+internal reconciliation identifiers and are never projected to clients.
+
+## 8. Requirement facts — source and validation
+
+Facts evaluated by `_load_matter_context` and their sources:
+
+| Fact | Source | Status |
+|---|---|---|
+| `classification_code` | `matters.classification_code` (tenant-scoped) | Implementation read of existing column |
+| `has_bond` | `bonds` row exists for the transfer, OR `transfer_financials.loan_amount > 0` | **Implementation heuristic** — pending mapping to Dean's approved rule |
+| `cash_purchase` | `NOT has_bond` | **Implementation choice** — same caveat |
+
+`has_bond` and `cash_purchase` are implementation placeholders, not
+approved production definitions. Dean supplies the approved catalogue and
+rule definitions; `document_requirement_rules` ships **empty** and stays
+empty until then.
+
+Unevaluated rules: a rule whose `condition_key` is outside the supported
+vocabulary is returned under `unevaluatedRules` in the recalculate
+response and recorded in the operation log. No requirement row is
+created for it, and an existing requirement bound to it is **excluded
+from the withdrawal set** — an unevaluated rule is never silently
+treated as "not required".
+
+Withdrawal: only requirements bound to **evaluable** rules whose
+condition stopped applying are marked `withdrawn` in place
+(`withdrawn_at` set); nothing is deleted and `transfer_documents` evidence
+linked via `requirement_key` is never touched.
+
+## 9. Post-review implementation notes (feature branch `f719672`)
+
+- **Concurrency:** content-addressed storage keys plus a single-winner
+  persist (`UPDATE ... WHERE sha256 IS NULL`). Concurrent identical
+  uploads converge on one object; concurrent different files conflict
+  without overwriting the stored row; the losing writer's object key is
+  logged for reconciliation. Storage `put` is create-if-absent — an
+  existing object is never overwritten. Covered by focused tests.
+- **Interrupted uploads:** storage success + persist failure records a
+  durable `file_uploaded/failure` row with `storage_key` +
+  `file_instance_id`; retry of the same bytes reuses the same key and
+  completes — no duplicate object, no false success, no stuck replay.
+- **Failed scans:** `scan_status='error'` with bytes retained; the retry
+  path is re-uploading the same file — it rescans to completion.
+- **Download tokens:** `v1.<b64url payload>.<b64url HMAC-SHA256>`;
+  payload binds document id + institution + expiry + scope `doc-dl` +
+  `jti`. Any payload rewrite invalidates the signature — a token cannot
+  retrieve another document or another institution's file. Secret is
+  `DOCUMENT_TOKEN_SECRET`, falling back to `SECRET_KEY` (required;
+  rejected-if-default in production). Authenticated **issuance**
+  (`transfers:read` + same-institution) is a separate path from
+  **bearer-link retrieval** — reported as such; retrieval re-checks
+  `status='uploaded' AND scan_status='clean' AND storage_key` every time.
+- **Limits:** BFF refuses a declared body over 25 MB + 64 KB multipart
+  overhead before proxying; FastAPI refuses the same before reading;
+  actual bytes are capped during read (`MAX_FILE_BYTES + 1`) → 422;
+  content sniffed against the allow-list.
+- **DOCX:** requires `.docx` suffix **and** a readable ZIP containing
+  `[Content_Types].xml` + `word/document.xml` — a renamed ZIP is rejected.
+- **Browser evidence:** real download event asserted — suggested filename
+  and byte-for-byte content verified against mocked bytes; tampered
+  bearer token denied through the routed fetch path.
+- **No leakage:** projections carry no `storage_key`, `file_path`,
+  `file_instance_id`, `sha256` or uploader identity.
