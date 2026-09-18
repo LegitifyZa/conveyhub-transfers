@@ -764,9 +764,11 @@ class UploadServiceTests(unittest.IsolatedAsyncioTestCase):
 class LocalStorageBehaviorTests(unittest.TestCase):
     """LocalDocumentStorage create-if-absent + atomic-publish behavior.
 
-    MOCKED-CONCURRENCY evidence on the development adapter only — this is
-    NOT verification of the files-service adapter, whose atomicity contract
-    remains unconfirmed.
+    REAL-FILESYSTEM evidence: these tests run the actual local development
+    adapter against a real temp directory with real threads — distinct from
+    the FakeStorage-mocked service tests elsewhere in this file. Scope is
+    the dev adapter only: this is NOT verification of the files-service
+    adapter, whose atomicity/concurrency contract remains unconfirmed.
     """
 
     def setUp(self):
@@ -784,8 +786,10 @@ class LocalStorageBehaviorTests(unittest.TestCase):
         self.assertEqual(self.storage.get("ai-5/t/d/doc/aaa"), PDF_BYTES)
 
     def test_concurrent_puts_publish_complete_bytes_only(self):
-        # Threads race the same key; readers only ever see the complete
-        # object (temp-write + atomic link publish), never a partial file.
+        # Real threads on a real filesystem race the same key; readers only
+        # ever see the complete object (temp-write + atomic link publish),
+        # never a partial file. Dev-adapter evidence only — the files-service
+        # adapter's publish atomicity is unverified.
         import concurrent.futures
         import os
 
@@ -1060,6 +1064,24 @@ class RecalculateServiceTests(unittest.IsolatedAsyncioTestCase):
             {r["ruleKey"] for r in data["unevaluatedRules"]},
             {"sale_addendum"},
         )
+        # The missing fact itself is flagged: the response is visibly
+        # unevaluated, never a silent "no requirements" result.
+        self.assertIn("classification_code", data["unevaluatedFacts"])
+
+    async def test_evaluation_flags_surface_missing_facts(self):
+        # The readback-path helper: missing facts and blocked rules are
+        # reported so GET /documents can render an incomplete evaluation
+        # rather than a false-complete requirement list.
+        self.matter_classification = None
+        flags = await svc.evaluation_flags(transfer_row())
+        self.assertIn("classification_code", flags["unevaluatedFacts"])
+        self.assertIn(
+            "specialist_letter",
+            {r["ruleKey"] for r in flags["unevaluatedRules"]},
+        )
+        self.matter_classification = "sale"
+        flags = await svc.evaluation_flags(transfer_row())
+        self.assertNotIn("classification_code", flags["unevaluatedFacts"])
 
 
 class DownloadRouteTests(RouteTestBase):

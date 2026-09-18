@@ -24,6 +24,7 @@ from services.matter_document_service import (
     DocumentValidationError,
     MAX_FILE_BYTES,
     create_document,
+    evaluation_flags,
     get_document,
     issue_download_token,
     list_requirements,
@@ -450,8 +451,16 @@ async def get_transfer_documents(
     )
     documents = [_map_transfer_document(row) for row in documents_result.rows]
     requirements = await list_requirements(transfer)
+    flags = await evaluation_flags(transfer)
 
-    return {"message": "OK", "data": {"documents": documents, "requirements": requirements["requirements"]}}
+    return {
+        "message": "OK",
+        "data": {
+            "documents": documents,
+            "requirements": requirements["requirements"],
+            **flags,
+        },
+    }
 
 
 def _document_error_response(exc: DocumentServiceError) -> JSONResponse:

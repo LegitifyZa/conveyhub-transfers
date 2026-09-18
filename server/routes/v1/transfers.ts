@@ -502,11 +502,63 @@ router.get(
       [id, transfer.accountable_institution_id]
     )
 
+    // Evaluation flags — mirrors matter_document_service.evaluation_flags so
+    // readback surfaces what could not be decided. A matter with no recorded
+    // classification is visibly unevaluated, never presented as a complete
+    // requirement set. Fact sources are implementation choices pending
+    // Dean's approved rule definitions (tri-state: missing ≠ negative).
+    const matterContext = await query(
+      `SELECT classification_code FROM matters
+       WHERE id = $1 AND accountable_institution_id = $2`,
+      [transfer.matter_id, transfer.accountable_institution_id]
+    )
+    const classificationCode = matterContext.rows[0]?.classification_code ?? null
+    const bondRows = await query(
+      'SELECT 1 AS present FROM bonds WHERE transfer_id = $1 LIMIT 1',
+      [id]
+    )
+    const loanRows = await query(
+      'SELECT loan_amount FROM transfer_financials WHERE transfer_id = $1 LIMIT 1',
+      [id]
+    )
+    let hasBond: boolean | null = null
+    if (bondRows.rows.length > 0) {
+      hasBond = true
+    } else if (loanRows.rows.length > 0 && loanRows.rows[0].loan_amount !== null) {
+      hasBond = Number(loanRows.rows[0].loan_amount) > 0
+    }
+
+    const rulesResult = await query(
+      `SELECT rule_key, classification_code, condition_key
+       FROM document_requirement_rules WHERE status = 'active'`,
+      []
+    )
+    const SUPPORTED_CONDITIONS = new Set(['has_bond', 'cash_purchase'])
+    const ruleEvaluable = (rule: {
+      classification_code: string | null
+      condition_key: string | null
+    }) => {
+      const cls = rule.classification_code
+      if (cls && cls !== '*' && classificationCode === null) return false
+      const cond = rule.condition_key
+      if (cond === null) return true
+      if (!SUPPORTED_CONDITIONS.has(cond)) return false
+      if ((cond === 'has_bond' || cond === 'cash_purchase') && hasBond === null) return false
+      return true
+    }
+
     res.json({
       message: 'OK',
       data: {
         documents: documentsResult.rows.map(mapTransferDocument),
         requirements: requirementsResult.rows.map(mapDocumentRequirement),
+        unevaluatedFacts: [
+          ...(classificationCode === null ? ['classification_code'] : []),
+          ...(hasBond === null ? ['has_bond'] : []),
+        ],
+        unevaluatedRules: rulesResult.rows
+          .filter(rule => !ruleEvaluable(rule))
+          .map(rule => ({ ruleKey: rule.rule_key, conditionKey: rule.condition_key })),
       },
     })
   })

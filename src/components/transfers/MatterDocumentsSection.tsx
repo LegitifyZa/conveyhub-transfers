@@ -5,6 +5,7 @@ import { Badge } from '@/components/ui'
 import {
   DocumentRequirement,
   MatterDocument,
+  UnevaluatedRule,
   createMatterDocument,
   fetchMatterDocuments,
   issueDocumentDownloadLink,
@@ -43,6 +44,8 @@ interface Props {
 export const MatterDocumentsSection: React.FC<Props> = ({ transferId, onDocumentsChange }) => {
   const [documents, setDocuments] = useState<MatterDocument[]>([])
   const [requirements, setRequirements] = useState<DocumentRequirement[]>([])
+  const [unevaluatedFacts, setUnevaluatedFacts] = useState<string[]>([])
+  const [unevaluatedRules, setUnevaluatedRules] = useState<UnevaluatedRule[]>([])
   const [loadError, setLoadError] = useState<Error | null>(null)
   const [loaded, setLoaded] = useState(false)
   const [busyKey, setBusyKey] = useState<string | null>(null)
@@ -59,6 +62,8 @@ export const MatterDocumentsSection: React.FC<Props> = ({ transferId, onDocument
     const result = await fetchMatterDocuments(transferId)
     setDocuments(result.documents)
     setRequirements(result.requirements)
+    setUnevaluatedFacts(result.unevaluatedFacts)
+    setUnevaluatedRules(result.unevaluatedRules)
     onDocumentsChange?.(result.documents)
   }, [transferId, onDocumentsChange])
 
@@ -76,7 +81,9 @@ export const MatterDocumentsSection: React.FC<Props> = ({ transferId, onDocument
     setRowError('recalculate', '')
     try {
       const updated = await recalculateDocumentRequirements(transferId)
-      setRequirements(updated)
+      setRequirements(updated.requirements)
+      setUnevaluatedFacts(updated.unevaluatedFacts)
+      setUnevaluatedRules(updated.unevaluatedRules)
       await refresh()
     } catch (err) {
       setRowError('recalculate', err instanceof Error ? err.message : 'Could not evaluate requirements')
@@ -163,6 +170,15 @@ export const MatterDocumentsSection: React.FC<Props> = ({ transferId, onDocument
   const downloadable = (doc: MatterDocument) =>
     doc.status === 'uploaded' && doc.scanStatus === 'clean'
 
+  // A missing matter fact (e.g. no recorded classification) or a rule whose
+  // condition cannot be decided means the requirement list is visibly
+  // incomplete — never presented as a confirmed "no requirements".
+  const FACT_LABELS: Record<string, string> = {
+    classification_code: 'matter classification',
+    has_bond: 'bond/financing status',
+  }
+  const evaluationIncomplete = unevaluatedFacts.length > 0 || unevaluatedRules.length > 0
+
   const hiddenInput = (key: string) => (
     <input
       type="file"
@@ -185,6 +201,25 @@ export const MatterDocumentsSection: React.FC<Props> = ({ transferId, onDocument
           message="The document service is unavailable"
           detail="Documents cannot be listed, uploaded or downloaded for this matter right now."
         />
+      )}
+
+      {evaluationIncomplete && (
+        <div
+          data-testid="requirements-unevaluated-notice"
+          className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg p-3 flex items-start gap-2"
+        >
+          <AlertCircle className="h-4 w-4 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
+          <p className="text-xs text-amber-800 dark:text-amber-200">
+            Requirement evaluation is incomplete
+            {unevaluatedFacts.length > 0 && (
+              <>: no {unevaluatedFacts.map(f => FACT_LABELS[f] ?? f).join(' or ')} is recorded for this matter</>
+            )}
+            . {unevaluatedRules.length > 0
+              ? `${unevaluatedRules.length} rule${unevaluatedRules.length === 1 ? '' : 's'} could not be evaluated — `
+              : ''}
+            the requirement list may be missing items.
+          </p>
+        </div>
       )}
 
       {requirements.length > 0 && (

@@ -32,9 +32,19 @@ export interface DocumentRequirement {
   linkedDocumentId?: string | null
 }
 
+export interface UnevaluatedRule {
+  ruleKey: string
+  conditionKey?: string | null
+}
+
 export interface MatterDocumentsResult {
   documents: MatterDocument[]
   requirements: DocumentRequirement[]
+  // Missing matter facts (e.g. the matter records no classification) and
+  // active rules that could not be decided. When non-empty the requirement
+  // list is visibly incomplete — never a confirmed "no requirements".
+  unevaluatedFacts: string[]
+  unevaluatedRules: UnevaluatedRule[]
 }
 
 interface Envelope<T> {
@@ -46,7 +56,12 @@ export async function fetchMatterDocuments(transferId: string): Promise<MatterDo
   const response = await apiRequest<Envelope<MatterDocumentsResult>>(
     `/api/v1/transfers/${transferId}/documents`
   )
-  return { documents: response.data.documents, requirements: response.data.requirements }
+  return {
+    documents: response.data.documents,
+    requirements: response.data.requirements,
+    unevaluatedFacts: response.data.unevaluatedFacts ?? [],
+    unevaluatedRules: response.data.unevaluatedRules ?? [],
+  }
 }
 
 export async function createMatterDocument(
@@ -84,12 +99,18 @@ export async function uploadMatterDocumentFile(
 
 export async function recalculateDocumentRequirements(
   transferId: string
-): Promise<DocumentRequirement[]> {
-  const response = await apiRequest<Envelope<{ requirements: DocumentRequirement[] }>>(
+): Promise<Pick<MatterDocumentsResult, 'requirements' | 'unevaluatedFacts' | 'unevaluatedRules'>> {
+  const response = await apiRequest<
+    Envelope<Pick<MatterDocumentsResult, 'requirements' | 'unevaluatedFacts' | 'unevaluatedRules'>>
+  >(
     `/api/v1/transfers/${transferId}/documents/requirements/recalculate`,
     { method: 'POST', body: {} }
   )
-  return response.data.requirements
+  return {
+    requirements: response.data.requirements,
+    unevaluatedFacts: response.data.unevaluatedFacts ?? [],
+    unevaluatedRules: response.data.unevaluatedRules ?? [],
+  }
 }
 
 export async function issueDocumentDownloadLink(

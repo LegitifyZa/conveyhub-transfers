@@ -260,7 +260,9 @@ describe('v1 document BFF proxies', async () => {
       setTimeout(() => { if (!req.destroyed) req.destroy() }, 5000).unref()
     })
     assert.equal(status, 413)
-    // The oversized body never reached the upstream stub.
+    // Test-specific evidence: the stub saw no request for this run. This is
+    // not a general streaming-proxy guarantee — it proves the guard aborted
+    // before fetch was invoked in this scenario only.
     assert.equal(captured.length, 0)
   })
 

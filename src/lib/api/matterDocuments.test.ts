@@ -36,6 +36,9 @@ describe('matter documents v1 API', () => {
     assert.equal(init.method ?? 'GET', 'GET')
     assert.equal(result.documents.length, 1)
     assert.equal(result.requirements[0].requirementKey, 'fica')
+    // Flags default to empty when the server omits them.
+    assert.deepEqual(result.unevaluatedFacts, [])
+    assert.deepEqual(result.unevaluatedRules, [])
   })
 
   it('createMatterDocument sends snake_case fields with client_request_id', async () => {
@@ -66,15 +69,21 @@ describe('matter documents v1 API', () => {
     assert.equal(result.outcome, 'uploaded')
   })
 
-  it('recalculateDocumentRequirements POSTs and returns the requirement list', async () => {
+  it('recalculateDocumentRequirements POSTs and returns requirements plus flags', async () => {
     const fetchMock = respond({
       message: 'OK',
-      data: { requirements: [{ id: 'r1', requirementKey: 'fica', status: 'active' }] },
+      data: {
+        requirements: [{ id: 'r1', requirementKey: 'fica', status: 'active' }],
+        unevaluatedFacts: ['classification_code'],
+        unevaluatedRules: [{ ruleKey: 'sale_addendum', conditionKey: null }],
+      },
     })
     const result = await recalculateDocumentRequirements(TRANSFER_ID)
     const [url] = fetchMock.mock.calls[0].arguments as unknown as [string, RequestInit]
     assert.equal(url, `/api/v1/transfers/${TRANSFER_ID}/documents/requirements/recalculate`)
-    assert.equal(result[0].status, 'active')
+    assert.equal(result.requirements[0].status, 'active')
+    assert.deepEqual(result.unevaluatedFacts, ['classification_code'])
+    assert.equal(result.unevaluatedRules[0].ruleKey, 'sale_addendum')
   })
 
   it('issueDocumentDownloadLink returns the opaque URL and expiry', async () => {

@@ -62,7 +62,15 @@ function makeApi(t = {}) {
       }))
     }
     if (path === `/api/v1/transfers/${MATTER_ID}/documents` && method === 'GET') {
-      return r.fulfill(json({ message: 'OK', data: { documents, requirements } }))
+      return r.fulfill(json({
+        message: 'OK',
+        data: {
+          documents,
+          requirements,
+          unevaluatedFacts: t.unevaluatedFacts || [],
+          unevaluatedRules: t.unevaluatedRules || [],
+        },
+      }))
     }
     if (path === `/api/v1/transfers/${MATTER_ID}/documents` && method === 'POST') {
       const body = JSON.parse(r.request().postData() || '{}')
@@ -373,6 +381,31 @@ await check('persistence probe fails closed on a malformed envelope', async () =
   await save.waitFor()
   await page.waitForTimeout(500) // let probe state settle
   assert.equal(await save.isDisabled(), true)
+  await context.close()
+})
+
+await check('missing classification renders as visibly unevaluated, not complete', async () => {
+  // The API flags the missing matter fact; the section must render an
+  // "evaluation incomplete" notice — never a silent empty/complete list.
+  const api = makeApi({ unevaluatedFacts: ['classification_code'] })
+  const { context, page } = await newAuthedPage(api)
+  await openDocumentsTab(page)
+  const notice = page.locator('[data-testid="requirements-unevaluated-notice"]')
+  await notice.waitFor()
+  assert.match(await notice.innerText(), /evaluation is incomplete/i)
+  assert.match(await notice.innerText(), /classification/i)
+  await context.close()
+})
+
+await check('complete evaluation renders no unevaluated notice', async () => {
+  const api = makeApi({})
+  const { context, page } = await newAuthedPage(api)
+  await openDocumentsTab(page)
+  await page.waitForTimeout(500) // let the section settle after load
+  assert.equal(
+    await page.locator('[data-testid="requirements-unevaluated-notice"]').count(),
+    0
+  )
   await context.close()
 })
 

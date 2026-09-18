@@ -159,6 +159,13 @@ async def record_operation(
     operation must not roll back because the audit lane failed. The failure is
     surfaced on stderr so it is observable and can be alarmed on — a missing
     audit row is a reconciliation gap, not a hidden success.
+
+    OPEN ITEM: when BOTH the business write and this log write fail (e.g.
+    storage succeeded but the document row and this row could not persist),
+    the stderr alert is the only recovery signal. If no user retry follows,
+    the stored object and its missing metadata remain unreconciled — nothing
+    closes that gap automatically; it requires manual reconciliation from
+    the alert output.
     """
     try:
         await db.query(
@@ -761,6 +768,36 @@ def _rule_applies(rule: dict, context: dict) -> bool:
     return False  # unreachable while _rule_evaluable gates callers
 
 
+async def evaluation_flags(transfer: dict) -> dict:
+    """Surface what could not be decided for this matter's requirements.
+
+    'unevaluatedFacts' lists the matter facts that are missing (e.g. the
+    matter records no classification); 'unevaluatedRules' lists active rules
+    blocked by a missing fact or an unsupported condition. A matter with no
+    recorded classification is visibly unevaluated — the response must never
+    look like a complete requirement set.
+    """
+    context = await _load_matter_context(transfer)
+    rules_result = await db.query(
+        """
+        SELECT rule_key, classification_code, condition_key
+        FROM document_requirement_rules
+        WHERE status = 'active'
+        """,
+        [],
+    )
+    return {
+        "unevaluatedFacts": [
+            fact for fact in ("classification_code", "has_bond") if context.get(fact) is None
+        ],
+        "unevaluatedRules": [
+            {"ruleKey": rule["rule_key"], "conditionKey": rule.get("condition_key")}
+            for rule in rules_result.rows
+            if not _rule_evaluable(rule, context)
+        ],
+    }
+
+
 async def recalculate_requirements(transfer: dict, user: Any) -> dict:
     """Apply active rules to the matter. Idempotent upsert.
 
@@ -848,6 +885,9 @@ async def recalculate_requirements(transfer: dict, user: Any) -> dict:
         },
     )
     data = await list_requirements(transfer)
+    data["unevaluatedFacts"] = [
+        fact for fact in ("classification_code", "has_bond") if context.get(fact) is None
+    ]
     data["unevaluatedRules"] = [
         {"ruleKey": rule["rule_key"], "conditionKey": rule.get("condition_key")}
         for rule in unevaluated
