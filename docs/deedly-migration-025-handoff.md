@@ -4,7 +4,23 @@
 database. Schema additions and numbering are coordinated through Dean to
 Jordan. This document is the review artifact; the executable proposal is
 `src/lib/migrations/025_deedly_matter_documents.sql` on
-`deedly/mvp0/documents/upload-and-readback` (through `1e0be33`).
+`deedly/mvp0/documents/upload-and-readback` (through `70fa7f7`), file
+sha256 `adc37e5e674572835d8b3a40ed1760b885a86db617b9b2ddff538e1e8914ba96`.
+
+**Application history:** no application of the earlier revision of this
+file has been reported — the only migration execution on record is the
+024 verification run (ledger `001`–`021`, `023`, `024`). The file was
+revised at `70fa7f7` after a schema-targeting review (see below), so any
+environment that somehow applied the pre-revision file should be flagged
+before proceeding; none is known.
+
+**Schema targeting (corrected at `70fa7f7`):** `scripts/migrate.mjs`
+presets no `search_path`; the file now opens with
+`SET LOCAL search_path TO transfers, public` and every table, index,
+constraint and reference is `transfers.`-qualified — matching the
+023/024 convention so the migration runs identically regardless of the
+caller's search_path. The earlier revision was unqualified and would
+have failed or misplaced objects under a `public`-first path.
 
 ## 0. Relationship to migration 024 — no dependency
 
@@ -25,6 +41,14 @@ the `uuid_generate_v4()` convention used by earlier migrations. Nothing
 created by 024 is referenced. The migrations may be applied in either
 order; if a shared migration runner requires strict sequential ordering
 that is a tooling constraint, not a schema dependency.
+
+Numbering picture at authoring time: `022` SARS (unmerged), `023`
+parties (main), `024` property idempotency (property branch), `025`
+this migration (documents branch), **`026` now reserved** —
+`026_deedly_generate_property_id_ambiguity_fix.sql` on the property
+branch corrects the `generate_property_id()` ambiguity defect found in
+Jordan's 024 verification run and must be applied before manual property
+capture is enabled.
 
 ## 1. Proposed schema (exact)
 
