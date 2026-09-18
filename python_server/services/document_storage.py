@@ -21,7 +21,6 @@ Configured backends (DOCUMENT_STORAGE_BACKEND):
 
 import os
 import re
-import uuid
 from dataclasses import dataclass
 from typing import Optional, Protocol
 
@@ -49,11 +48,23 @@ class DocumentStorage(Protocol):
 _KEY_SAFE = re.compile(r"^[A-Za-z0-9/_.\-]+$")
 
 
-def build_storage_key(accountable_institution_id: int, transfer_id: str, document_id: str) -> str:
-    """Opaque, tenant-partitioned key. Unique per document instance."""
+def build_storage_key(
+    accountable_institution_id: int,
+    transfer_id: str,
+    document_id: str,
+    sha256: str,
+) -> str:
+    """Opaque, tenant-partitioned key derived from the content digest.
+
+    Content-addressing makes the put idempotent: a retry of the same bytes
+    (lost response, scanner failure, client replay) writes the identical
+    object rather than accumulating orphans, and a concurrent identical
+    upload converges on the same key. A different digest is a different key —
+    but a different file on the same document conflicts before storage.
+    """
     return (
         f"ai-{accountable_institution_id}/transfers/{transfer_id}"
-        f"/documents/{document_id}/{uuid.uuid4()}"
+        f"/documents/{document_id}/{sha256}"
     )
 
 
@@ -74,9 +85,17 @@ class LocalDocumentStorage:
 
     def put(self, key: str, data: bytes, content_type: str) -> None:
         path = self._resolve(key)
+        if os.path.exists(path):
+            # Content-addressed key: an existing object at this key holds the
+            # identical bytes (same digest). Never overwritten.
+            return
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "wb") as handle:
-            handle.write(data)
+        try:
+            with open(path, "xb") as handle:
+                handle.write(data)
+        except FileExistsError:
+            # A concurrent writer won — same key, identical bytes.
+            return
 
     def get(self, key: str) -> bytes:
         with open(self._resolve(key), "rb") as handle:

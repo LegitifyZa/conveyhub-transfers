@@ -8,6 +8,7 @@
 // built bundle (BASE env var overrides).
 import { chromium } from 'playwright'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 
 const BASE = process.env.BASE || 'http://localhost:4173'
 const MATTER_ID = '11111111-1111-4111-8111-111111111111'
@@ -111,6 +112,12 @@ function makeApi(t = {}) {
       }))
     }
     if (path.startsWith('/api/v1/documents/download/') && method === 'GET') {
+      // Bearer-token semantics: only the exact issued token shape serves
+      // bytes; any tampered/unknown token is denied (mocked server behavior).
+      const token = decodeURIComponent(path.split('/download/')[1] || '')
+      if (!/^v1\.doc-\d+\.sig$/.test(token)) {
+        return r.fulfill(json({ message: 'Forbidden' }, 403))
+      }
       return r.fulfill({
         status: 200,
         contentType: 'application/pdf',
@@ -201,25 +208,33 @@ await check('requirement upload -> clean scan -> satisfied -> download link', as
   assert.equal(api.calls.upload.length, 1)
   await page.getByText('Security scan passed').waitFor()
 
-  // Download issues a short-lived link and opens the opaque token URL.
-  // (window.open on an attachment triggers a browser download rather than a
-  // page load — capture the URL the UI hands to the browser.)
-  await page.evaluate(() => {
-    window.__opened = []
-    window.open = (u) => { window.__opened.push(u); return null }
-  })
+  // Download issues a short-lived link (authenticated issuance) and the
+  // browser retrieves real bytes with the bearer token — assert the actual
+  // downloaded filename AND content, not just that a URL was opened.
   const linkResponse = page.waitForResponse(
     (resp) => resp.url().endsWith(`/api/v1/transfers/${MATTER_ID}/documents/doc-1/download-link`) && resp.request().method() === 'POST',
   )
-  await page.getByRole('button', { name: 'Download' }).click()
+  const [download] = await Promise.all([
+    page.waitForEvent('download'),
+    page.getByRole('button', { name: 'Download' }).click(),
+  ])
   const link = await linkResponse
   const linkData = (await link.json()).data
   assert.match(linkData.downloadUrl, /^\/api\/v1\/documents\/download\/v1\./)
   assert.ok(linkData.expires > Math.floor(Date.now() / 1000))
-  const opened = await page.evaluate(() => window.__opened)
-  assert.equal(opened.length, 1)
-  assert.equal(opened[0], linkData.downloadUrl)
   assert.equal(api.calls.downloadLink.length, 1)
+  // Real bearer-link retrieval: the downloaded artifact has the issued
+  // filename and byte-for-byte the mocked file content.
+  assert.equal(download.suggestedFilename(), 'fica.pdf')
+  const savedPath = await download.path()
+  assert.deepEqual(readFileSync(savedPath), PDF_BYTES)
+  // A tampered bearer token is denied — retrieval re-validates, not just the
+  // issuance path.
+  const denied = await page.evaluate(async () => {
+    const res = await fetch('/api/v1/documents/download/v1.doc-1.forged')
+    return res.status
+  })
+  assert.equal(denied, 403)
   await context.close()
 })
 

@@ -509,10 +509,17 @@ async def create_transfer_document(
     )
 
 
+# Multipart envelope overhead allowed on top of the file cap — boundary,
+# headers and field framing. Requests declaring a larger body are refused
+# before any bytes are consumed.
+_MULTIPART_OVERHEAD_BYTES = 64 * 1024
+
+
 @router.post("/{id}/documents/{document_id}/file")
 async def upload_transfer_document_file(
     id: str,
     document_id: str,
+    request: Request,
     file: UploadFile,
     user: CurrentUser = Depends(require_jwt),
 ):
@@ -526,6 +533,13 @@ async def upload_transfer_document_file(
     _require_transfers_write(user)
     if not _is_valid_uuid(document_id):
         raise HTTPException(status_code=404, detail="Not found")
+
+    try:
+        declared = int(request.headers.get("content-length") or "0")
+    except ValueError:
+        declared = 0
+    if declared > MAX_FILE_BYTES + _MULTIPART_OVERHEAD_BYTES:
+        raise HTTPException(status_code=413, detail="File exceeds the 25 MB limit")
 
     transfer = await _authorize_transfer(user, id)
     if not transfer:

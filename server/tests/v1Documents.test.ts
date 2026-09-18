@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { createServer, IncomingMessage, Server, ServerResponse } from 'node:http'
+import { createServer, IncomingMessage, Server, ServerResponse, request as httpRequest } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import { after, before, beforeEach, describe, it } from 'node:test'
 
@@ -194,6 +194,34 @@ describe('v1 document BFF proxies', async () => {
     assert.match(String(captured[0].headers['content-type']), /multipart\/form-data/)
     // The bytes arrive unchanged — upstream sees the same multipart envelope.
     assert.deepEqual(captured[0].body, payload)
+  })
+
+  it('rejects a declared-oversize upload with 413 before proxying', async () => {
+    // The BFF refuses a declared body over the 25 MB cap + multipart overhead
+    // on headers alone — upstream is never reached and no bytes stream.
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = httpRequest(
+        `${baseUrl}/api/v1/transfers/${TRANSFER_ID}/documents/${DOC_ID}/file`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${makeToken()}`,
+            'Content-Type': 'multipart/form-data; boundary=----x',
+            'Content-Length': String(26 * 1024 * 1024),
+          },
+        },
+        (res) => {
+          res.resume()
+          resolve(res.statusCode ?? 0)
+        }
+      )
+      req.on('error', () => resolve(0)) // socket may reset after early 413
+      req.write('partial')
+      // Never send the full declared body — the server must answer anyway.
+      setTimeout(() => req.destroy(), 2000).unref()
+    })
+    assert.equal(status, 413)
+    assert.equal(captured.length, 0)
   })
 
   it('streams the bearer-token download through without requiring a JWT', async () => {

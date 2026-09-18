@@ -538,11 +538,19 @@ router.post(
 // Multipart file upload: the raw request body is forwarded unchanged to the
 // FastAPI lane (express.json only parses application/json, so the multipart
 // stream is still intact here). Content sniffing, the 25 MB cap, storage and
-// scanning all happen upstream.
+// scanning all happen upstream — but a declared oversize body is refused
+// here first so an oversized stream is never proxied.
+const MAX_UPLOAD_BYTES = 25 * 1024 * 1024 + 64 * 1024 // file cap + multipart overhead
+
 router.post(
   '/:id/documents/:documentId/file',
   requireJwt,
   asyncHandler(async (req: Request, res: Response) => {
+    const declared = Number(req.headers['content-length'] || '0')
+    if (declared > MAX_UPLOAD_BYTES) {
+      res.status(413).json({ success: false, error: 'File exceeds the 25 MB limit' })
+      return
+    }
     const baseUrl = process.env.DEEDLY_API_BASE_URL
     if (!baseUrl) {
       res.status(503).json(DEEDLY_UNAVAILABLE)

@@ -82,18 +82,35 @@ class DocumentNotAvailableError(DocumentServiceError):
     pass
 
 
+def _is_docx_package(data: bytes) -> bool:
+    """Verify the OOXML package structure, not merely the ZIP signature.
+
+    A DOCX is a ZIP containing [Content_Types].xml and word/document.xml —
+    checking members rules out arbitrary ZIPs renamed to .docx.
+    """
+    try:
+        import zipfile
+        from io import BytesIO
+
+        with zipfile.ZipFile(BytesIO(data)) as archive:
+            names = set(archive.namelist())
+        return "[Content_Types].xml" in names and "word/document.xml" in names
+    except Exception:
+        return False
+
+
 def sniff_file_type(data: bytes, filename: Optional[str]) -> str:
     """Return the canonical content type from magic bytes, or raise.
 
-    DOCX is a ZIP container: PK magic alone cannot distinguish it from other
-    ZIP formats, so the .docx extension is additionally required — the magic
-    check still prevents renamed arbitrary files.
+    DOCX requires both the .docx name and a valid OOXML package — magic bytes
+    alone cannot distinguish it from other ZIP formats.
     """
     suffix = f".{filename.rsplit('.', 1)[-1].lower()}" if filename and "." in filename else ""
     for mime, (magic, extensions) in ALLOWED_FILE_TYPES.items():
         if data.startswith(magic):
-            if mime == _DOCX_MIME and suffix != ".docx":
-                continue  # ZIP container without a .docx name — not provably DOCX
+            if mime == _DOCX_MIME:
+                if suffix != ".docx" or not _is_docx_package(data):
+                    continue
             return mime
     raise DocumentValidationError(
         "Unsupported file type — only PDF, DOCX, JPG and PNG files are accepted"
@@ -374,7 +391,9 @@ async def upload_document_file(
             "replacement is not supported"
         )
 
-    storage_key = build_storage_key(ai, str(transfer["id"]), str(document["id"]))
+    # Content-addressed key: same bytes always resolve to the same object, so
+    # a retry or concurrent identical upload cannot accumulate duplicates.
+    storage_key = build_storage_key(ai, str(transfer["id"]), str(document["id"]), digest)
     instance_id = uuid.uuid4()
     try:
         storage.put(storage_key, data, content_type)
@@ -392,20 +411,80 @@ async def upload_document_file(
 
     # Persist the object reference BEFORE scanning so a scanner failure leaves
     # a durable, reconcilable record (stored-but-unscanned), not a silent
-    # orphan.
-    stored = await _persist_file_state(
-        document,
-        storage_key=storage_key,
-        instance_id=instance_id,
-        digest=digest,
-        content_type=content_type,
-        filename=filename,
-        size=len(data),
-        scan_status="pending",
-        scan_result=None,
-        status="pending",
-        user=user,
-    )
+    # orphan. The UPDATE is conditional on sha256 IS NULL: a concurrent upload
+    # that already persisted wins; this writer then resolves from the stored
+    # row (same digest → continue; different → conflict). The stored object
+    # can therefore never be silently overwritten or duplicated.
+    try:
+        stored = await _persist_file_state(
+            document,
+            storage_key=storage_key,
+            instance_id=instance_id,
+            digest=digest,
+            content_type=content_type,
+            filename=filename,
+            size=len(data),
+            scan_status="pending",
+            scan_result=None,
+            status="pending",
+            user=user,
+        )
+    except Exception as exc:
+        # Storage succeeded but the row did not — the object is reconcilable
+        # through this durable record (storage_key is an internal identifier,
+        # never exposed to clients).
+        await record_operation(
+            "file_uploaded",
+            "failure",
+            accountable_institution_id=ai,
+            actor_user_id=user.user_id,
+            transfer_id=str(transfer["id"]),
+            document_id=str(document["id"]),
+            detail={
+                "stage": "persist",
+                "error": type(exc).__name__,
+                "storage_key": storage_key,
+                "file_instance_id": str(instance_id),
+            },
+        )
+        raise DocumentServiceError("Document persistence failed") from exc
+    if stored is None:
+        # Concurrent writer already persisted this document. Resolve from the
+        # stored row: identical bytes continue to the (shared) scan outcome;
+        # different bytes conflict — replacement is not supported.
+        current = await get_document(transfer, str(document["id"]))
+        if current.get("sha256") == digest:
+            await record_operation(
+                "file_uploaded",
+                "conflict",
+                accountable_institution_id=ai,
+                actor_user_id=user.user_id,
+                transfer_id=str(transfer["id"]),
+                document_id=str(document["id"]),
+                detail={"reason": "concurrent_same_file"},
+            )
+            if current["scan_status"] == "clean":
+                return current, "replay"
+            return await _scan_and_finalize(transfer, current, data, scanner, user)
+        await record_operation(
+            "upload_rejected",
+            "conflict",
+            accountable_institution_id=ai,
+            actor_user_id=user.user_id,
+            transfer_id=str(transfer["id"]),
+            document_id=str(document["id"]),
+            # The losing writer's object was already stored under its own
+            # digest key — record it so the orphan is reconcilable.
+            detail={
+                "reason": "concurrent_different_file",
+                "storage_key": storage_key,
+                "file_instance_id": str(instance_id),
+            },
+        )
+        raise DocumentIdempotencyConflictError(
+            "A different file was supplied for an existing document — "
+            "replacement is not supported"
+        )
     await record_operation(
         "file_uploaded",
         "success",
@@ -440,6 +519,9 @@ async def _persist_file_state(
     status: str,
     user: Any,
 ) -> dict:
+    # sha256 IS NULL makes the write single-winner: only the first upload to
+    # persist wins; a concurrent writer gets no row and resolves from the
+    # stored state — the first writer's object is never overwritten.
     result = await db.query(
         f"""
         UPDATE transfer_documents
@@ -447,7 +529,7 @@ async def _persist_file_state(
             file_type = $5, original_file_name = $6, file_size = $7,
             scan_status = $8, scan_result = $9, status = $10,
             uploaded_by_user_id = $11, uploaded_at = CURRENT_TIMESTAMP
-        WHERE id = $1
+        WHERE id = $1 AND sha256 IS NULL
         RETURNING {_DOC_READ_COLUMNS}
         """,
         [
@@ -464,7 +546,7 @@ async def _persist_file_state(
             user.user_id,
         ],
     )
-    return result.rows[0]
+    return result.rows[0] if result.rows else None
 
 
 async def _scan_and_finalize(transfer, document, data, scanner, user):
@@ -631,6 +713,17 @@ async def _load_matter_context(transfer: dict) -> dict:
     return context
 
 
+def _rule_evaluable(rule: dict) -> bool:
+    """True when the rule's condition is within the supported vocabulary.
+
+    A rule whose condition_key we cannot evaluate is never treated as
+    inapplicable: it is surfaced via 'unevaluatedRules' and any existing
+    requirement bound to it is left untouched (not withdrawn).
+    """
+    condition = rule.get("condition_key")
+    return condition is None or condition in _SUPPORTED_CONDITIONS
+
+
 def _rule_applies(rule: dict, context: dict) -> bool:
     classification = rule.get("classification_code")
     if classification and classification != "*" and classification != context.get("classification_code"):
@@ -642,7 +735,7 @@ def _rule_applies(rule: dict, context: dict) -> bool:
         return context["has_bond"]
     if condition == "cash_purchase":
         return not context["has_bond"]
-    return False  # unrecognised condition — inert, never silently applicable
+    return False  # unreachable while _rule_evaluable gates callers
 
 
 async def recalculate_requirements(transfer: dict, user: Any) -> dict:
@@ -650,6 +743,9 @@ async def recalculate_requirements(transfer: dict, user: Any) -> dict:
 
     Requirements that stop applying are marked 'withdrawn' — never deleted —
     and the uploaded evidence linked via requirement_key is never touched.
+    Rules whose condition is outside the supported vocabulary are reported
+    under 'unevaluatedRules' and their existing requirements are preserved:
+    an unevaluated rule is never silently treated as "not required".
     Returns the post-recalculation requirement list.
     """
     ai = transfer["accountable_institution_id"]
@@ -663,11 +759,17 @@ async def recalculate_requirements(transfer: dict, user: Any) -> dict:
         """,
         [],
     )
+    evaluable = [rule for rule in rules_result.rows if _rule_evaluable(rule)]
+    unevaluated = [rule for rule in rules_result.rows if not _rule_evaluable(rule)]
     applicable = {
         rule["rule_key"]: rule
-        for rule in rules_result.rows
+        for rule in evaluable
         if _rule_applies(rule, context)
     }
+    # Keys that may be withdrawn: evaluable rules only. Requirements bound to
+    # unevaluated rules are excluded from the withdrawal set — we cannot
+    # prove they stopped applying.
+    withdrawable = {rule["rule_key"] for rule in evaluable}
 
     async def _apply(connection: Any) -> None:
         for key, rule in applicable.items():
@@ -692,7 +794,8 @@ async def recalculate_requirements(transfer: dict, user: Any) -> dict:
                 ],
                 connection=connection,
             )
-        # Withdraw requirements whose rule no longer applies — in place.
+        # Withdraw evaluable requirements whose rule no longer applies — in
+        # place, never a delete. Unevaluated rules are outside this set.
         await db.query(
             """
             UPDATE transfer_document_requirements
@@ -700,9 +803,10 @@ async def recalculate_requirements(transfer: dict, user: Any) -> dict:
                 updated_at = CURRENT_TIMESTAMP
             WHERE transfer_id = $1 AND accountable_institution_id = $2
               AND status = 'active'
-              AND requirement_key <> ALL($3::varchar[])
+              AND requirement_key = ANY($3::varchar[])
+              AND requirement_key <> ALL($4::varchar[])
             """,
-            [transfer["id"], ai, list(applicable.keys())],
+            [transfer["id"], ai, list(withdrawable), list(applicable.keys())],
             connection=connection,
         )
 
@@ -717,9 +821,15 @@ async def recalculate_requirements(transfer: dict, user: Any) -> dict:
         detail={
             "classification_code": context.get("classification_code"),
             "applicable": sorted(applicable.keys()),
+            "unevaluated": [rule["rule_key"] for rule in unevaluated],
         },
     )
-    return await list_requirements(transfer)
+    data = await list_requirements(transfer)
+    data["unevaluatedRules"] = [
+        {"ruleKey": rule["rule_key"], "conditionKey": rule.get("condition_key")}
+        for rule in unevaluated
+    ]
+    return data
 
 
 async def list_requirements(transfer: dict) -> dict:

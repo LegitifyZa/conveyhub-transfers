@@ -12,11 +12,15 @@ No database is contacted: db.query/with_transaction are stubbed fixtures.
 """
 
 import asyncio
+import base64
 import hashlib
+import hmac
 import io
+import json
 import time
 import unittest
 import uuid
+import zipfile
 from contextlib import ExitStack
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -36,9 +40,22 @@ OWN = "22222222-2222-4222-8222-222222222222"
 FOREIGN = "33333333-3333-4333-8333-333333333333"
 DOC_ID = "55555555-5555-4555-8555-555555555555"
 
+def _zip_bytes(members: dict) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as archive:
+        for name, body in members.items():
+            archive.writestr(name, body)
+    return buf.getvalue()
+
+
 PDF_BYTES = b"%PDF-1.4 fake-synthetic-test-file"
 PNG_BYTES = b"\x89PNG\r\n\x1a\nfake-png"
-DOCX_BYTES = b"PK\x03\x04fake-docx-zip"
+# A real OOXML package: ZIP containing the members DOCX validation requires.
+DOCX_BYTES = _zip_bytes(
+    {"[Content_Types].xml": "<Types/>", "word/document.xml": "<w:document/>"}
+)
+# A valid ZIP that is NOT an OOXML package — must be rejected even renamed .docx.
+PLAIN_ZIP_BYTES = _zip_bytes({"readme.txt": "not a document"})
 EXE_BYTES = b"MZ\x90\x00fake-executable"
 
 
@@ -263,6 +280,30 @@ class DocumentRouteAuthTests(RouteTestBase):
         )
         self.assertEqual(foreign.status_code, 404)
 
+    async def test_declared_oversize_upload_rejected_413(self):
+        # A declared body larger than the file cap + multipart overhead is
+        # refused before any bytes are consumed or the matter is authorized.
+        # httpx normalizes Content-Length to the real body size, so the guard
+        # is exercised at the route function with the declared header present.
+        from fastapi import HTTPException
+
+        user = SimpleNamespace(
+            is_client=False,
+            has_ability=lambda ability: ability == "transfers:write",
+        )
+        fake_request = SimpleNamespace(
+            headers={"content-length": str(svc.MAX_FILE_BYTES + 128 * 1024)}
+        )
+        with self.assertRaises(HTTPException) as ctx:
+            await transfers.upload_transfer_document_file(
+                id=OWN,
+                document_id=DOC_ID,
+                request=fake_request,
+                file=SimpleNamespace(),
+                user=user,
+            )
+        self.assertEqual(ctx.exception.status_code, 413)
+
 
 class CreateDocumentServiceTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
@@ -371,8 +412,11 @@ class UploadServiceTests(unittest.IsolatedAsyncioTestCase):
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
         self.persisted = []
+        self.oplog = []
         # Stateful document row — UPDATEs merge into it, SELECTs return it.
         self.doc_state = document_row()
+        # Set by tests to make the next persist UPDATE fail (DB outage).
+        self.fail_next_persist = False
         self.stack.enter_context(
             patch.object(svc.db, "query", AsyncMock(side_effect=self._fixture))
         )
@@ -383,6 +427,13 @@ class UploadServiceTests(unittest.IsolatedAsyncioTestCase):
         stripped = text.strip()
         if stripped.startswith("UPDATE transfer_documents"):
             if "file_instance_id = $3" in stripped:
+                if self.fail_next_persist:
+                    self.fail_next_persist = False
+                    raise RuntimeError("simulated database failure")
+                # Emulate `WHERE sha256 IS NULL`: a concurrent writer that
+                # already persisted leaves no row to update.
+                if self.doc_state.get("sha256") is not None:
+                    return db.QueryResult(rows=[], row_count=0)
                 self.doc_state.update(
                     {
                         "storage_key": params[1],
@@ -408,6 +459,13 @@ class UploadServiceTests(unittest.IsolatedAsyncioTestCase):
         if "FROM transfer_documents" in text:
             return db.QueryResult(rows=[document_row(**self.doc_state)], row_count=1)
         if "document_operation_log" in text:
+            self.oplog.append(
+                {
+                    "operation": params[0],
+                    "outcome": params[1],
+                    "detail": json.loads(params[6]) if params[6] else None,
+                }
+            )
             return db.QueryResult(rows=[], row_count=1)
         raise AssertionError(f"Unexpected query: {text}")
 
@@ -491,6 +549,126 @@ class UploadServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(outcome, "uploaded")
         self.assertEqual(scanner.calls, 1)
 
+    async def test_scanner_failure_then_retry_recovers_same_object(self):
+        # Scanner down on first attempt: bytes persist, scan is marked error,
+        # outcome reports not-yet-available — never a false success.
+        failing = FakeScanner(error=ScannerUnavailableError("clamd unreachable"))
+        stale_doc = document_row()  # snapshot before any persist
+        row, outcome = await svc.upload_document_file(
+            transfer_row(), stale_doc, PDF_BYTES, "fica.pdf",
+            storage=self.storage, scanner=failing, user=self.user,
+        )
+        self.assertEqual(outcome, "scan_pending")
+        self.assertEqual(self.doc_state["scan_status"], "error")
+        self.assertEqual(len(self.storage.objects), 1)
+
+        # Retry the same bytes once the scanner is healthy: same object key,
+        # rescan completes, document becomes uploaded — nothing is stuck.
+        recovered = FakeScanner(ScanResult(status="clean"))
+        row, outcome = await svc.upload_document_file(
+            transfer_row(), document_row(**self.doc_state), PDF_BYTES, "fica.pdf",
+            storage=self.storage, scanner=recovered, user=self.user,
+        )
+        self.assertEqual(outcome, "uploaded")
+        self.assertEqual(row["scan_status"], "clean")
+        self.assertEqual(len(self.storage.objects), 1)
+
+    async def test_concurrent_identical_uploads_converge_on_one_object(self):
+        # Writer 1 wins the conditional persist.
+        row1, outcome1 = await svc.upload_document_file(
+            transfer_row(), document_row(), PDF_BYTES, "fica.pdf",
+            storage=self.storage, scanner=FakeScanner(), user=self.user,
+        )
+        self.assertEqual(outcome1, "uploaded")
+
+        # Writer 2 held a stale snapshot (no sha256), stored the same bytes
+        # under the same content-addressed key, then lost the persist race.
+        stale_snapshot = document_row()
+        row2, outcome2 = await svc.upload_document_file(
+            transfer_row(), stale_snapshot, PDF_BYTES, "fica.pdf",
+            storage=self.storage, scanner=FakeScanner(), user=self.user,
+        )
+        self.assertEqual(outcome2, "replay")
+        self.assertEqual(row2["id"], row1["id"])
+        self.assertEqual(row2["sha256"], row1["sha256"])
+        # Exactly one object exists — identical bytes at the identical key.
+        self.assertEqual(len(self.storage.objects), 1)
+        self.assertEqual(self.doc_state["scan_status"], "clean")
+
+    async def test_concurrent_different_file_conflicts_without_overwrite(self):
+        row1, outcome1 = await svc.upload_document_file(
+            transfer_row(), document_row(), PDF_BYTES, "fica.pdf",
+            storage=self.storage, scanner=FakeScanner(), user=self.user,
+        )
+        self.assertEqual(outcome1, "uploaded")
+
+        # A concurrent writer with different bytes loses the persist race and
+        # must conflict — the stored row is never overwritten.
+        with self.assertRaises(svc.DocumentIdempotencyConflictError):
+            await svc.upload_document_file(
+                transfer_row(), document_row(), PNG_BYTES, "other.png",
+                storage=self.storage, scanner=FakeScanner(), user=self.user,
+            )
+        self.assertEqual(self.doc_state["sha256"], hashlib.sha256(PDF_BYTES).hexdigest())
+        self.assertEqual(self.doc_state["file_type"], "application/pdf")
+        self.assertEqual(self.doc_state["status"], "uploaded")
+        # The losing writer's object is durable-identified in the op log for
+        # reconciliation (storage itself keeps no-delete semantics).
+        conflicts = [
+            entry for entry in self.oplog
+            if entry["detail"] and entry["detail"].get("reason") == "concurrent_different_file"
+        ]
+        self.assertEqual(len(conflicts), 1)
+        self.assertIn("storage_key", conflicts[0]["detail"])
+
+    async def test_storage_success_persist_failure_durable_and_retryable(self):
+        self.fail_next_persist = True
+        with self.assertRaises(svc.DocumentServiceError):
+            await svc.upload_document_file(
+                transfer_row(), document_row(), PDF_BYTES, "fica.pdf",
+                storage=self.storage, scanner=FakeScanner(), user=self.user,
+            )
+        # Stored object survives with its identifiers in the failure record —
+        # reconcilable, not a silent orphan, and not a false success.
+        self.assertEqual(len(self.storage.objects), 1)
+        failures = [
+            entry for entry in self.oplog
+            if entry["operation"] == "file_uploaded" and entry["outcome"] == "failure"
+        ]
+        self.assertEqual(len(failures), 1)
+        self.assertEqual(failures[0]["detail"]["stage"], "persist")
+        self.assertIn("storage_key", failures[0]["detail"])
+        self.assertIn("file_instance_id", failures[0]["detail"])
+
+        # Retry of the same bytes reuses the same object key and succeeds.
+        row, outcome = await svc.upload_document_file(
+            transfer_row(), document_row(), PDF_BYTES, "fica.pdf",
+            storage=self.storage, scanner=FakeScanner(), user=self.user,
+        )
+        self.assertEqual(outcome, "uploaded")
+        self.assertEqual(len(self.storage.objects), 1)
+
+    async def test_docx_accepts_real_ooxml_package(self):
+        scanner = FakeScanner(ScanResult(status="clean"))
+        row, outcome = await svc.upload_document_file(
+            transfer_row(), document_row(), DOCX_BYTES, "contract.docx",
+            storage=self.storage, scanner=scanner, user=self.user,
+        )
+        self.assertEqual(outcome, "uploaded")
+        self.assertEqual(
+            row["file_type"],
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+
+    async def test_renamed_zip_is_not_a_docx(self):
+        # A plain ZIP renamed .docx lacks the OOXML members — rejected even
+        # though the ZIP magic bytes match.
+        with self.assertRaises(svc.DocumentValidationError):
+            await svc.upload_document_file(
+                transfer_row(), document_row(), PLAIN_ZIP_BYTES, "evil.docx",
+                storage=self.storage, scanner=FakeScanner(), user=self.user,
+            )
+
 
 class DownloadTokenTests(unittest.TestCase):
     def test_issue_and_verify_round_trip(self):
@@ -519,6 +697,81 @@ class DownloadTokenTests(unittest.TestCase):
         self.assertIsNone(svc.verify_download_token("garbage", "s"))
         expired, _ = svc.issue_download_token(uploaded_clean_row(), "s", -10)
         self.assertIsNone(svc.verify_download_token(expired, "s"))
+
+    def test_tampered_payload_rejected(self):
+        # Rewriting the signed payload — swapping the document id or the
+        # institution — invalidates the HMAC. This is the binding that makes a
+        # token for document A unusable for document B or another tenant.
+        token_value, _ = svc.issue_download_token(
+            uploaded_clean_row(), "token-secret", 300
+        )
+        version, body, sig = token_value.split(".")
+        payload = json.loads(
+            base64.urlsafe_b64decode(body + "=" * (-len(body) % 4))
+        )
+        for field, value in (("doc", FOREIGN), ("ai", 99)):
+            forged = dict(payload, **{field: value})
+            forged_body = base64.urlsafe_b64encode(
+                json.dumps(forged, separators=(",", ":")).encode()
+            ).decode().rstrip("=")
+            forged_token = f"{version}.{forged_body}.{sig}"
+            self.assertIsNone(
+                svc.verify_download_token(forged_token, "token-secret"), field
+            )
+
+    def test_token_scope_prefix_rejected(self):
+        token_value, _ = svc.issue_download_token(uploaded_clean_row(), "s", 300)
+        version, body, sig = token_value.split(".")
+        payload = json.loads(
+            base64.urlsafe_b64decode(body + "=" * (-len(body) % 4))
+        )
+        forged = dict(payload, sc="other-purpose")
+        # Even a correctly re-signed token for another scope is refused.
+        forged_body = base64.urlsafe_b64encode(
+            json.dumps(forged, separators=(",", ":")).encode()
+        ).decode().rstrip("=")
+        forged_sig = base64.urlsafe_b64encode(
+            hmac.new(b"s", forged_body.encode(), hashlib.sha256).digest()
+        ).decode().rstrip("=")
+        self.assertIsNone(
+            svc.verify_download_token(f"{version}.{forged_body}.{forged_sig}", "s")
+        )
+
+
+class DownloadLookupTests(unittest.IsolatedAsyncioTestCase):
+    """get_document_for_download binds document id AND institution."""
+
+    async def _fixture(self, text, params=None, **kwargs):
+        params = params or []
+        if "FROM transfer_documents" in text:
+            # Rows exist only inside institution 5.
+            if params[1] == 5 and params[0] == DOC_ID:
+                return db.QueryResult(rows=[uploaded_clean_row()], row_count=1)
+            return db.QueryResult(rows=[], row_count=0)
+        raise AssertionError(f"Unexpected query: {text}")
+
+    async def test_cross_institution_document_lookup_denied(self):
+        with patch.object(svc.db, "query", AsyncMock(side_effect=self._fixture)):
+            with self.assertRaises(svc.DocumentNotFoundError):
+                await svc.get_document_for_download(DOC_ID, 6)
+
+    async def test_foreign_document_id_denied(self):
+        with patch.object(svc.db, "query", AsyncMock(side_effect=self._fixture)):
+            with self.assertRaises(svc.DocumentNotFoundError):
+                await svc.get_document_for_download(FOREIGN, 5)
+
+    async def test_non_clean_document_unavailable(self):
+        async def pending_fixture(text, params=None, **kwargs):
+            if "FROM transfer_documents" in text:
+                return db.QueryResult(
+                    rows=[uploaded_clean_row(scan_status="pending", status="pending")],
+                    row_count=1,
+                )
+            raise AssertionError(f"Unexpected query: {text}")
+
+        with patch.object(svc.db, "query", AsyncMock(side_effect=pending_fixture)):
+            with self.assertRaises(svc.DocumentNotAvailableError):
+                await svc.get_document_for_download(DOC_ID, 5)
 
 
 class RequirementEvaluationTests(unittest.TestCase):
@@ -565,8 +818,11 @@ class RecalculateServiceTests(unittest.IsolatedAsyncioTestCase):
                     {"rule_key": "fica", "display_name": "FICA", "classification_code": None, "condition_key": None},
                     {"rule_key": "bond_letter", "display_name": "Bond letter", "classification_code": None, "condition_key": "has_bond"},
                     {"rule_key": "cash_proof", "display_name": "Proof of funds", "classification_code": None, "condition_key": "cash_purchase"},
+                    # Condition outside the supported vocabulary — must be
+                    # surfaced, never silently applied or withdrawn.
+                    {"rule_key": "specialist_letter", "display_name": "Specialist letter", "classification_code": None, "condition_key": "requires_specialist_confirm"},
                 ],
-                row_count=3,
+                row_count=4,
             )
         if "INSERT INTO transfer_document_requirements" in text or "UPDATE transfer_document_requirements" in text:
             self.executed.append((text.strip(), params))
@@ -586,6 +842,27 @@ class RecalculateServiceTests(unittest.IsolatedAsyncioTestCase):
         # applicable set — nothing is ever deleted.
         updates = [t for t, _ in self.executed if t.startswith("UPDATE")]
         self.assertTrue(any("status = 'withdrawn'" in u for u in updates))
+
+    async def test_unevaluated_rule_is_flagged_and_never_withdrawn(self):
+        data = await svc.recalculate_requirements(transfer_row(), self.user)
+        # The unsupported condition produces no requirement row...
+        inserts = [p for t, p in self.executed if t.startswith("INSERT")]
+        keys = {p[2] for p in inserts}
+        self.assertNotIn("specialist_letter", keys)
+        # ...is surfaced as unevaluated rather than silently "not required"...
+        self.assertEqual(
+            data["unevaluatedRules"],
+            [{"ruleKey": "specialist_letter", "conditionKey": "requires_specialist_confirm"}],
+        )
+        # ...and an existing requirement bound to that rule is outside the
+        # withdrawal set — we cannot prove it stopped applying.
+        withdrawals = [p for t, p in self.executed if "'withdrawn'" in t]
+        self.assertEqual(len(withdrawals), 1)
+        withdrawable_keys = set(withdrawals[0][2])
+        self.assertNotIn("specialist_letter", withdrawable_keys)
+        self.assertEqual(
+            withdrawable_keys, {"fica", "bond_letter", "cash_proof"}
+        )
 
 
 class DownloadRouteTests(RouteTestBase):
@@ -617,6 +894,42 @@ class DownloadRouteTests(RouteTestBase):
     async def test_download_rejects_bad_token(self):
         response = await self.client.get("/api/v1/documents/download/v1.bad.token")
         self.assertEqual(response.status_code, 403)
+
+    async def test_download_rejects_expired_token(self):
+        expired, _ = svc.issue_download_token(uploaded_clean_row(), "token-secret", -10)
+        response = await self.client.get(f"/api/v1/documents/download/{expired}")
+        self.assertEqual(response.status_code, 403)
+
+    async def test_download_rejects_tampered_token(self):
+        token_value, _ = svc.issue_download_token(uploaded_clean_row(), "token-secret")
+        version, body, sig = token_value.split(".")
+        payload = json.loads(base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)))
+        payload["doc"] = FOREIGN
+        forged_body = base64.urlsafe_b64encode(
+            json.dumps(payload, separators=(",", ":")).encode()
+        ).decode().rstrip("=")
+        response = await self.client.get(
+            f"/api/v1/documents/download/{version}.{forged_body}.{sig}"
+        )
+        self.assertEqual(response.status_code, 403)
+
+    async def test_download_denied_when_document_no_longer_available(self):
+        # Token verifies, but the file lost availability after issuance —
+        # bearer access re-checks state at retrieval.
+        async def unavailable_fixture(text, params=None, **kwargs):
+            if "FROM transfer_documents" in text:
+                return db.QueryResult(
+                    rows=[uploaded_clean_row(scan_status="infected", status="pending")],
+                    row_count=1,
+                )
+            if "document_operation_log" in text:
+                return db.QueryResult(rows=[], row_count=1)
+            raise AssertionError(f"Unexpected query: {text}")
+
+        token_value, _ = svc.issue_download_token(uploaded_clean_row(), "token-secret")
+        with patch.object(svc.db, "query", AsyncMock(side_effect=unavailable_fixture)):
+            response = await self.client.get(f"/api/v1/documents/download/{token_value}")
+        self.assertEqual(response.status_code, 404)
 
 
 if __name__ == "__main__":
