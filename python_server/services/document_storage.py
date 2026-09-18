@@ -21,6 +21,7 @@ Configured backends (DOCUMENT_STORAGE_BACKEND):
 
 import os
 import re
+import uuid
 from dataclasses import dataclass
 from typing import Optional, Protocol
 
@@ -90,12 +91,24 @@ class LocalDocumentStorage:
             # identical bytes (same digest). Never overwritten.
             return
         os.makedirs(os.path.dirname(path), exist_ok=True)
+        # Write to a sibling temp file, then publish with an atomic hard-link
+        # create. os.link fails if the destination exists, preserving
+        # create-if-absent, and a concurrent get() can never observe a
+        # partially written object — the key appears only once the bytes are
+        # complete on disk.
+        tmp_path = f"{path}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
         try:
-            with open(path, "xb") as handle:
+            with open(tmp_path, "wb") as handle:
                 handle.write(data)
+            os.link(tmp_path, path)
         except FileExistsError:
             # A concurrent writer won — same key, identical bytes.
             return
+        finally:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
 
     def get(self, key: str) -> bytes:
         with open(self._resolve(key), "rb") as handle:

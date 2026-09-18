@@ -224,6 +224,46 @@ describe('v1 document BFF proxies', async () => {
     assert.equal(captured.length, 0)
   })
 
+  it('rejects a chunked oversize upload with 413 — no Content-Length needed', async () => {
+    // The uncovered path: chunked transfer-encoding has no declared length,
+    // so only the actual byte counter can refuse it. The stream must be cut
+    // before the full body proxies upstream.
+    const status = await new Promise<number>((resolve) => {
+      const req = httpRequest(
+        `${baseUrl}/api/v1/transfers/${TRANSFER_ID}/documents/${DOC_ID}/file`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${makeToken()}`,
+            'Content-Type': 'multipart/form-data; boundary=----x',
+            // Deliberately no Content-Length — Node sends chunked encoding.
+          },
+        },
+        (res) => {
+          res.resume()
+          resolve(res.statusCode ?? 0)
+        }
+      )
+      req.on('error', () => resolve(0)) // socket reset before any response = failure
+      const chunk = Buffer.alloc(1024 * 1024, 0x61) // 1 MB
+      // Keep streaming until the server cuts us off — drain-driven so
+      // backpressure doesn't stall the test body short of the cap.
+      const writeMore = () => {
+        if (req.destroyed || req.writableEnded) return
+        if (req.write(chunk)) {
+          setImmediate(writeMore)
+        } else {
+          req.once('drain', writeMore)
+        }
+      }
+      writeMore()
+      setTimeout(() => { if (!req.destroyed) req.destroy() }, 5000).unref()
+    })
+    assert.equal(status, 413)
+    // The oversized body never reached the upstream stub.
+    assert.equal(captured.length, 0)
+  })
+
   it('streams the bearer-token download through without requiring a JWT', async () => {
     const bytes = Buffer.from('%PDF-1.4 download-bytes')
     upstreamResponse = { status: 200, body: bytes, contentType: 'application/pdf' }

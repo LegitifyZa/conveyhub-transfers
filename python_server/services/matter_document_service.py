@@ -687,8 +687,14 @@ async def get_document_for_download(document_id: str, ai: int) -> dict:
 # --------------------------------------------------------------------------
 
 async def _load_matter_context(transfer: dict) -> dict:
-    """Evaluate the supported condition vocabulary against stored matter data."""
-    context = {"classification_code": None, "has_bond": False}
+    """Evaluate the supported condition vocabulary against stored matter data.
+
+    has_bond is tri-state: True/False when evidence exists, None when the
+    financing facts are missing — a missing fact must NOT be treated as a
+    negative answer. These heuristics are implementation choices pending
+    Dean's approved rule definitions, not business facts.
+    """
+    context = {"classification_code": None, "has_bond": None}
 
     matter_result = await db.query(
         """
@@ -708,20 +714,37 @@ async def _load_matter_context(transfer: dict) -> dict:
         "SELECT loan_amount FROM transfer_financials WHERE transfer_id = $1 LIMIT 1",
         [transfer["id"]],
     )
-    loan = loan_result.rows[0].get("loan_amount") if loan_result.rows else None
-    context["has_bond"] = bool(bond_result.rows) or (loan is not None and float(loan) > 0)
+    if bond_result.rows:
+        context["has_bond"] = True
+    elif loan_result.rows:
+        loan = loan_result.rows[0].get("loan_amount")
+        # Explicit loan data decides; a NULL amount stays unknown.
+        if loan is not None:
+            context["has_bond"] = float(loan) > 0
     return context
 
 
-def _rule_evaluable(rule: dict) -> bool:
-    """True when the rule's condition is within the supported vocabulary.
+def _rule_evaluable(rule: dict, context: dict) -> bool:
+    """True when the rule can actually be decided for this matter.
 
-    A rule whose condition_key we cannot evaluate is never treated as
-    inapplicable: it is surfaced via 'unevaluatedRules' and any existing
-    requirement bound to it is left untouched (not withdrawn).
+    A rule is unevaluable when its condition_key is outside the supported
+    vocabulary, when it is scoped to a classification the matter does not
+    record, or when the underlying fact is missing (has_bond unknown).
+    Unevaluable rules are surfaced via 'unevaluatedRules' and any existing
+    requirement bound to them is left untouched — never silently applied
+    or withdrawn.
     """
+    classification = rule.get("classification_code")
+    if classification and classification != "*" and context.get("classification_code") is None:
+        return False
     condition = rule.get("condition_key")
-    return condition is None or condition in _SUPPORTED_CONDITIONS
+    if condition is None:
+        return True
+    if condition not in _SUPPORTED_CONDITIONS:
+        return False
+    if condition in ("has_bond", "cash_purchase") and context.get("has_bond") is None:
+        return False
+    return True
 
 
 def _rule_applies(rule: dict, context: dict) -> bool:
@@ -732,9 +755,9 @@ def _rule_applies(rule: dict, context: dict) -> bool:
     if condition is None:
         return True
     if condition == "has_bond":
-        return context["has_bond"]
+        return context["has_bond"] is True
     if condition == "cash_purchase":
-        return not context["has_bond"]
+        return context["has_bond"] is False
     return False  # unreachable while _rule_evaluable gates callers
 
 
@@ -759,8 +782,8 @@ async def recalculate_requirements(transfer: dict, user: Any) -> dict:
         """,
         [],
     )
-    evaluable = [rule for rule in rules_result.rows if _rule_evaluable(rule)]
-    unevaluated = [rule for rule in rules_result.rows if not _rule_evaluable(rule)]
+    evaluable = [rule for rule in rules_result.rows if _rule_evaluable(rule, context)]
+    unevaluated = [rule for rule in rules_result.rows if not _rule_evaluable(rule, context)]
     applicable = {
         rule["rule_key"]: rule
         for rule in evaluable

@@ -49,6 +49,18 @@ function makeApi(t = {}) {
     if (path === '/api/auth/refresh' && method === 'POST') {
       return r.fulfill(json({ message: 'OK', data: { token: 'pw-access-token', expires: Math.floor(Date.now() / 1000) + 3600 } }))
     }
+    if (path === '/api/v1/transfers/' && method === 'GET') {
+      // The persistence probe's real contract: {message, data:{transfers:[],
+      // pagination}}. probeMalformed simulates the legacy {success:true}
+      // envelope the old check wrongly trusted — controls must stay locked.
+      if (t.probeMalformed) {
+        return r.fulfill(json({ success: true, data: [] }))
+      }
+      return r.fulfill(json({
+        message: 'OK',
+        data: { transfers: [], pagination: { page: 1, limit: 1, total: 0 } },
+      }))
+    }
     if (path === `/api/v1/transfers/${MATTER_ID}/documents` && method === 'GET') {
       return r.fulfill(json({ message: 'OK', data: { documents, requirements } }))
     }
@@ -329,6 +341,38 @@ await check('document readback after reload', async () => {
   await page.getByText('Rates clearance').waitFor()
   await page.getByText('rates.pdf').waitFor()
   await page.getByText('Security scan passed').waitFor()
+  await context.close()
+})
+
+await check('persistence probe accepts the real {message,data:{transfers}} envelope', async () => {
+  // Wizard-path check, distinct from the documents envelope: GET
+  // /api/v1/transfers/?limit=1 must satisfy data.transfers as an array for
+  // Save Draft / Submit Transfer to unlock.
+  const api = makeApi({})
+  const { context, page } = await newAuthedPage(api)
+  const probeResponse = page.waitForResponse(r => r.url().includes('/api/v1/transfers/?limit=1'))
+  await page.goto(`${BASE}/transfers/workflow`)
+  await probeResponse
+  const save = page.getByRole('button', { name: 'Save Draft' })
+  await save.waitFor()
+  await page.waitForFunction(() => {
+    const btn = [...document.querySelectorAll('button')]
+      .find(b => b.textContent?.trim() === 'Save Draft')
+    return btn && !btn.disabled
+  }, { timeout: 5000 })
+  await context.close()
+})
+
+await check('persistence probe fails closed on a malformed envelope', async () => {
+  const api = makeApi({ probeMalformed: true })
+  const { context, page } = await newAuthedPage(api)
+  const probeResponse = page.waitForResponse(r => r.url().includes('/api/v1/transfers/?limit=1'))
+  await page.goto(`${BASE}/transfers/workflow`)
+  await probeResponse
+  const save = page.getByRole('button', { name: 'Save Draft' })
+  await save.waitFor()
+  await page.waitForTimeout(500) // let probe state settle
+  assert.equal(await save.isDisabled(), true)
   await context.close()
 })
 

@@ -304,6 +304,54 @@ class DocumentRouteAuthTests(RouteTestBase):
             )
         self.assertEqual(ctx.exception.status_code, 413)
 
+    async def test_chunked_oversize_body_rejected_413(self):
+        # The uncovered path: a chunked/undeclared body carries no reliable
+        # Content-Length, so the route guard cannot see it. The ASGI
+        # UploadBodyLimitMiddleware counts actual bytes and refuses at the
+        # cap — before the multipart parser can spool the rest to disk.
+        # The stream must be a VALID multipart envelope: an invalid body
+        # fails parsing fast (400) without ever reaching the byte limit.
+        boundary = "x" * 16
+        head = (
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="file"; filename="big.pdf"\r\n'
+            "Content-Type: application/pdf\r\n\r\n"
+        ).encode()
+
+        async def oversized_stream():
+            yield head
+            for _ in range(30):
+                yield b"%PDF-1.4 " + b"x" * (1024 * 1024 - 10)  # ~30 MB file part
+            yield f"\r\n--{boundary}--\r\n".encode()
+
+        response = await self.client.post(
+            f"/api/v1/transfers/{OWN}/documents/{DOC_ID}/file",
+            content=oversized_stream(),
+            headers={
+                **self._headers(),
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+            },
+        )
+        self.assertEqual(response.status_code, 413)
+
+    async def test_chunked_body_under_limit_passes_middleware(self):
+        # A small streamed body (no Content-Length) flows through the
+        # middleware to the route — rejection, if any, comes from the
+        # handler's own validation, not the byte counter.
+        async def small_stream():
+            yield b"--x\r\nContent-Disposition: form-data; name=\"file\"; "
+            yield b"filename=\"f.pdf\"\r\n\r\n%PDF-1.4 x\r\n--x--\r\n"
+
+        response = await self.client.post(
+            f"/api/v1/transfers/{OWN}/documents/{DOC_ID}/file",
+            content=small_stream(),
+            headers={
+                **self._headers(),
+                "Content-Type": "multipart/form-data; boundary=x",
+            },
+        )
+        self.assertNotEqual(response.status_code, 413)
+
 
 class CreateDocumentServiceTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
@@ -417,6 +465,8 @@ class UploadServiceTests(unittest.IsolatedAsyncioTestCase):
         self.doc_state = document_row()
         # Set by tests to make the next persist UPDATE fail (DB outage).
         self.fail_next_persist = False
+        # Set by tests to make the operation-log INSERT fail (audit lane down).
+        self.fail_oplog = False
         self.stack.enter_context(
             patch.object(svc.db, "query", AsyncMock(side_effect=self._fixture))
         )
@@ -459,6 +509,8 @@ class UploadServiceTests(unittest.IsolatedAsyncioTestCase):
         if "FROM transfer_documents" in text:
             return db.QueryResult(rows=[document_row(**self.doc_state)], row_count=1)
         if "document_operation_log" in text:
+            if self.fail_oplog:
+                raise RuntimeError("simulated operation-log write failure")
             self.oplog.append(
                 {
                     "operation": params[0],
@@ -648,6 +700,45 @@ class UploadServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(outcome, "uploaded")
         self.assertEqual(len(self.storage.objects), 1)
 
+    async def test_storage_persist_and_oplog_all_fail_still_recovers(self):
+        # Worst case: bytes stored, row persist fails, AND the recovery
+        # record write fails too. Recovery semantics, in order of strength:
+        #   1. The durable record (document_operation_log) — absent here.
+        #   2. The stderr alert — the observable alarm signal (tested below).
+        #   3. The object itself — retained under its deterministic key
+        #      (ai/transfer/document/sha256), so a retry or reconciliation
+        #      sweep can re-derive and re-attach it. Nothing is lost beyond
+        #      detection latency; the caller still gets an honest failure.
+        self.fail_next_persist = True
+        self.fail_oplog = True
+        captured = io.StringIO()
+        with self.assertRaises(svc.DocumentServiceError):
+            from contextlib import redirect_stderr
+
+            with redirect_stderr(captured):
+                await svc.upload_document_file(
+                    transfer_row(), document_row(), PDF_BYTES, "fica.pdf",
+                    storage=self.storage, scanner=FakeScanner(), user=self.user,
+                )
+        # The failed recovery write surfaced as a stderr alert, not a
+        # swallowed silent loss — and never rolled the error into success.
+        self.assertIn("document_operation_log write failed", captured.getvalue())
+        # The object survives under the deterministic key — re-derivable.
+        self.assertEqual(len(self.storage.objects), 1)
+        key = next(iter(self.storage.objects))
+        self.assertIn(hashlib.sha256(PDF_BYTES).hexdigest(), key)
+        self.assertFalse(self.doc_state.get("sha256"))
+
+        # Once both lanes recover, the same-bytes retry reuses the identical
+        # key — no second object, no stuck state, honest success at last.
+        self.fail_oplog = False
+        row, outcome = await svc.upload_document_file(
+            transfer_row(), document_row(), PDF_BYTES, "fica.pdf",
+            storage=self.storage, scanner=FakeScanner(), user=self.user,
+        )
+        self.assertEqual(outcome, "uploaded")
+        self.assertEqual(len(self.storage.objects), 1)
+
     async def test_docx_accepts_real_ooxml_package(self):
         scanner = FakeScanner(ScanResult(status="clean"))
         row, outcome = await svc.upload_document_file(
@@ -668,6 +759,49 @@ class UploadServiceTests(unittest.IsolatedAsyncioTestCase):
                 transfer_row(), document_row(), PLAIN_ZIP_BYTES, "evil.docx",
                 storage=self.storage, scanner=FakeScanner(), user=self.user,
             )
+
+
+class LocalStorageBehaviorTests(unittest.TestCase):
+    """LocalDocumentStorage create-if-absent + atomic-publish behavior.
+
+    MOCKED-CONCURRENCY evidence on the development adapter only — this is
+    NOT verification of the files-service adapter, whose atomicity contract
+    remains unconfirmed.
+    """
+
+    def setUp(self):
+        import tempfile
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.storage = LocalDocumentStorage(self.tmp.name)
+
+    def test_second_put_same_key_never_overwrites(self):
+        self.storage.put("ai-5/t/d/doc/aaa", PDF_BYTES, "application/pdf")
+        self.storage.put("ai-5/t/d/doc/aaa", PNG_BYTES, "image/png")
+        # First writer wins — same key means identical digest in production;
+        # here it proves put is genuinely create-if-absent, not upsert.
+        self.assertEqual(self.storage.get("ai-5/t/d/doc/aaa"), PDF_BYTES)
+
+    def test_concurrent_puts_publish_complete_bytes_only(self):
+        # Threads race the same key; readers only ever see the complete
+        # object (temp-write + atomic link publish), never a partial file.
+        import concurrent.futures
+        import os
+
+        key = "ai-5/t/d/doc/bbb"
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(lambda _: self.storage.put(key, PDF_BYTES, "application/pdf"), range(16)))
+        self.assertEqual(self.storage.get(key), PDF_BYTES)
+        # No temp/partial artifacts remain under the storage root.
+        leftovers = [
+            f for _, _, files in os.walk(self.tmp.name) for f in files if f.endswith(".tmp")
+        ]
+        self.assertEqual(leftovers, [])
+
+    def test_get_missing_key_raises(self):
+        with self.assertRaises(FileNotFoundError):
+            self.storage.get("ai-5/t/d/doc/missing")
 
 
 class DownloadTokenTests(unittest.TestCase):
@@ -803,27 +937,33 @@ class RecalculateServiceTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         self.user = SimpleNamespace(user_id=7)
+        # Scenario knobs — tests override before calling recalculate.
+        self.matter_classification = "sale"
+        self.bond_present = True
+        self.financials_row = None  # None => no row; {"loan_amount": x} => row
+        self.rules = [
+            {"rule_key": "fica", "display_name": "FICA", "classification_code": None, "condition_key": None},
+            {"rule_key": "bond_letter", "display_name": "Bond letter", "classification_code": None, "condition_key": "has_bond"},
+            {"rule_key": "cash_proof", "display_name": "Proof of funds", "classification_code": None, "condition_key": "cash_purchase"},
+            # Condition outside the supported vocabulary — must be
+            # surfaced, never silently applied or withdrawn.
+            {"rule_key": "specialist_letter", "display_name": "Specialist letter", "classification_code": None, "condition_key": "requires_specialist_confirm"},
+        ]
 
     async def _fixture(self, text, params=None, **kwargs):
         params = params or []
         if "FROM matters" in text:
-            return db.QueryResult(rows=[{"classification_code": "sale"}], row_count=1)
-        if "FROM bonds" in text:
-            return db.QueryResult(rows=[{"present": 1}], row_count=1)
-        if "FROM transfer_financials" in text:
-            return db.QueryResult(rows=[], row_count=0)
-        if "FROM document_requirement_rules" in text:
             return db.QueryResult(
-                rows=[
-                    {"rule_key": "fica", "display_name": "FICA", "classification_code": None, "condition_key": None},
-                    {"rule_key": "bond_letter", "display_name": "Bond letter", "classification_code": None, "condition_key": "has_bond"},
-                    {"rule_key": "cash_proof", "display_name": "Proof of funds", "classification_code": None, "condition_key": "cash_purchase"},
-                    # Condition outside the supported vocabulary — must be
-                    # surfaced, never silently applied or withdrawn.
-                    {"rule_key": "specialist_letter", "display_name": "Specialist letter", "classification_code": None, "condition_key": "requires_specialist_confirm"},
-                ],
-                row_count=4,
+                rows=[{"classification_code": self.matter_classification}], row_count=1
             )
+        if "FROM bonds" in text:
+            rows = [{"present": 1}] if self.bond_present else []
+            return db.QueryResult(rows=rows, row_count=len(rows))
+        if "FROM transfer_financials" in text:
+            rows = [self.financials_row] if self.financials_row else []
+            return db.QueryResult(rows=rows, row_count=len(rows))
+        if "FROM document_requirement_rules" in text:
+            return db.QueryResult(rows=list(self.rules), row_count=len(self.rules))
         if "INSERT INTO transfer_document_requirements" in text or "UPDATE transfer_document_requirements" in text:
             self.executed.append((text.strip(), params))
             return db.QueryResult(rows=[], row_count=1)
@@ -862,6 +1002,63 @@ class RecalculateServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("specialist_letter", withdrawable_keys)
         self.assertEqual(
             withdrawable_keys, {"fica", "bond_letter", "cash_proof"}
+        )
+
+    async def test_missing_financing_facts_are_unevaluated_not_negative(self):
+        # No bonds row and no financials row: has_bond is unknown — a
+        # missing fact must NOT be treated as a negative answer.
+        self.bond_present = False
+        self.financials_row = None
+        data = await svc.recalculate_requirements(transfer_row(), self.user)
+        inserts = [p for t, p in self.executed if t.startswith("INSERT")]
+        keys = {p[2] for p in inserts}
+        # Neither conditional rule may apply — and neither is withdrawn
+        # either: both are unevaluated, not "not required".
+        self.assertEqual(keys, {"fica"})
+        self.assertEqual(
+            {r["ruleKey"] for r in data["unevaluatedRules"]},
+            {"bond_letter", "cash_proof", "specialist_letter"},
+        )
+
+    async def test_null_loan_amount_is_unknown_not_cash(self):
+        # A financials row with a NULL loan amount is ambiguous — it does
+        # not establish a cash purchase.
+        self.bond_present = False
+        self.financials_row = {"loan_amount": None}
+        data = await svc.recalculate_requirements(transfer_row(), self.user)
+        inserts = [p for t, p in self.executed if t.startswith("INSERT")]
+        self.assertEqual({p[2] for p in inserts}, {"fica"})
+        self.assertEqual(
+            {r["ruleKey"] for r in data["unevaluatedRules"]},
+            {"bond_letter", "cash_proof", "specialist_letter"},
+        )
+
+    async def test_explicit_zero_loan_evaluates_as_cash_purchase(self):
+        # An explicit zero loan IS evidence: cash_purchase applies.
+        self.bond_present = False
+        self.financials_row = {"loan_amount": 0}
+        data = await svc.recalculate_requirements(transfer_row(), self.user)
+        inserts = [p for t, p in self.executed if t.startswith("INSERT")]
+        self.assertEqual({p[2] for p in inserts}, {"fica", "cash_proof"})
+        self.assertEqual(
+            {r["ruleKey"] for r in data["unevaluatedRules"]},
+            {"specialist_letter"},
+        )
+
+    async def test_missing_classification_makes_scoped_rules_unevaluated(self):
+        # The matter records no classification: a classification-scoped rule
+        # is unevaluated, never silently skipped.
+        self.matter_classification = None
+        self.rules = [
+            {"rule_key": "fica", "display_name": "FICA", "classification_code": None, "condition_key": None},
+            {"rule_key": "sale_addendum", "display_name": "Sale addendum", "classification_code": "sale", "condition_key": None},
+        ]
+        data = await svc.recalculate_requirements(transfer_row(), self.user)
+        inserts = [p for t, p in self.executed if t.startswith("INSERT")]
+        self.assertEqual({p[2] for p in inserts}, {"fica"})
+        self.assertEqual(
+            {r["ruleKey"] for r in data["unevaluatedRules"]},
+            {"sale_addendum"},
         )
 
 

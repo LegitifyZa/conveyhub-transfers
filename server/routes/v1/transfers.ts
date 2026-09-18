@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express'
+import { Transform } from 'node:stream'
 import { query, withTransaction } from '../../db'
 import { requireJwt } from '../../auth/requireJwt'
 import { asyncHandler } from '../../utils/asyncHandler'
@@ -556,6 +557,33 @@ router.post(
       res.status(503).json(DEEDLY_UNAVAILABLE)
       return
     }
+    // Actual-size guard for chunked/undeclared bodies: count streamed bytes
+    // through a Transform — a missing Content-Length must not proxy an
+    // unbounded body upstream. On overflow the controller aborts the
+    // upstream fetch immediately and the handler answers 413.
+    let received = 0
+    let tooLarge = false
+    const abort = new AbortController()
+    const limited = new Transform({
+      transform(chunk: Buffer, _encoding, callback) {
+        received += chunk.length
+        if (received > MAX_UPLOAD_BYTES) {
+          if (!tooLarge) {
+            tooLarge = true
+            abort.abort()
+          }
+          // Keep draining: the transform drops overflow bytes but continues
+          // reading so the socket stays consumed while the 413 flushes —
+          // stopping reads here would RST the connection mid-response.
+          callback()
+          return
+        }
+        callback(null, chunk)
+      },
+    })
+    limited.on('error', () => {}) // never propagate as an unhandled stream error
+    req.on('error', () => limited.destroy())
+    req.pipe(limited)
     try {
       const headers: Record<string, string> = {
         Authorization: req.headers.authorization as string,
@@ -571,11 +599,11 @@ router.post(
         {
           method: 'POST',
           headers,
-          body: req as unknown as BodyInit,
+          body: limited as unknown as BodyInit,
           // @ts-expect-error Node fetch requires duplex for stream bodies
           duplex: 'half',
           redirect: 'error',
-          signal: AbortSignal.timeout(120_000),
+          signal: AbortSignal.any([abort.signal, AbortSignal.timeout(120_000)]),
         }
       )
       const body = await upstream.text()
@@ -589,6 +617,15 @@ router.post(
       }
       res.status(upstream.status).send(body)
     } catch {
+      if (res.headersSent) return
+      if (tooLarge) {
+        // The body exceeded the cap mid-stream — refuse it, never proxy.
+        // The socket stays open and keeps draining the remaining body:
+        // closing with inbound data still in flight forces RST, and the
+        // client would see ECONNRESET instead of the 413.
+        res.status(413).json({ success: false, error: 'File exceeds the 25 MB limit' })
+        return
+      }
       res.status(503).json(DEEDLY_UNAVAILABLE)
     }
   })
