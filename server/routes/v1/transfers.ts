@@ -148,9 +148,24 @@ function mapTransferDocument(row: any) {
     fileSize: row.file_size,
     fileType: row.file_type,
     originalFileName: row.original_file_name,
+    requirementKey: row.requirement_key ?? null,
+    scanStatus: row.scan_status ?? null,
     uploadedAt: row.uploaded_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  }
+}
+
+function mapDocumentRequirement(row: any) {
+  return {
+    id: row.id,
+    requirementKey: row.requirement_key,
+    displayName: row.display_name,
+    source: row.source,
+    conditionKey: row.condition_key,
+    status: row.status,
+    satisfiedDocumentId: row.satisfied_document_id ?? null,
+    linkedDocumentId: row.linked_document_id ?? null,
   }
 }
 
@@ -454,21 +469,120 @@ router.get(
       return
     }
 
+    // Metadata-only. storage_key/file_path/file_instance_id are internal and
+    // must never be projected to clients.
     const documentsQuery = `
       SELECT id, transfer_id, catalogue_document_id, name, status, notes,
-             file_size, file_type, original_file_name, uploaded_at, created_at, updated_at
+             file_size, file_type, original_file_name, requirement_key,
+             scan_status, uploaded_at, created_at, updated_at
       FROM transfer_documents
       WHERE transfer_id = $1
       ORDER BY created_at
     `
     const documentsResult = await query(documentsQuery, [id])
 
+    const requirementsResult = await query(
+      `
+      SELECT r.id, r.requirement_key, r.display_name, r.source,
+             r.condition_key, r.status,
+             (SELECT d.id FROM transfer_documents d
+              WHERE d.transfer_id = r.transfer_id
+                AND d.requirement_key = r.requirement_key
+                AND d.status = 'uploaded' AND d.scan_status = 'clean'
+              ORDER BY d.uploaded_at DESC NULLS LAST LIMIT 1) AS satisfied_document_id,
+             (SELECT d.id FROM transfer_documents d
+              WHERE d.transfer_id = r.transfer_id
+                AND d.requirement_key = r.requirement_key
+              ORDER BY d.created_at DESC LIMIT 1) AS linked_document_id
+      FROM transfer_document_requirements r
+      WHERE r.transfer_id = $1 AND r.accountable_institution_id = $2
+      ORDER BY r.applied_at, r.requirement_key
+      `,
+      [id, transfer.accountable_institution_id]
+    )
+
     res.json({
       message: 'OK',
       data: {
         documents: documentsResult.rows.map(mapTransferDocument),
+        requirements: requirementsResult.rows.map(mapDocumentRequirement),
       },
     })
+  })
+)
+
+router.post(
+  '/:id/documents',
+  requireJwt,
+  asyncHandler(async (req: Request, res: Response) => {
+    await proxyDeedly(req, res, `/${req.params.id}/documents`, 'POST')
+  })
+)
+
+router.post(
+  '/:id/documents/requirements/recalculate',
+  requireJwt,
+  asyncHandler(async (req: Request, res: Response) => {
+    await proxyDeedly(req, res, `/${req.params.id}/documents/requirements/recalculate`, 'POST')
+  })
+)
+
+router.post(
+  '/:id/documents/:documentId/download-link',
+  requireJwt,
+  asyncHandler(async (req: Request, res: Response) => {
+    await proxyDeedly(req, res, `/${req.params.id}/documents/${req.params.documentId}/download-link`, 'POST')
+  })
+)
+
+// Multipart file upload: the raw request body is forwarded unchanged to the
+// FastAPI lane (express.json only parses application/json, so the multipart
+// stream is still intact here). Content sniffing, the 25 MB cap, storage and
+// scanning all happen upstream.
+router.post(
+  '/:id/documents/:documentId/file',
+  requireJwt,
+  asyncHandler(async (req: Request, res: Response) => {
+    const baseUrl = process.env.DEEDLY_API_BASE_URL
+    if (!baseUrl) {
+      res.status(503).json(DEEDLY_UNAVAILABLE)
+      return
+    }
+    try {
+      const headers: Record<string, string> = {
+        Authorization: req.headers.authorization as string,
+      }
+      if (req.headers['content-type']) {
+        headers['Content-Type'] = req.headers['content-type']
+      }
+      if (req.headers['content-length']) {
+        headers['Content-Length'] = req.headers['content-length']
+      }
+      const upstream = await fetch(
+        `${baseUrl.replace(/\/+$/, '')}/api/v1/transfers/${req.params.id}/documents/${req.params.documentId}/file`,
+        {
+          method: 'POST',
+          headers,
+          body: req as unknown as BodyInit,
+          // @ts-expect-error Node fetch requires duplex for stream bodies
+          duplex: 'half',
+          redirect: 'error',
+          signal: AbortSignal.timeout(120_000),
+        }
+      )
+      const body = await upstream.text()
+      if (upstream.status >= 500) {
+        res.status(503).json(DEEDLY_UNAVAILABLE)
+        return
+      }
+      const contentType = upstream.headers.get('content-type')
+      if (contentType) {
+        res.setHeader('Content-Type', contentType)
+      }
+      res.status(upstream.status).send(body)
+    } catch {
+      res.status(503).json(DEEDLY_UNAVAILABLE)
+    }
   })
 )
 

@@ -136,6 +136,7 @@ type TransferAction =
   | { type: 'ADD_DOCUMENT'; payload: Document }
   | { type: 'UPDATE_DOCUMENT'; payload: { id: string; updates: Partial<Document> } }
   | { type: 'REMOVE_DOCUMENT'; payload: string }
+  | { type: 'SET_DOCUMENTS'; payload: Document[] }
   | { type: 'SET_STATUS'; payload: 'draft' | 'in_progress' | 'completed' }
   | { type: 'SET_TRANSFER_ID'; payload: { id?: string; transfer_id?: string } }
   | { type: 'HYDRATE_TRANSFER'; payload: TransferState }
@@ -202,7 +203,10 @@ const transferReducer = (state: TransferState, action: TransferAction): Transfer
         ...state,
         documents: state.documents.filter(doc => doc.id !== action.payload)
       }
-    
+
+    case 'SET_DOCUMENTS':
+      return { ...state, documents: action.payload }
+
     case 'SET_STATUS':
       return {
         ...state,

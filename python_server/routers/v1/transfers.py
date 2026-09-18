@@ -5,7 +5,7 @@ import uuid
 from typing import AbstractSet, Any, Optional
 
 import asyncpg
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 
 from auth.current_user import CurrentUser
@@ -14,6 +14,23 @@ from auth.policy import TenantBoundaryError, resolve_write_tenant_id
 from clients.dependencies import get_entities_client
 from db import query, with_transaction
 from services.golden_record_visibility import GoldenRecordVisibilityError
+from services.document_scanner import build_scanner
+from services.document_storage import build_storage
+from services.matter_document_service import (
+    DocumentIdempotencyConflictError,
+    DocumentNotAvailableError,
+    DocumentNotFoundError,
+    DocumentServiceError,
+    DocumentValidationError,
+    MAX_FILE_BYTES,
+    create_document,
+    get_document,
+    issue_download_token,
+    list_requirements,
+    record_operation,
+    recalculate_requirements,
+    upload_document_file,
+)
 from services.matter_service import (
     MatterConflictError,
     MatterIdempotencyConflictError,
@@ -155,6 +172,8 @@ def _map_transfer_document(row: dict) -> dict:
         "fileSize": row["file_size"],
         "fileType": row["file_type"],
         "originalFileName": row["original_file_name"],
+        "requirementKey": row.get("requirement_key"),
+        "scanStatus": row.get("scan_status"),
         "uploadedAt": row["uploaded_at"],
         "createdAt": row["created_at"],
         "updatedAt": row["updated_at"],
@@ -416,11 +435,13 @@ async def get_transfer_documents(
     if not transfer:
         raise HTTPException(status_code=404, detail="Not found")
 
-    # Metadata-only query. Avoid file_path and uploaded_by.
+    # Metadata-only query. storage_key/file_path/file_instance_id are internal
+    # and must never be projected to clients.
     documents_result = await query(
         """
         SELECT id, transfer_id, catalogue_document_id, name, status, notes,
-               file_size, file_type, original_file_name, uploaded_at, created_at, updated_at
+               file_size, file_type, original_file_name, requirement_key,
+               scan_status, uploaded_at, created_at, updated_at
         FROM transfer_documents
         WHERE transfer_id = $1
         ORDER BY created_at
@@ -428,8 +449,192 @@ async def get_transfer_documents(
         [id],
     )
     documents = [_map_transfer_document(row) for row in documents_result.rows]
+    requirements = await list_requirements(transfer)
 
-    return {"message": "OK", "data": {"documents": documents}}
+    return {"message": "OK", "data": {"documents": documents, "requirements": requirements["requirements"]}}
+
+
+def _document_error_response(exc: DocumentServiceError) -> JSONResponse:
+    if isinstance(exc, DocumentIdempotencyConflictError):
+        return JSONResponse(status_code=409, content={"message": "Conflict", "errors": [str(exc)]})
+    if isinstance(exc, DocumentNotFoundError):
+        return JSONResponse(status_code=404, content={"message": "Not found"})
+    if isinstance(exc, DocumentValidationError):
+        return JSONResponse(status_code=422, content={"message": "Validation failed", "errors": [str(exc)]})
+    if isinstance(exc, DocumentNotAvailableError):
+        return JSONResponse(status_code=409, content={"message": "Not available", "errors": [str(exc)]})
+    return JSONResponse(status_code=500, content={"message": "Document operation failed"})
+
+
+@router.post("/{id}/documents", status_code=201)
+async def create_transfer_document(
+    id: str,
+    body: dict,
+    user: CurrentUser = Depends(require_jwt),
+):
+    """Create a pending document row (no file). Idempotent via client_request_id."""
+
+    _require_transfers_write(user)
+    _require_body_keys(
+        body,
+        required={"name"},
+        optional={"catalogue_document_id", "requirement_key", "notes", "client_request_id"},
+    )
+    if body.get("catalogue_document_id") is not None:
+        _require_uuid_field(body, "catalogue_document_id")
+    client_request = _optional_uuid_field(body, "client_request_id")
+
+    transfer = await _authorize_transfer(user, id)
+    if not transfer:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    try:
+        row, created = await create_document(
+            transfer,
+            user,
+            {
+                "name": body["name"],
+                "catalogue_document_id": body.get("catalogue_document_id"),
+                "requirement_key": body.get("requirement_key"),
+                "notes": body.get("notes"),
+                "client_request_id": uuid.UUID(client_request) if client_request else None,
+            },
+        )
+    except DocumentServiceError as exc:
+        return _document_error_response(exc)
+
+    return JSONResponse(
+        status_code=201 if created else 200,
+        content={"message": "Created" if created else "OK", "data": _map_transfer_document(row)},
+    )
+
+
+@router.post("/{id}/documents/{document_id}/file")
+async def upload_transfer_document_file(
+    id: str,
+    document_id: str,
+    file: UploadFile,
+    user: CurrentUser = Depends(require_jwt),
+):
+    """Attach file bytes to an existing document row (multipart 'file' field).
+
+    The 25 MB cap is enforced during the read; content is sniffed against the
+    PDF/DOCX/JPG/PNG allow-list. Stored bytes are scanned before they can ever
+    become downloadable — scanner failure leaves the file unavailable.
+    """
+
+    _require_transfers_write(user)
+    if not _is_valid_uuid(document_id):
+        raise HTTPException(status_code=404, detail="Not found")
+
+    transfer = await _authorize_transfer(user, id)
+    if not transfer:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    try:
+        document = await get_document(transfer, document_id)
+    except DocumentServiceError as exc:
+        return _document_error_response(exc)
+
+    data = await file.read(MAX_FILE_BYTES + 1)
+    storage = build_storage()
+    scanner = build_scanner()
+    try:
+        row, outcome = await upload_document_file(
+            transfer,
+            document,
+            data,
+            file.filename,
+            storage=storage,
+            scanner=scanner,
+            user=user,
+        )
+    except DocumentServiceError as exc:
+        return _document_error_response(exc)
+
+    return {
+        "message": "OK",
+        "data": {"document": _map_transfer_document(row), "outcome": outcome},
+    }
+
+
+@router.post("/{id}/documents/{document_id}/download-link")
+async def issue_document_download_link(
+    id: str,
+    document_id: str,
+    request: Request,
+    user: CurrentUser = Depends(require_jwt),
+):
+    """Issue a short-lived opaque download token for a clean uploaded document.
+
+    The link is a bearer credential: anyone holding it may retrieve the file
+    until it expires (default 5 min, DOCUMENT_LINK_TTL_SECONDS). Stateless —
+    individual revocation before expiry is not supported; the document's
+    clean/uploaded state is re-checked at retrieval. Issuing a link is not
+    evidence the file was retrieved.
+    """
+
+    # Client document access remains excluded; staff require transfers:read.
+    if user.is_client or not user.has_ability("transfers:read"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    if not _is_valid_uuid(document_id):
+        raise HTTPException(status_code=404, detail="Not found")
+
+    transfer = await _authorize_transfer(user, id)
+    if not transfer:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    try:
+        document = await get_document(transfer, document_id)
+        secret = (
+            request.app.state.settings.document_token_secret
+            or request.app.state.settings.secret_key
+        )
+        ttl = getattr(
+            request.app.state.settings, "document_link_ttl_seconds", 300
+        )
+        token, expires = issue_download_token(document, secret, ttl)
+    except DocumentServiceError as exc:
+        return _document_error_response(exc)
+
+    await record_operation(
+        "download_link_issued",
+        "success",
+        accountable_institution_id=document["accountable_institution_id"],
+        actor_user_id=user.user_id,
+        transfer_id=str(transfer["id"]),
+        document_id=str(document["id"]),
+        detail={"expires": expires},
+    )
+    return {
+        "message": "OK",
+        "data": {
+            "downloadUrl": f"/api/v1/documents/download/{token}",
+            "expires": expires,
+        },
+    }
+
+
+@router.post("/{id}/documents/requirements/recalculate")
+async def recalculate_document_requirements(
+    id: str,
+    user: CurrentUser = Depends(require_jwt),
+):
+    """Evaluate active requirement rules against the matter. Idempotent.
+
+    Requirements are obligations, not files: recalculation upserts requirement
+    rows and withdraws ones that no longer apply — it never deletes a
+    requirement and never touches uploaded evidence.
+    """
+
+    _require_transfers_write(user)
+
+    transfer = await _authorize_transfer(user, id)
+    if not transfer:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    data = await recalculate_requirements(transfer, user)
+    return {"message": "OK", "data": data}
 
 
 @router.get("/{id}/financials")
