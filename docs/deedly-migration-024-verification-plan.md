@@ -3,7 +3,11 @@
 Status: authored, **not executed**. File:
 `src/lib/migrations/024_deedly_property_link_idempotency.sql` on branch
 `deedly/mvp0/properties/manual-capture-and-linking` (commit `ff1ed5e`,
-file sha256 `fa3f3f59e6fac55420b9e7ea8ffa66f9d8fd1ebbcbb6a80d32cced9afbd47fb5`).
+file sha256 `c280d874bac164f936de012e452e91c004cd68691e5191cdc78bd9a4c2512108`).
+
+> Checksum corrected 2026-09-18: the earlier `fa3f3f59…` value was stale;
+> `c280d874…` has been the file's invariant hash since `bae5185c`
+> (confirmed by the 024 verification report).
 
 This document is the handoff for running and verifying migration 024. It
 also records findings from the scratch-fixture test run that the reviewing

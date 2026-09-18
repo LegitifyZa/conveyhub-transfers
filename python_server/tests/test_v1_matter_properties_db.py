@@ -35,9 +35,33 @@ MATTER_ID = "44444444-4444-4444-8444-444444444444"
 _DDL = """
 CREATE SCHEMA {s};
 
-CREATE FUNCTION {s}.generate_property_id() RETURNS VARCHAR AS $$
-    SELECT 'PROP-TEST-' || substr(md5(random()::text), 1, 8)
-$$ LANGUAGE SQL VOLATILE;
+-- Faithful replica of migration 026's public.generate_property_id() —
+-- the corrected PL/pgSQL body, verbatim except the schema substitution
+-- transfers.properties -> {s}.properties. The earlier synthetic SQL
+-- substitute ('PROP-TEST-...') never executed the real uniqueness probe,
+-- which masked the migration-002 variable/column ambiguity defect found
+-- by the 024 verification run. Because the scratch properties table has a
+-- real property_id column, a reintroduced ambiguous reference fails here
+-- exactly as it does in production.
+CREATE FUNCTION {s}.generate_property_id() RETURNS TEXT AS $$
+DECLARE
+    v_year_part TEXT;
+    v_random_part TEXT;
+    v_property_id TEXT;
+BEGIN
+    v_year_part := EXTRACT(YEAR FROM CURRENT_DATE)::TEXT;
+    v_random_part := LPAD(FLOOR(RANDOM() * 10000)::TEXT, 4, '0');
+    v_property_id := 'PROP-' || v_year_part || '-' || v_random_part;
+    WHILE EXISTS (
+        SELECT 1 FROM {s}.properties
+        WHERE {s}.properties.property_id = v_property_id
+    ) LOOP
+        v_random_part := LPAD(FLOOR(RANDOM() * 10000)::TEXT, 4, '0');
+        v_property_id := 'PROP-' || v_year_part || '-' || v_random_part;
+    END LOOP;
+    RETURN v_property_id;
+END;
+$$ LANGUAGE plpgsql;
 
 -- Faithful replica of migration 019's matter_properties_set_tenant(),
 -- schema-qualified to the scratch schema.
@@ -443,6 +467,51 @@ class MatterPropertyDbTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(conflict.status_code, 409)
         self.assertEqual(await self._property_count(), 1)
+
+    async def test_generate_property_id_repeated_inserts_stay_unique(self):
+        # The scratch function is the verbatim-minus-schema migration-026
+        # body: every call runs the real uniqueness probe against a table
+        # that has a property_id column, so a reintroduced variable/column
+        # ambiguity raises 42702 here exactly as it does in production.
+        seen = set()
+        for _ in range(25):
+            row = await self.query(
+                """
+                INSERT INTO properties (property_id, street_address, city,
+                                        province, property_type,
+                                        accountable_institution_id)
+                VALUES (generate_property_id(), '1 Loop Ave', 'Pretoria',
+                        'Gauteng', 'Freehold', 1)
+                RETURNING property_id
+                """,
+                [],
+            )
+            pid = row.rows[0]["property_id"]
+            self.assertRegex(pid, r"^PROP-\d{4}-\d{4}$")
+            seen.add(pid)
+        self.assertEqual(len(seen), 25)
+
+    async def test_generate_property_id_probe_skips_taken_identifiers(self):
+        # Deterministic collision coverage on the verbatim function body:
+        # occupy every candidate except -9999 for the current year, so the
+        # uniqueness probe must loop until it lands on the only free id.
+        # A broken probe that returns a taken identifier fails the equality.
+        year_row = await self.query(
+            "SELECT EXTRACT(YEAR FROM CURRENT_DATE)::int AS y", [])
+        yy = year_row.rows[0]["y"]
+        await self.query(
+            """
+            INSERT INTO properties (property_id, street_address, city,
+                                    province, property_type,
+                                    accountable_institution_id)
+            SELECT 'PROP-' || $1 || '-' || LPAD(g::text, 4, '0'),
+                   '1 Loop Ave', 'Pretoria', 'Gauteng', 'Freehold', 1
+            FROM generate_series(0, 9998) AS g
+            """,
+            [str(yy)],
+        )
+        row = await self.query("SELECT generate_property_id() AS pid", [])
+        self.assertEqual(row.rows[0]["pid"], f"PROP-{yy}-9999")
 
     async def test_link_existing_active_property(self):
         await self.query(
