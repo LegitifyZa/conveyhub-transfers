@@ -609,14 +609,23 @@ Authenticated staff document lane (`python_server/routers/v1/transfers.py` +
   (streaming byte-count) and FastAPI (`UploadBodyLimitMiddleware` +
   `file.read(cap+1)`). Content is magic-byte sniffed (PDF/DOCX/JPG/PNG);
   DOCX must be a real OOXML package with a `.docx` name.
-- Download uses a 5-min HMAC bearer token (`DOCUMENT_TOKEN_SECRET`, falling
-  back to `SECRET_KEY`); retrieval re-checks state. `download_link_issued`
-  and `download_retrieved` are separate op-log events.
+- Download: a 5-min HMAC token (`DOCUMENT_TOKEN_SECRET`, falling back to
+  `SECRET_KEY`) scopes the grant, but retrieval RE-AUTHORIZES the caller —
+  valid staff JWT + `transfers:read` + token's institution must match the
+  caller's verified institution. Token alone releases nothing; state is
+  re-checked at retrieval. `download_link_issued` and `download_retrieved`
+  are separate op-log events.
 - Recovery: same-bytes upload replays, different-bytes conflicts (no
   replacement), `POST .../documents/{id}/rescan` rescans the stored object
-  after a scanner outage without re-upload. `clean`/`infected` are final.
+  after a scanner outage without re-upload. Rescan is single-flight (claims
+  error→pending); verdict persistence is guarded — `infected` beats a racing
+  `clean`, a delayed `clean`/error never reverses a terminal verdict; the
+  stored object's sha256 is verified before scanning.
 - All rejections and outcomes write `document_operation_log` rows (best
   effort, stderr alert on failure) — file contents and tokens never logged.
+  This is the internal operational log, NOT platform audit integration:
+  `legitify_auditor`/`AUDIT_DATABASE_URL` remains an outstanding external
+  contract.
 - Missing external contracts fail closed, do not stub them: files-service
   (`FILES_SERVICE_BASE_URL` unset → error), ClamAV (default scanner is
   `UnavailableScanner`), platform audit logger (op-log is the stand-in).

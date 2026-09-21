@@ -26,6 +26,21 @@ Two bounded gaps found in the existing lane; both implemented:
    `infected` verdicts are final and replay unchanged; a document with no
    stored object returns 409. The UI "Retry scan" button now calls this
    endpoint instead of forcing a file re-pick.
+3. **Download re-authorization (review correction).** The retrieval route
+   previously treated the issued token as a bearer credential — anyone
+   holding it could fetch the file. Per the re-authorize-every-download
+   requirement, retrieval now also requires a valid staff JWT with
+   `transfers:read` whose verified institution matches the token's tenant
+   scope; the token still scopes the grant (document + expiry + jti) and
+   state is still re-checked. The BFF proxy verifies the JWT and forwards it;
+   the UI fetches the blob with the Bearer header instead of `window.open`.
+4. **Scan-verdict race safety (review correction).** Verdict persistence is
+   now conditional: `infected` may overwrite a racing `clean` (quarantine
+   wins) but a delayed `clean` or a late scanner failure can never reverse a
+   recorded terminal verdict. Rescan claims `error`→`pending` so concurrent
+   rescans are single-flight, and the stored object's sha256 is verified
+   against the recorded digest before scanning — a verdict can only ever
+   apply to the exact bytes inspected.
 
 No new external contracts were introduced — the rescan path uses the
 existing `DocumentStorage.get` and `MalwareScanner.scan` interfaces only.
@@ -39,9 +54,14 @@ existing `DocumentStorage.get` and `MalwareScanner.scan` interfaces only.
 | Content validation (magic bytes; DOCX = OOXML package + `.docx`) | Done | Synthetic PDF/PNG/DOCX accepted; EXE/renamed-ZIP rejected |
 | Storage state | Done | `LocalDocumentStorage`: atomic publish, content-addressed keys, never-overwrite — real-filesystem + thread tests |
 | Scan state | Done | `pending`/`clean`/`infected`/`error` separate from lifecycle `status`; scanner failure → `error`, never releases; infected final per bytes |
-| Authorized download | Done | `transfers:read` issues 5-min HMAC bearer token; retrieval re-checks clean/uploaded; `no-store` + `Content-Disposition`; storage key never projected |
-| Retry/recovery | Done | Same-bytes replay, different-bytes conflict, rescan without re-upload (this slice), durable op-log for storage/persist failures |
-| Op-log durability | Done | Best-effort with stderr alert on write failure; rejections, scans, link issuance, retrievals and denials recorded |
+| Authorized download | Done | `transfers:read` issues 5-min HMAC token; retrieval re-authorizes the caller's session (JWT + institution match + ability) AND re-checks clean/uploaded; `no-store` + `Content-Disposition`; storage key never projected |
+| Retry/recovery | Done | Same-bytes replay, different-bytes conflict, single-flight rescan without re-upload, terminal-verdict persistence guards, durable op-log for storage/persist failures |
+| Internal op-log | Done | `document_operation_log` rows for rejections, scans, issuance, retrievals, denials — best-effort with stderr alert; contents/credentials/tokens never logged |
+
+**Audit wording:** the internal `document_operation_log` coverage above is an
+operational record for reconciliation, not the platform audit integration.
+Platform audit (`legitify_auditor` / `AUDIT_DATABASE_URL`) remains an
+outstanding external contract — see §4.
 
 Test totals after this slice: **69** in
 `python_server/tests/test_v1_matter_documents.py` (was 57) and **13** in
@@ -87,7 +107,12 @@ default `none` → `UnavailableScanner` releases nothing.
   downloadable; scanner outage → `error`, bytes retained, rescan recovers.
 - Same bytes → replay (no rescan, no duplicate object); different bytes →
   409, winner never overwritten.
-- Download link: issued only to staff on clean docs; tampered/expired/
-  cross-doc/cross-tenant tokens → 403; state re-checked at retrieval.
+- Download link: issued only to staff on clean docs; retrieval requires the
+  caller's JWT + `transfers:read` + same institution — token alone is not
+  sufficient; tampered/expired/cross-doc/cross-tenant tokens → 403/404;
+  state re-checked at retrieval.
+- Rescan: single-flight per document (concurrent requests converge, no
+  duplicate scans of the same object); a delayed `clean` never reverses a
+  recorded `infected`; stored-bytes sha256 is verified before scanning.
 - Internal identifiers (`storage_key`, `file_instance_id`, `sha256`,
   uploader id) absent from every client projection.

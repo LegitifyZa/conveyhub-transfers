@@ -7,6 +7,7 @@ import {
   MatterDocument,
   UnevaluatedRule,
   createMatterDocument,
+  downloadMatterDocumentFile,
   fetchMatterDocuments,
   issueDocumentDownloadLink,
   recalculateDocumentRequirements,
@@ -180,9 +181,20 @@ export const MatterDocumentsSection: React.FC<Props> = ({ transferId, onDocument
     setRowError(key, '')
     try {
       const link = await issueDocumentDownloadLink(transferId, doc.id)
-      window.open(link.downloadUrl, '_blank', 'noopener')
+      // Retrieval re-authorizes the caller, so the file must be fetched with
+      // the Bearer header — window.open cannot send it.
+      const { blob, filename } = await downloadMatterDocumentFile(
+        link.downloadUrl,
+        doc.originalFileName ?? 'document'
+      )
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = filename
+      anchor.click()
+      URL.revokeObjectURL(url)
     } catch (err) {
-      setRowError(key, err instanceof Error ? err.message : 'Could not create a download link')
+      setRowError(key, err instanceof Error ? err.message : 'Could not download the file')
     } finally {
       setBusyKey(null)
     }

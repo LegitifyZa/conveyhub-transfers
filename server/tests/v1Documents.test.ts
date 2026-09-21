@@ -339,15 +339,26 @@ describe('v1 document BFF proxies', async () => {
     assert.equal(captured.length, 0)
   })
 
-  it('streams the bearer-token download through without requiring a JWT', async () => {
+  it('requires a JWT for download and forwards it upstream', async () => {
+    // Retrieval re-authorizes the caller: the issued token scopes the file
+    // but the session is re-checked on every download.
     const bytes = Buffer.from('%PDF-1.4 download-bytes')
     upstreamResponse = { status: 200, body: bytes, contentType: 'application/pdf' }
-    const res = await fetch(`${baseUrl}/api/v1/documents/download/v1.payload.sig`)
+    const res = await fetch(`${baseUrl}/api/v1/documents/download/v1.payload.sig`, {
+      headers: { Authorization: `Bearer ${makeToken()}` },
+    })
     assert.equal(res.status, 200)
     assert.equal(res.headers.get('content-type'), 'application/pdf')
     assert.equal(res.headers.get('content-disposition'), "attachment; filename*=UTF-8''fica.pdf")
     assert.deepEqual(Buffer.from(await res.arrayBuffer()), bytes)
     assert.equal(captured[0].url, '/api/v1/documents/download/v1.payload.sig')
+    assert.ok(String(captured[0].headers.authorization).startsWith('Bearer '))
+  })
+
+  it('denies download without a JWT before reaching upstream', async () => {
+    const res = await fetch(`${baseUrl}/api/v1/documents/download/v1.payload.sig`)
+    assert.equal(res.status, 401)
+    assert.equal(captured.length, 0)
   })
 
   it('maps upstream 5xx to a generic 503', async () => {

@@ -558,6 +558,26 @@ async def rescan_document_file(
         raise DocumentNotAvailableError("No stored file to rescan")
 
     ai = document["accountable_institution_id"]
+
+    # Single-flight for the error state: the first rescan claims the document
+    # error -> pending. A concurrent rescan finds the claim gone and returns
+    # the current row instead of launching a duplicate scan. ('pending' stays
+    # rescan-able because a crash between persist and scan leaves a doc
+    # stuck there with no error marker to claim against.)
+    if document["scan_status"] == "error":
+        claimed = await db.query(
+            """
+            UPDATE transfer_documents
+            SET scan_status = 'pending', scan_result = NULL
+            WHERE id = $1 AND scan_status = 'error'
+            RETURNING id
+            """,
+            [document["id"]],
+        )
+        if not claimed.rows:
+            current = await get_document(transfer, str(document["id"]))
+            return current, "replay" if current["scan_status"] in ("clean", "infected") else "scan_pending"
+
     try:
         data = storage.get(document["storage_key"])
     except Exception as exc:
@@ -573,6 +593,22 @@ async def rescan_document_file(
             detail={"trigger": "rescan", "stage": "storage_read", "error": type(exc).__name__},
         )
         raise DocumentServiceError("Stored file could not be read") from exc
+
+    # The verdict must bind to the exact bytes inspected: the stored object
+    # is content-addressed under the recorded sha256, so a mismatch means
+    # corruption — quarantine the result by refusing to persist it.
+    if file_fingerprint(data) != document.get("sha256"):
+        await record_operation(
+            "scan_completed",
+            "failure",
+            accountable_institution_id=ai,
+            actor_user_id=user.user_id,
+            transfer_id=str(transfer["id"]),
+            document_id=str(document["id"]),
+            detail={"trigger": "rescan", "stage": "integrity", "error": "stored content mismatch"},
+        )
+        raise DocumentServiceError("Stored object failed its integrity check")
+
     return await _scan_and_finalize(
         transfer, document, data, scanner, user, trigger="rescan"
     )
@@ -627,8 +663,14 @@ async def _scan_and_finalize(transfer, document, data, scanner, user, trigger="u
     try:
         result = await scanner.scan(data)
     except ScannerUnavailableError as exc:
+        # Conditional: a delayed scanner failure must not downgrade a verdict
+        # that landed while this scan was in flight.
         await db.query(
-            "UPDATE transfer_documents SET scan_status = 'error', scan_result = $2 WHERE id = $1",
+            """
+            UPDATE transfer_documents
+            SET scan_status = 'error', scan_result = $2
+            WHERE id = $1 AND scan_status NOT IN ('clean', 'infected')
+            """,
             [document["id"], type(exc).__name__],
         )
         await record_operation(
@@ -641,6 +683,8 @@ async def _scan_and_finalize(transfer, document, data, scanner, user, trigger="u
             detail={"trigger": trigger, "error": type(exc).__name__},
         )
         row = await get_document(transfer, str(document["id"]))
+        if row["scan_status"] in ("clean", "infected"):
+            return row, "replay"
         return row, "scan_pending"
 
     status = "uploaded" if result.status == "clean" else "pending"
@@ -654,21 +698,32 @@ async def _scan_and_finalize(transfer, document, data, scanner, user, trigger="u
         document_id=str(document["id"]),
         detail={"trigger": trigger, "scan_status": result.status, "signature": result.signature},
     )
+    if row is None:
+        # A terminal verdict landed while this scan ran — the stored outcome
+        # stands; report the current row rather than our losing result.
+        row = await get_document(transfer, str(document["id"]))
+        return row, "replay"
     return row, ("uploaded" if result.status == "clean" else "quarantined")
 
 
 async def _persist_scan_result(document, scan_status, signature, status):
+    # Quarantine wins on conflicting scans of the same bytes: 'infected' may
+    # overwrite a racing 'clean', but a delayed 'clean' can never reverse a
+    # recorded 'infected' verdict.
+    guard = "scan_status <> 'infected'" if scan_status == "infected" else (
+        "scan_status NOT IN ('clean', 'infected')"
+    )
     result = await db.query(
         f"""
         UPDATE transfer_documents
         SET scan_status = $2, scan_result = $3, scanned_at = CURRENT_TIMESTAMP,
             status = $4
-        WHERE id = $1
+        WHERE id = $1 AND {guard}
         RETURNING {_DOC_READ_COLUMNS}
         """,
         [document["id"], scan_status, signature, status],
     )
-    return result.rows[0]
+    return result.rows[0] if result.rows else None
 
 
 # --------------------------------------------------------------------------
@@ -677,8 +732,10 @@ async def _persist_scan_result(document, scan_status, signature, status):
 # Token: 'v1.<b64url payload>.<b64url HMAC-SHA256>'. Payload carries only
 # identifiers + expiry + a jti for audit correlation. Stateless — there is
 # NO individual revocation before expiry; exposure is bounded by the TTL.
-# Whoever holds the token may retrieve the file within the TTL (bearer-link
-# reuse); the document's clean/uploaded state is re-checked at retrieval.
+# The token scopes the grant (document + institution + expiry) but is not
+# sufficient on its own: retrieval also requires a valid staff session with
+# transfers:read on the same institution, and the document's clean/uploaded
+# state is re-checked at retrieval.
 
 DEFAULT_TOKEN_TTL_SECONDS = 300
 

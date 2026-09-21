@@ -137,3 +137,18 @@ export async function issueDocumentDownloadLink(
   )
   return response.data
 }
+
+// Retrieval re-authorizes the caller on every request — the token alone is
+// not sufficient — so the file must be fetched with the Bearer header rather
+// than navigated to via window.open. Returns the blob and the server-provided
+// filename (Content-Disposition), falling back to the document name.
+export async function downloadMatterDocumentFile(
+  downloadUrl: string,
+  fallbackName: string
+): Promise<{ blob: Blob; filename: string }> {
+  const response = await apiRequest<Response>(downloadUrl, { rawResponse: true })
+  const disposition = response.headers.get('Content-Disposition') ?? ''
+  const match = /filename\*=UTF-8''([^;]+)/.exec(disposition)
+  const filename = match ? decodeURIComponent(match[1]) : fallbackName
+  return { blob: await response.blob(), filename }
+}

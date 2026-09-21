@@ -639,10 +639,24 @@ class UploadServiceTests(unittest.IsolatedAsyncioTestCase):
                     }
                 )
             elif "scanned_at" in stripped:
+                # Emulate the terminal-state guard: 'infected' may overwrite a
+                # racing 'clean' (quarantine wins), but a delayed 'clean' can
+                # never reverse a recorded 'infected' verdict.
+                new_scan = params[1]
+                current = self.doc_state.get("scan_status")
+                writable = (
+                    current != "infected"
+                    if new_scan == "infected"
+                    else current not in ("clean", "infected")
+                )
+                if not writable:
+                    return db.QueryResult(rows=[], row_count=0)
                 self.doc_state.update(
                     {"scan_status": params[1], "scan_result": params[2], "status": params[3]}
                 )
-            else:  # scan-failure marker UPDATE
+            else:  # scan-failure marker UPDATE — guarded from terminal states
+                if self.doc_state.get("scan_status") in ("clean", "infected"):
+                    return db.QueryResult(rows=[], row_count=0)
                 self.doc_state.update({"scan_status": "error", "scan_result": params[1]})
             row = document_row(**self.doc_state)
             self.persisted.append(row)
@@ -949,11 +963,29 @@ class RescanServiceTests(unittest.IsolatedAsyncioTestCase):
     async def _fixture(self, text, params=None, **kwargs):
         stripped = text.strip()
         if stripped.startswith("UPDATE transfer_documents"):
-            if "scanned_at" in stripped:
+            if "scan_result = NULL" in stripped:
+                # Single-flight claim: error -> pending only while 'error'.
+                if self.doc_state.get("scan_status") != "error":
+                    return db.QueryResult(rows=[], row_count=0)
+                self.doc_state.update({"scan_status": "pending", "scan_result": None})
+            elif "scanned_at" in stripped:
+                # Terminal-state guard: infected may overwrite a racing clean;
+                # a delayed clean never reverses a recorded infected verdict.
+                new_scan = params[1]
+                current = self.doc_state.get("scan_status")
+                writable = (
+                    current != "infected"
+                    if new_scan == "infected"
+                    else current not in ("clean", "infected")
+                )
+                if not writable:
+                    return db.QueryResult(rows=[], row_count=0)
                 self.doc_state.update(
                     {"scan_status": params[1], "scan_result": params[2], "status": params[3]}
                 )
-            else:  # scan-failure marker UPDATE
+            else:  # scan-failure marker UPDATE — guarded from terminal states
+                if self.doc_state.get("scan_status") in ("clean", "infected"):
+                    return db.QueryResult(rows=[], row_count=0)
                 self.doc_state.update({"scan_status": "error", "scan_result": params[1]})
             return db.QueryResult(rows=[document_row(**self.doc_state)], row_count=1)
         if "FROM transfer_documents" in text:
@@ -1044,8 +1076,10 @@ class RescanServiceTests(unittest.IsolatedAsyncioTestCase):
                 transfer_row(), document_row(**self.doc_state),
                 storage=FailingStorage(), scanner=FakeScanner(), user=self.user,
             )
-        # State untouched — still unavailable, still retryable later.
-        self.assertEqual(self.doc_state["scan_status"], "error")
+        # No verdict persisted — the doc was claimed to 'pending' but never
+        # finalized, so it stays unavailable and rescan-able.
+        self.assertEqual(self.doc_state["scan_status"], "pending")
+        self.assertEqual(self.doc_state["status"], "pending")
         failures = [
             entry for entry in self.oplog
             if entry["operation"] == "scan_completed" and entry["outcome"] == "failure"
@@ -1053,6 +1087,93 @@ class RescanServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(failures), 1)
         self.assertEqual(failures[0]["detail"]["stage"], "storage_read")
         self.assertEqual(failures[0]["detail"]["trigger"], "rescan")
+
+    async def test_delayed_clean_cannot_reverse_infected(self):
+        # A concurrent writer lands 'infected' while our rescan is in flight;
+        # our later 'clean' verdict must not overwrite it — quarantine wins.
+        doc_state = self.doc_state
+        class RacingCleanScanner(FakeScanner):
+            async def scan(self, data):
+                self.calls += 1
+                doc_state["scan_status"] = "infected"
+                return self.result
+        scanner = RacingCleanScanner(ScanResult(status="clean"))
+        row, outcome = await svc.rescan_document_file(
+            transfer_row(), document_row(**self.doc_state),
+            storage=self.storage, scanner=scanner, user=self.user,
+        )
+        self.assertEqual(outcome, "replay")
+        self.assertEqual(row["scan_status"], "infected")
+        self.assertEqual(self.doc_state["scan_status"], "infected")
+
+    async def test_delayed_infected_still_quarantines_racing_clean(self):
+        # The reverse race: a 'clean' verdict landed while we scanned, but our
+        # result is 'infected' — quarantine always wins for the same bytes.
+        doc_state = self.doc_state
+        class RacingInfectedScanner(FakeScanner):
+            async def scan(self, data):
+                self.calls += 1
+                doc_state["scan_status"] = "clean"
+                doc_state["status"] = "uploaded"
+                return self.result
+        scanner = RacingInfectedScanner(ScanResult(status="infected", signature="Eicar-Test"))
+        row, outcome = await svc.rescan_document_file(
+            transfer_row(), document_row(**self.doc_state),
+            storage=self.storage, scanner=scanner, user=self.user,
+        )
+        self.assertEqual(outcome, "quarantined")
+        self.assertEqual(row["scan_status"], "infected")
+        self.assertEqual(self.doc_state["scan_status"], "infected")
+
+    async def test_delayed_scanner_failure_cannot_downgrade_clean(self):
+        # A scanner outage arriving late must not erase a verdict that
+        # already landed while this rescan was in flight.
+        doc_state = self.doc_state
+        class RacingFailScanner(FakeScanner):
+            async def scan(self, data):
+                self.calls += 1
+                doc_state["scan_status"] = "clean"
+                doc_state["status"] = "uploaded"
+                raise self.error
+        scanner = RacingFailScanner(error=ScannerUnavailableError("clamd unreachable"))
+        row, outcome = await svc.rescan_document_file(
+            transfer_row(), document_row(**self.doc_state),
+            storage=self.storage, scanner=scanner, user=self.user,
+        )
+        self.assertEqual(outcome, "replay")
+        self.assertEqual(row["scan_status"], "clean")
+        self.assertEqual(self.doc_state["scan_status"], "clean")
+
+    async def test_concurrent_rescan_is_single_flight(self):
+        # Snapshot shows 'error', but another rescan already claimed the
+        # document (state moved to 'pending'): no second scan is launched.
+        self.doc_state["scan_status"] = "pending"
+        stale = document_row(**{**self.doc_state, "scan_status": "error"})
+        scanner = FakeScanner()
+        row, outcome = await svc.rescan_document_file(
+            transfer_row(), stale,
+            storage=self.storage, scanner=scanner, user=self.user,
+        )
+        self.assertEqual(outcome, "scan_pending")
+        self.assertEqual(scanner.calls, 0)
+
+    async def test_rescan_stored_bytes_mismatch_stays_unavailable(self):
+        # The stored object does not match the recorded sha256 — the verdict
+        # could never honestly apply to it, so nothing is persisted.
+        self.storage.objects[self.doc_state["storage_key"]] = PNG_BYTES
+        scanner = FakeScanner()
+        with self.assertRaises(svc.DocumentServiceError):
+            await svc.rescan_document_file(
+                transfer_row(), document_row(**self.doc_state),
+                storage=self.storage, scanner=scanner, user=self.user,
+            )
+        self.assertEqual(scanner.calls, 0)
+        self.assertEqual(self.doc_state["scan_status"], "pending")  # claimed, never finalized
+        integrity = [
+            entry for entry in self.oplog
+            if entry["detail"] and entry["detail"].get("stage") == "integrity"
+        ]
+        self.assertEqual(len(integrity), 1)
 
 
 class LocalStorageBehaviorTests(unittest.TestCase):
@@ -1392,6 +1513,40 @@ class DownloadRouteTests(RouteTestBase):
             return db.QueryResult(rows=[], row_count=1)
         raise AssertionError(f"Unexpected query: {text}")
 
+    async def test_download_requires_jwt(self):
+        # The issued token scopes the grant but is not sufficient on its own —
+        # every retrieval re-authorizes the signed-in caller.
+        token_value, _ = svc.issue_download_token(uploaded_clean_row(), "token-secret")
+        response = await self.client.get(f"/api/v1/documents/download/{token_value}")
+        self.assertEqual(response.status_code, 401)
+
+    async def test_download_client_denied(self):
+        token_value, _ = svc.issue_download_token(uploaded_clean_row(), "token-secret")
+        response = await self.client.get(
+            f"/api/v1/documents/download/{token_value}",
+            headers=self._headers(role=4, abilities=["transfers:read"], golden=str(uuid.uuid4())),
+        )
+        self.assertEqual(response.status_code, 403)
+
+    async def test_download_requires_read_ability(self):
+        token_value, _ = svc.issue_download_token(uploaded_clean_row(), "token-secret")
+        response = await self.client.get(
+            f"/api/v1/documents/download/{token_value}",
+            headers=self._headers(abilities=[]),
+        )
+        self.assertEqual(response.status_code, 403)
+
+    async def test_download_denies_cross_tenant_token(self):
+        # A valid token issued for another institution releases nothing to a
+        # caller whose verified institution does not match the token's.
+        foreign_doc = uploaded_clean_row(accountable_institution_id=6)
+        token_value, _ = svc.issue_download_token(foreign_doc, "token-secret")
+        response = await self.client.get(
+            f"/api/v1/documents/download/{token_value}",
+            headers=self._headers(),  # caller is ai=5
+        )
+        self.assertEqual(response.status_code, 404)
+
     async def test_download_with_valid_token(self):
         from routers.v1 import documents as doc_router
 
@@ -1399,18 +1554,27 @@ class DownloadRouteTests(RouteTestBase):
         storage = FakeStorage()
         storage.objects["ai-5/transfers/x/documents/y/z"] = PDF_BYTES
         with patch.object(doc_router, "build_storage", lambda: storage):
-            response = await self.client.get(f"/api/v1/documents/download/{token_value}")
+            response = await self.client.get(
+                f"/api/v1/documents/download/{token_value}",
+                headers=self._headers(),
+            )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.content, PDF_BYTES)
         self.assertEqual(response.headers.get("content-type"), "application/pdf")
 
     async def test_download_rejects_bad_token(self):
-        response = await self.client.get("/api/v1/documents/download/v1.bad.token")
+        response = await self.client.get(
+            "/api/v1/documents/download/v1.bad.token",
+            headers=self._headers(),
+        )
         self.assertEqual(response.status_code, 403)
 
     async def test_download_rejects_expired_token(self):
         expired, _ = svc.issue_download_token(uploaded_clean_row(), "token-secret", -10)
-        response = await self.client.get(f"/api/v1/documents/download/{expired}")
+        response = await self.client.get(
+            f"/api/v1/documents/download/{expired}",
+            headers=self._headers(),
+        )
         self.assertEqual(response.status_code, 403)
 
     async def test_download_rejects_tampered_token(self):
@@ -1422,13 +1586,14 @@ class DownloadRouteTests(RouteTestBase):
             json.dumps(payload, separators=(",", ":")).encode()
         ).decode().rstrip("=")
         response = await self.client.get(
-            f"/api/v1/documents/download/{version}.{forged_body}.{sig}"
+            f"/api/v1/documents/download/{version}.{forged_body}.{sig}",
+            headers=self._headers(),
         )
         self.assertEqual(response.status_code, 403)
 
     async def test_download_denied_when_document_no_longer_available(self):
-        # Token verifies, but the file lost availability after issuance —
-        # bearer access re-checks state at retrieval.
+        # Token and session verify, but the file lost availability after
+        # issuance — state is re-checked at retrieval.
         async def unavailable_fixture(text, params=None, **kwargs):
             if "FROM transfer_documents" in text:
                 return db.QueryResult(
@@ -1441,7 +1606,10 @@ class DownloadRouteTests(RouteTestBase):
 
         token_value, _ = svc.issue_download_token(uploaded_clean_row(), "token-secret")
         with patch.object(svc.db, "query", AsyncMock(side_effect=unavailable_fixture)):
-            response = await self.client.get(f"/api/v1/documents/download/{token_value}")
+            response = await self.client.get(
+                f"/api/v1/documents/download/{token_value}",
+                headers=self._headers(),
+            )
         self.assertEqual(response.status_code, 404)
 
 
