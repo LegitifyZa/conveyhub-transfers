@@ -28,8 +28,10 @@
 --
 -- Verification so far:
 --   - Migrations DID run against a real Neon database: the scratch database
---     `deedly_proposal_test` on the isolated `deedly-documents-test` branch
---     (endpoint ep-lucky-sun-awl88y3n). No production or shared application
+--     `deedly_proposal_test` on the branch Dean supplied as
+--     `deedly-documents-test` (endpoint ep-lucky-sun-awl88y3n). The branch
+--     name is as supplied — endpoint-to-branch mapping is unconfirmed until
+--     checked via the Neon console/API. No production or shared application
 --     database was migrated.
 --   - 17/17 tests pass in
 --     python_server/tests/test_document_requirement_rules_seed_proposal.py,

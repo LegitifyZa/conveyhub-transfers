@@ -14,7 +14,9 @@ catalogue"). Proposed seed:
 outside `src/lib/migrations/` so `scripts/migrate.mjs` (which executes every
 `*.sql` there) cannot pick it up; numbering to be confirmed with Jordan
 before it is ever moved back. Focused per-classification proposal:
-`docs/deedly-required-documents-pt-na-proposal.md`.
+`docs/deedly-required-documents-pt-na-proposal.md`; per-requirement
+implementation gap assessment for the same classification:
+`docs/deedly-required-documents-pt-na-gap-assessment.md`.
 
 **Register caveat preserved — no approval is assumed.** The workbook describes
 its matrix as "editable proposals, not approved production rules" and marks
@@ -305,9 +307,10 @@ inside the same vocabulary/schema review; do not claim it covered.
    `python_server/tests/test_document_requirement_rules_seed_proposal.py`
    (17 tests, incl. 3 DB cases: insert count, idempotent re-run, canonical
    classification coverage) passes 17/17 against the scratch database
-   `deedly_proposal_test` on the isolated `deedly-documents-test` Neon
-   branch (endpoint `ep-lucky-sun-awl88y3n`). **No production or shared
-   application database was migrated.** The proposal SQL applied inside
+   `deedly_proposal_test` on the Neon branch Dean supplied as
+   `deedly-documents-test` (endpoint `ep-lucky-sun-awl88y3n`; branch name as
+   supplied — endpoint-to-branch mapping unconfirmed pending console/API
+   check). **No production or shared application database was migrated.** The proposal SQL applied inside
    rolled-back transactions — `document_requirement_rules` is empty
    afterwards and the ledger has no 027 row. A static guard test asserts no
    `document_requirement_rules_seed` file exists under
@@ -325,8 +328,9 @@ inside the same vocabulary/schema review; do not claim it covered.
    `transfer.generic` and future classifications. Such a database is
    flagged: reset or reconcile it under the approved P0 seed before
    reliance; its `document_requirement_rules` content is not a baseline.
-   The `deedly-documents-test` Neon branch (endpoint `ep-lucky-sun-awl88y3n`)
-   was checked before use — no ledger, no rules table — and is therefore
+   The Neon branch Dean supplied as `deedly-documents-test` (endpoint
+   `ep-lucky-sun-awl88y3n`; name as supplied, mapping unconfirmed) was
+   checked before use — no ledger, no rules table — and is therefore
    unexposed; its scratch database `deedly_proposal_test` holds only the
    approved 001–025 chain plus rolled-back proposal test runs.
 

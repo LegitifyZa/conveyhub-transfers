@@ -554,7 +554,9 @@ selections arrive. Mapping and gaps:
 `docs/deedly-required-documents-register-mapping.md`; focused
 `transfer.private_treaty.not_applicable` proposal with the candidate
 condition vocabulary and P0-demo fact subset:
-`docs/deedly-required-documents-pt-na-proposal.md`.
+`docs/deedly-required-documents-pt-na-proposal.md`; per-requirement gap
+assessment (facts/scopes, smallest change, acceptance tests):
+`docs/deedly-required-documents-pt-na-gap-assessment.md`.
 
 - 222 proposed rows — one per Required cell — each scoped to an **explicit**
   canonical `classification_code` (`condition_key NULL` baseline). No `'*'`
@@ -584,9 +586,10 @@ condition vocabulary and P0-demo fact subset:
   seed (120 rules, six `'*'` scopes) carries unapproved rules + a ledger row
   — treat as proposal data, reset/reconcile under the approved seed.
 - PostgreSQL verification ran against a real Neon database — the scratch DB
-  `deedly_proposal_test` on the isolated `deedly-documents-test` branch
-  (endpoint `ep-lucky-sun-awl88y3n`). No production or shared application
-  database was migrated. 17/17 in
+  `deedly_proposal_test` on the branch Dean supplied as
+  `deedly-documents-test` (endpoint `ep-lucky-sun-awl88y3n`; branch name as
+  supplied — endpoint-to-branch mapping unconfirmed pending console/API
+  check). No production or shared application database was migrated. 17/17 in
   `python_server/tests/test_document_requirement_rules_seed_proposal.py`;
   proposal applied inside rolled-back transactions only (rules table empty
   afterwards, no 027 ledger row). Before any real execution: confirm
