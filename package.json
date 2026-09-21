@@ -10,7 +10,7 @@
     "dev:server": "tsx server/index.ts",
     "build": "tsc && vite build",
     "build:server": "tsc -p server/tsconfig.json",
-    "start": "node dist/server/index.js",
+    "start": "node dist/server/server/index.js",
     "preview": "vite preview",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "lint:fix": "eslint . --ext ts,tsx --fix",
