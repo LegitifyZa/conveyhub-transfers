@@ -540,3 +540,28 @@ python -m pytest -q -rs -p no:cacheprovider tests/test_transfer_party_postgres.p
 
 Configure the isolated DSN securely and set the opt-in flag only after the above
 specific approval. Skipped PostgreSQL cases are a P0 prerequisite, not certification.
+
+## Document requirement rules — register seed (migration 027, PROPOSED)
+
+`transfers.document_requirement_rules` is seeded by
+`src/lib/migrations/027_deedly_document_requirement_rules_seed.sql` from the
+validated Required Documents Register (86 document types x 18 classifications;
+`docs/deedly-required-documents-register-mapping.md` holds the full mapping and
+gap report). Only register **Required** cells are seeded — 120 baseline rules
+(`condition_key NULL`): six `'*'` wildcard rules for documents Required on all
+18 classifications plus one row per (doc, classification) for the rest.
+
+- **Conditional** cells are deliberately NOT seeded: register triggers are
+  prose and the engine vocabulary is only `has_bond`/`cash_purchase`.
+  Conditional coverage needs an approved condition vocabulary plus stored
+  fact sources first — do not seed unsupported `condition_key` values (they
+  surface as permanently `unevaluatedRules` on every matching matter).
+- **Optional** has no engine level; **Not applicable** is absence of a rule.
+- `public.document_catalogue`, `classification_document_map` and
+  `document_catalogue_requirements` are legacy/dead on the live v1 lane and
+  are intentionally not seeded — `Active` catalogue rows would re-arm the
+  quarantined per-transfer auto-seed with all 86 documents regardless of
+  classification.
+- Register "To review" columns (signature/execution, per-doc P0 flag) and
+  "Generate in DEEDLY? = Candidate" are not implemented — no
+  `document_templates` rows.
