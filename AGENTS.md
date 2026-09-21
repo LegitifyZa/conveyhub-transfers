@@ -559,10 +559,12 @@ condition vocabulary and P0-demo fact subset:
 - 222 proposed rows — one per Required cell — each scoped to an **explicit**
   canonical `classification_code` (`condition_key NULL` baseline). No `'*'`
   wildcards: requirements must never extend to unreviewed classifications.
-- **Zero applicable rules is not readiness.** A matter on an unsupported or
-  unconfigured classification (`transfer.generic`, a future code) must show
-  "Requirements not configured" — an empty checklist is not a successful
-  completeness result. Engine/API distinction not yet implemented.
+- **Zero applicable rules is not readiness — pending, unimplemented.** A
+  matter on an unsupported or unconfigured classification (`transfer.generic`,
+  a future code) must show "Requirements not configured" — an empty
+  checklist is not a successful completeness result. Today the engine
+  returns an empty list; the engine/API distinction is not built and the
+  proposal tests do not establish readiness behaviour.
 - **Conditional** cells are deliberately NOT proposed as rules: register
   triggers are prose and the engine vocabulary is only `has_bond`/
   `cash_purchase` — unapproved heuristics that also conflate purchaser
@@ -581,8 +583,11 @@ condition vocabulary and P0-demo fact subset:
 - **Exposure flag:** any database that ran the `a24cdc3` version of this
   seed (120 rules, six `'*'` scopes) carries unapproved rules + a ledger row
   — treat as proposal data, reset/reconcile under the approved seed.
-- PostgreSQL verification already done non-destructively: 17/17 in
-  `python_server/tests/test_document_requirement_rules_seed_proposal.py`
-  against scratch DB `deedly_proposal_test` on the Neon test branch, proposal
-  applied inside rolled-back transactions only. Before any real execution:
-  confirm migration number 027 with Jordan.
+- PostgreSQL verification ran against a real Neon database — the scratch DB
+  `deedly_proposal_test` on the isolated `deedly-documents-test` branch
+  (endpoint `ep-lucky-sun-awl88y3n`). No production or shared application
+  database was migrated. 17/17 in
+  `python_server/tests/test_document_requirement_rules_seed_proposal.py`;
+  proposal applied inside rolled-back transactions only (rules table empty
+  afterwards, no 027 ledger row). Before any real execution: confirm
+  migration number 027 with Jordan.

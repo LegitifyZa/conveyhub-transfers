@@ -209,8 +209,14 @@ future code, or any classification whose rule set was never approved) must
 present **"Requirements not configured"** — an explicit unknown state —
 rather than an empty requirement list that reads as a successful
 completeness result. Zero applicable rules is an absence of configuration,
-not evidence that nothing is required. The API/UI distinction is a required
-piece of the vocabulary/schema review; not implemented.
+not evidence that nothing is required.
+
+**Status: pending — unimplemented.** This is a required engine/API/behaviour
+change, not a documented property of the current system. Today the engine
+returns an empty requirement list in this situation, and the proposal tests
+do not exercise or verify readiness handling — nothing in the verified
+results establishes that readiness behaves correctly. It remains open work
+inside the same vocabulary/schema review; do not claim it covered.
 
 ## 5. Conflicts — where the register and existing structure disagree
 
@@ -295,16 +301,18 @@ piece of the vocabulary/schema review; not implemented.
    branch, 025 on this branch) — **confirm with Jordan before moving the
    proposal back under `src/lib/migrations/`**.
 
-4. **PostgreSQL-backed tests — now run, non-destructively.**
+4. **PostgreSQL-backed tests — run against a real Neon database.**
    `python_server/tests/test_document_requirement_rules_seed_proposal.py`
    (17 tests, incl. 3 DB cases: insert count, idempotent re-run, canonical
-   classification coverage) passes 17/17 against a scratch database
-   `deedly_proposal_test` on the Neon test branch, with the proposal SQL
-   applied inside rolled-back transactions — `document_requirement_rules`
-   is empty afterwards and the ledger has no 027 row. A static guard test
-   asserts no `document_requirement_rules_seed` file exists under
+   classification coverage) passes 17/17 against the scratch database
+   `deedly_proposal_test` on the isolated `deedly-documents-test` Neon
+   branch (endpoint `ep-lucky-sun-awl88y3n`). **No production or shared
+   application database was migrated.** The proposal SQL applied inside
+   rolled-back transactions — `document_requirement_rules` is empty
+   afterwards and the ledger has no 027 row. A static guard test asserts no
+   `document_requirement_rules_seed` file exists under
    `src/lib/migrations/`, so `scripts/migrate.mjs` cannot execute the
-   proposal. Note: the provided `neondb` branch itself holds the legacy
+   proposal. Note: the branch's own `neondb` database holds the legacy
    all-`public` layout (no `transfers` schema) and an empty ledger — it
    predates the schema split and cannot host these tests.
 
@@ -317,8 +325,10 @@ piece of the vocabulary/schema review; not implemented.
    `transfer.generic` and future classifications. Such a database is
    flagged: reset or reconcile it under the approved P0 seed before
    reliance; its `document_requirement_rules` content is not a baseline.
-   The Neon test branch (`ep-lucky-sun-awl88y3n`) was checked before use —
-   no ledger, no rules table — and is therefore unexposed.
+   The `deedly-documents-test` Neon branch (endpoint `ep-lucky-sun-awl88y3n`)
+   was checked before use — no ledger, no rules table — and is therefore
+   unexposed; its scratch database `deedly_proposal_test` holds only the
+   approved 001–025 chain plus rolled-back proposal test runs.
 
 6. **Requirement instances on existing matters** appear only on
    `POST …/requirements/recalculate` — seeding rules does not retro-create

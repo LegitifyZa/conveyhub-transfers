@@ -26,15 +26,18 @@
 --   table) before use; proposal SQL runs there only inside rolled-back test
 --   transactions.
 --
--- Verification so far (all non-destructive):
+-- Verification so far:
+--   - Migrations DID run against a real Neon database: the scratch database
+--     `deedly_proposal_test` on the isolated `deedly-documents-test` branch
+--     (endpoint ep-lucky-sun-awl88y3n). No production or shared application
+--     database was migrated.
 --   - 17/17 tests pass in
 --     python_server/tests/test_document_requirement_rules_seed_proposal.py,
---     including the 3 PostgreSQL cases, run against a scratch database
---     `deedly_proposal_test` on the Neon test branch. The base migration
---     chain (001–025) was applied there by scripts/migrate.mjs and the
---     ledger contains no 027 row — the runner never saw this file; the
---     proposal was exercised only inside rolled-back transactions and the
---     rules table is empty afterwards.
+--     including the 3 PostgreSQL cases. The base migration chain (001–025)
+--     was applied by scripts/migrate.mjs and the ledger contains no 027 row
+--     — the runner never saw this file; the proposal was exercised only
+--     inside rolled-back transactions and the rules table is empty
+--     afterwards.
 --   - SQLite-level VALUES simulation is preliminary syntax/idempotency
 --     evidence only.
 --

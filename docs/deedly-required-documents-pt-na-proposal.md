@@ -172,44 +172,64 @@ points — either new matter/party fields or explicit "fact checklist"
 answers. None of this exists today; each key needs an approved fact source
 before its rules can seed.
 
-### 3.2 P0 demo subset — 12 keys
+### 3.2 P0 demo subset — 12 keys (proposed)
 
 A standard P0 demo is an ordinary private-treaty sale: natural-person
 parties, purchaser bond finance, a seller bond to cancel, contract-driven
-money facts, and the common compliance toggles. The estate cluster and the
-route-specific keys stay in the §3.1 inventory for later expansion.
+money facts, and the common compliance toggles. **This subset is proposed,
+not agreed** — Dean confirms which facts the demo exercises. The estate
+cluster and the route-specific keys stay in the §3.1 inventory for later
+expansion.
 
-| condition_key | Input source | Allowed values | Unknown behaviour |
-|---|---|---|---|
-| `buyer_bond_finance` | Derived: purchaser `bonds` row / `transfer_financials.loan_amount` (source needs Dean's sign-off) | `yes` / `no` / `unknown` | DOC-049 rule unevaluated; surfaced as pending fact |
-| `seller_bond_registered` | Declared from deeds-search result (never derived from buyer finance) | `yes` / `no` / `unknown` | DOC-051/052/063 rules unevaluated; surfaced |
-| `guarantee_required` | Declared from sale agreement | `yes` / `no` / `unknown` | DOC-050 rule unevaluated |
-| `deposit_due` | Declared from contract / `transfer_financials` deposit | `yes` / `no` / `unknown` | DOC-022 rule unevaluated |
-| `suspensive_conditions_open` | Declared from contract condition tracking | `yes` / `no` / `unknown` | DOC-081 rule unevaluated |
-| `party_is_entity` | Derived from matter-party entity type | `yes` / `no` / `unknown` (unknown if any party lacks a type) | DOC-011/014/015 rules unevaluated |
-| `party_is_trust` | Derived from matter-party entity type | `yes` / `no` / `unknown` | DOC-012/013/014/015 rules unevaluated |
-| `marriage_affects_capacity` | Declared per party (marital-status capture — not stored today) | `yes` / `no` / `unknown` | DOC-004/005 rules unevaluated |
-| `property_leased` | Declared / lease data on the property | `yes` / `no` / `unknown` | DOC-021 rule unevaluated |
-| `electrical_installation` | Declared on property features (near-universal — demo may assert `yes`) | `yes` / `no` / `unknown` | DOC-055 rule unevaluated |
-| `clearance_figures_needed` | Derived from clearance obligation (near-universal — may become baseline) | `yes` / `no` / `unknown` | DOC-019/044 rules unevaluated |
-| `payout_expected` | Derived from financials / payout instructions | `yes` / `no` / `unknown` | DOC-009 rule unevaluated |
+**Scope** identifies what the fact is about — the relevant **party**
+(person/entity on the matter), the relevant **property**, or the **matter**
+as a whole. Scoped facts need a per-entity value: e.g. `seller_bond_registered`
+attaches to the property being transferred (a bond is registered over a
+title, not over a matter), and `marriage_affects_capacity` attaches to the
+specific married person. On a multi-party or multi-property matter the
+engine's single-value fact model cannot express that — it needs either
+per-entity fact storage or an approved "any relevant entity" aggregation
+rule per key. That scoping decision is part of the vocabulary review and is
+unimplemented.
+
+| condition_key | Scope | Input source | Allowed values | Unknown behaviour |
+|---|---|---|---|---|
+| `buyer_bond_finance` | Party (transferee) | Derived: purchaser `bonds` row / `transfer_financials.loan_amount` (source needs Dean's sign-off) | `yes` / `no` / `unknown` | DOC-049 rule unevaluated; surfaced as pending fact |
+| `seller_bond_registered` | Property | Declared from deeds-search result for the property being transferred (never derived from buyer finance) | `yes` / `no` / `unknown` | DOC-051/052/063 rules unevaluated; surfaced |
+| `guarantee_required` | Matter | Declared from sale agreement | `yes` / `no` / `unknown` | DOC-050 rule unevaluated |
+| `deposit_due` | Matter | Declared from contract / `transfer_financials` deposit | `yes` / `no` / `unknown` | DOC-022 rule unevaluated |
+| `suspensive_conditions_open` | Matter | Declared from contract condition tracking | `yes` / `no` / `unknown` | DOC-081 rule unevaluated |
+| `party_is_entity` | Party (each) | Derived from matter-party entity type | `yes` / `no` / `unknown` (unknown if any party lacks a type) | DOC-011/014/015 rules unevaluated |
+| `party_is_trust` | Party (each) | Derived from matter-party entity type | `yes` / `no` / `unknown` | DOC-012/013/014/015 rules unevaluated |
+| `marriage_affects_capacity` | Party (each natural person) | Declared per party (marital-status capture — not stored today) | `yes` / `no` / `unknown` | DOC-004/005 rules unevaluated |
+| `property_leased` | Property | Declared / lease data on the property | `yes` / `no` / `unknown` | DOC-021 rule unevaluated |
+| `electrical_installation` | Property | Declared on property features (near-universal — demo may assert `yes`) | `yes` / `no` / `unknown` | DOC-055 rule unevaluated |
+| `clearance_figures_needed` | Property | Derived from the property's clearance obligation (near-universal — may become baseline) | `yes` / `no` / `unknown` | DOC-019/044 rules unevaluated |
+| `payout_expected` | Party (per payee) | Derived from financials / payout instructions to a party account | `yes` / `no` / `unknown` | DOC-009 rule unevaluated |
 
 Every demo fact is tri-state. `unknown` never means `no`: an unanswered fact
 leaves its rules in `unevaluatedRules` and the matter shows "Requirement
 evaluation is incomplete" — it cannot produce a clean checklist by silence.
 The remaining 23 inventory keys behave identically when their rules are
-approved later.
+approved later; their scopes follow the same convention (estate role/route
+facts are party-scoped, installation/by-law facts are property-scoped,
+contract and firm-route facts are matter-scoped).
 
-### 3.3 Zero applicable rules is not readiness
+### 3.3 Zero applicable rules is not readiness — pending, unimplemented
 
 A matter whose classification has **no** configured rules — an unsupported
 classification, `transfer.generic`, or any code with no approved rule set —
 must present **"Requirements not configured"**, never an empty checklist
 that reads as complete. Zero applicable rules is an *absence of
-configuration*, not evidence that nothing is required. This needs an
-engine/API distinction (configured-but-none-applicable vs
-not-configured-at-all) before any completeness or readiness display can be
-trusted — flagged for the same schema/vocabulary review, not implemented.
+configuration*, not evidence that nothing is required.
+
+This is a required engine/API change that **does not exist today**: the
+current service returns an empty requirement list in exactly this situation,
+and no test establishes correct readiness behaviour — the proposal tests
+cover only the seed content (row shape, scope, idempotency, canonical
+codes), not readiness semantics. Until the configured-vs-unconfigured
+distinction is built and verified, completeness displays on matters without
+an approved rule set are untrustworthy by construction.
 
 ## 4. Unknown-answer semantics (already the engine's model — proposed to keep)
 
