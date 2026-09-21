@@ -22,6 +22,7 @@ import unittest
 import uuid
 import zipfile
 from contextlib import ExitStack
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -614,6 +615,16 @@ class UploadServiceTests(unittest.IsolatedAsyncioTestCase):
         self.user = SimpleNamespace(user_id=7)
         self.storage = FakeStorage()
 
+    def _claim_ok(self, attempt_id):
+        # Emulate the claim WHERE: non-terminal state AND (unowned OR same
+        # attempt OR expired lease).
+        if self.doc_state.get("scan_status") in ("clean", "infected"):
+            return False
+        owner = self.doc_state.get("scan_attempt_id")
+        expires = self.doc_state.get("scan_attempt_expires_at")
+        expired = expires is not None and expires < datetime.now(timezone.utc)
+        return owner is None or owner == attempt_id or expired
+
     async def _fixture(self, text, params=None, **kwargs):
         stripped = text.strip()
         if stripped.startswith("UPDATE transfer_documents"):
@@ -638,10 +649,31 @@ class UploadServiceTests(unittest.IsolatedAsyncioTestCase):
                         "status": params[9],
                     }
                 )
+            elif "SET scan_attempt_id = NULL" in stripped:
+                # Ownership release — only the owning attempt may release.
+                if self.doc_state.get("scan_attempt_id") != params[1]:
+                    return db.QueryResult(rows=[], row_count=0)
+                self.doc_state["scan_attempt_id"] = None
+                self.doc_state["scan_attempt_expires_at"] = None
+            elif "scan_attempt_id = $2" in stripped:
+                # Scan-attempt claim.
+                if not self._claim_ok(params[1]):
+                    return db.QueryResult(rows=[], row_count=0)
+                self.doc_state.update(
+                    {
+                        "scan_attempt_id": params[1],
+                        "scan_attempt_expires_at": datetime.now(timezone.utc)
+                        + timedelta(seconds=params[2]),
+                        "scan_status": "pending",
+                        "scan_result": None,
+                    }
+                )
             elif "scanned_at" in stripped:
-                # Emulate the terminal-state guard: 'infected' may overwrite a
-                # racing 'clean' (quarantine wins), but a delayed 'clean' can
-                # never reverse a recorded 'infected' verdict.
+                # Attempt-guarded verdict publish: only the owner may write,
+                # and 'infected' may overwrite a racing 'clean' while a
+                # delayed 'clean' can never reverse a recorded 'infected'.
+                if self.doc_state.get("scan_attempt_id") != params[4]:
+                    return db.QueryResult(rows=[], row_count=0)
                 new_scan = params[1]
                 current = self.doc_state.get("scan_status")
                 writable = (
@@ -652,12 +684,28 @@ class UploadServiceTests(unittest.IsolatedAsyncioTestCase):
                 if not writable:
                     return db.QueryResult(rows=[], row_count=0)
                 self.doc_state.update(
-                    {"scan_status": params[1], "scan_result": params[2], "status": params[3]}
+                    {
+                        "scan_status": params[1],
+                        "scan_result": params[2],
+                        "status": params[3],
+                        "scan_attempt_id": None,
+                        "scan_attempt_expires_at": None,
+                    }
                 )
-            else:  # scan-failure marker UPDATE — guarded from terminal states
-                if self.doc_state.get("scan_status") in ("clean", "infected"):
+            else:  # scan-failure marker UPDATE — attempt-guarded + terminal
+                if (
+                    self.doc_state.get("scan_attempt_id") != params[2]
+                    or self.doc_state.get("scan_status") in ("clean", "infected")
+                ):
                     return db.QueryResult(rows=[], row_count=0)
-                self.doc_state.update({"scan_status": "error", "scan_result": params[1]})
+                self.doc_state.update(
+                    {
+                        "scan_status": "error",
+                        "scan_result": params[1],
+                        "scan_attempt_id": None,
+                        "scan_attempt_expires_at": None,
+                    }
+                )
             row = document_row(**self.doc_state)
             self.persisted.append(row)
             return db.QueryResult(rows=[row], row_count=1)
@@ -960,17 +1008,43 @@ class RescanServiceTests(unittest.IsolatedAsyncioTestCase):
         self.storage = FakeStorage()
         self.storage.objects[self.doc_state["storage_key"]] = PDF_BYTES
 
+    def _claim_ok(self, attempt_id):
+        if self.doc_state.get("scan_status") in ("clean", "infected"):
+            return False
+        owner = self.doc_state.get("scan_attempt_id")
+        expires = self.doc_state.get("scan_attempt_expires_at")
+        expired = expires is not None and expires < datetime.now(timezone.utc)
+        return owner is None or owner == attempt_id or expired
+
     async def _fixture(self, text, params=None, **kwargs):
         stripped = text.strip()
         if stripped.startswith("UPDATE transfer_documents"):
-            if "scan_result = NULL" in stripped:
-                # Single-flight claim: error -> pending only while 'error'.
-                if self.doc_state.get("scan_status") != "error":
+            if "SET scan_attempt_id = NULL" in stripped:
+                # Ownership release — only the owning attempt may release.
+                if self.doc_state.get("scan_attempt_id") != params[1]:
                     return db.QueryResult(rows=[], row_count=0)
-                self.doc_state.update({"scan_status": "pending", "scan_result": None})
+                self.doc_state["scan_attempt_id"] = None
+                self.doc_state["scan_attempt_expires_at"] = None
+            elif "scan_attempt_id = $2" in stripped:
+                # Scan-attempt claim: non-terminal state AND (unowned OR same
+                # attempt OR expired lease).
+                if not self._claim_ok(params[1]):
+                    return db.QueryResult(rows=[], row_count=0)
+                self.doc_state.update(
+                    {
+                        "scan_attempt_id": params[1],
+                        "scan_attempt_expires_at": datetime.now(timezone.utc)
+                        + timedelta(seconds=params[2]),
+                        "scan_status": "pending",
+                        "scan_result": None,
+                    }
+                )
             elif "scanned_at" in stripped:
-                # Terminal-state guard: infected may overwrite a racing clean;
-                # a delayed clean never reverses a recorded infected verdict.
+                # Attempt-guarded publish: only the owner writes; infected may
+                # overwrite a racing clean, a delayed clean never reverses a
+                # recorded infected verdict.
+                if self.doc_state.get("scan_attempt_id") != params[4]:
+                    return db.QueryResult(rows=[], row_count=0)
                 new_scan = params[1]
                 current = self.doc_state.get("scan_status")
                 writable = (
@@ -981,12 +1055,28 @@ class RescanServiceTests(unittest.IsolatedAsyncioTestCase):
                 if not writable:
                     return db.QueryResult(rows=[], row_count=0)
                 self.doc_state.update(
-                    {"scan_status": params[1], "scan_result": params[2], "status": params[3]}
+                    {
+                        "scan_status": params[1],
+                        "scan_result": params[2],
+                        "status": params[3],
+                        "scan_attempt_id": None,
+                        "scan_attempt_expires_at": None,
+                    }
                 )
-            else:  # scan-failure marker UPDATE — guarded from terminal states
-                if self.doc_state.get("scan_status") in ("clean", "infected"):
+            else:  # scan-failure marker UPDATE — attempt-guarded + terminal
+                if (
+                    self.doc_state.get("scan_attempt_id") != params[2]
+                    or self.doc_state.get("scan_status") in ("clean", "infected")
+                ):
                     return db.QueryResult(rows=[], row_count=0)
-                self.doc_state.update({"scan_status": "error", "scan_result": params[1]})
+                self.doc_state.update(
+                    {
+                        "scan_status": "error",
+                        "scan_result": params[1],
+                        "scan_attempt_id": None,
+                        "scan_attempt_expires_at": None,
+                    }
+                )
             return db.QueryResult(rows=[document_row(**self.doc_state)], row_count=1)
         if "FROM transfer_documents" in text:
             return db.QueryResult(rows=[document_row(**self.doc_state)], row_count=1)
@@ -1145,9 +1235,13 @@ class RescanServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.doc_state["scan_status"], "clean")
 
     async def test_concurrent_rescan_is_single_flight(self):
-        # Snapshot shows 'error', but another rescan already claimed the
-        # document (state moved to 'pending'): no second scan is launched.
+        # Snapshot shows 'error', but another attempt owns the scan lease:
+        # no second scan is launched.
         self.doc_state["scan_status"] = "pending"
+        self.doc_state["scan_attempt_id"] = uuid.uuid4()
+        self.doc_state["scan_attempt_expires_at"] = (
+            datetime.now(timezone.utc) + timedelta(seconds=60)
+        )
         stale = document_row(**{**self.doc_state, "scan_status": "error"})
         scanner = FakeScanner()
         row, outcome = await svc.rescan_document_file(
@@ -1156,6 +1250,42 @@ class RescanServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(outcome, "scan_pending")
         self.assertEqual(scanner.calls, 0)
+
+    async def test_expired_attempt_lease_is_reclaimed(self):
+        # A worker that died mid-attempt leaves an expired lease; the next
+        # rescan reclaims ownership and completes the scan.
+        self.doc_state["scan_status"] = "pending"
+        self.doc_state["scan_attempt_id"] = uuid.uuid4()
+        self.doc_state["scan_attempt_expires_at"] = (
+            datetime.now(timezone.utc) - timedelta(seconds=1)
+        )
+        scanner = FakeScanner(ScanResult(status="clean"))
+        row, outcome = await svc.rescan_document_file(
+            transfer_row(), document_row(**self.doc_state),
+            storage=self.storage, scanner=scanner, user=self.user,
+        )
+        self.assertEqual(outcome, "uploaded")
+        self.assertEqual(scanner.calls, 1)
+        self.assertIsNone(self.doc_state["scan_attempt_id"])
+
+    async def test_stale_attempt_result_is_discarded(self):
+        # Our claim succeeded, but the lease was reclaimed by another attempt
+        # before our publish landed — a stale verdict must not be written.
+        doc_state = self.doc_state
+
+        class ReclaimedOwnershipScanner(FakeScanner):
+            async def scan(self, data):
+                self.calls += 1
+                doc_state["scan_attempt_id"] = uuid.uuid4()
+                return self.result
+
+        scanner = ReclaimedOwnershipScanner(ScanResult(status="clean"))
+        row, outcome = await svc.rescan_document_file(
+            transfer_row(), document_row(**self.doc_state),
+            storage=self.storage, scanner=scanner, user=self.user,
+        )
+        self.assertEqual(outcome, "replay")
+        self.assertEqual(self.doc_state["scan_status"], "pending")
 
     async def test_rescan_stored_bytes_mismatch_stays_unavailable(self):
         # The stored object does not match the recorded sha256 — the verdict

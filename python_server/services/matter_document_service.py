@@ -559,30 +559,22 @@ async def rescan_document_file(
 
     ai = document["accountable_institution_id"]
 
-    # Single-flight for the error state: the first rescan claims the document
-    # error -> pending. A concurrent rescan finds the claim gone and returns
-    # the current row instead of launching a duplicate scan. ('pending' stays
-    # rescan-able because a crash between persist and scan leaves a doc
-    # stuck there with no error marker to claim against.)
-    if document["scan_status"] == "error":
-        claimed = await db.query(
-            """
-            UPDATE transfer_documents
-            SET scan_status = 'pending', scan_result = NULL
-            WHERE id = $1 AND scan_status = 'error'
-            RETURNING id
-            """,
-            [document["id"]],
-        )
-        if not claimed.rows:
-            current = await get_document(transfer, str(document["id"]))
-            return current, "replay" if current["scan_status"] in ("clean", "infected") else "scan_pending"
+    # Ownership claim: the first attempt to acquire the lease owns the scan;
+    # a concurrent rescan finds a live owner and does not launch a second
+    # scan. An expired lease (worker died mid-attempt) is reclaimable here.
+    attempt_id = uuid.uuid4()
+    if not await _claim_scan_attempt(document, attempt_id):
+        # Another attempt owns the scan (or a terminal verdict landed): no
+        # duplicate scan is launched.
+        current = await get_document(transfer, str(document["id"]))
+        return current, "replay" if current["scan_status"] in ("clean", "infected") else "scan_pending"
 
     try:
         data = storage.get(document["storage_key"])
     except Exception as exc:
-        # The stored bytes could not be read — keep scan_status unchanged so
-        # the document stays unavailable and a later retry can still recover.
+        # The stored bytes could not be read — release the claim so a later
+        # retry can recover immediately; the document stays unavailable.
+        await _release_scan_attempt(document, attempt_id)
         await record_operation(
             "scan_completed",
             "failure",
@@ -598,6 +590,7 @@ async def rescan_document_file(
     # is content-addressed under the recorded sha256, so a mismatch means
     # corruption — quarantine the result by refusing to persist it.
     if file_fingerprint(data) != document.get("sha256"):
+        await _release_scan_attempt(document, attempt_id)
         await record_operation(
             "scan_completed",
             "failure",
@@ -610,7 +603,8 @@ async def rescan_document_file(
         raise DocumentServiceError("Stored object failed its integrity check")
 
     return await _scan_and_finalize(
-        transfer, document, data, scanner, user, trigger="rescan"
+        transfer, document, data, scanner, user,
+        trigger="rescan", attempt_id=attempt_id,
     )
 
 
@@ -658,20 +652,79 @@ async def _persist_file_state(
     return result.rows[0] if result.rows else None
 
 
-async def _scan_and_finalize(transfer, document, data, scanner, user, trigger="upload"):
+# Lease on a claimed scan attempt. Covers the full scan+publish window for
+# the largest accepted file; an attempt that outlives it (worker died
+# mid-scan) becomes reclaimable by the next claimer.
+SCAN_ATTEMPT_LEASE_SECONDS = 300
+
+
+async def _claim_scan_attempt(document, attempt_id, lease_seconds=SCAN_ATTEMPT_LEASE_SECONDS):
+    """Atomically take scan ownership of a document.
+
+    Single-statement claim: the row lock serialises concurrent claimants and
+    the winner flips scan_status to 'pending' under its attempt id. A claim
+    succeeds only while no live attempt owns the document — a NULL owner, a
+    lease that already expired, or the same attempt renewing. Terminal
+    verdicts are never claimable.
+    """
+    result = await db.query(
+        """
+        UPDATE transfer_documents
+        SET scan_attempt_id = $2,
+            scan_attempt_expires_at = CURRENT_TIMESTAMP + ($3 * INTERVAL '1 second'),
+            scan_status = 'pending',
+            scan_result = NULL
+        WHERE id = $1
+          AND scan_status NOT IN ('clean', 'infected')
+          AND (scan_attempt_id IS NULL
+               OR scan_attempt_id = $2
+               OR scan_attempt_expires_at < CURRENT_TIMESTAMP)
+        RETURNING id
+        """,
+        [document["id"], attempt_id, lease_seconds],
+    )
+    return bool(result.rows)
+
+
+async def _release_scan_attempt(document, attempt_id):
+    """Abandon an owned attempt without a verdict (e.g. the stored object
+    could not be read). Leaves scan_status 'pending' — unavailable and
+    immediately retryable."""
+    await db.query(
+        """
+        UPDATE transfer_documents
+        SET scan_attempt_id = NULL, scan_attempt_expires_at = NULL
+        WHERE id = $1 AND scan_attempt_id = $2
+        """,
+        [document["id"], attempt_id],
+    )
+
+
+async def _scan_and_finalize(transfer, document, data, scanner, user, trigger="upload", attempt_id=None):
     ai = document["accountable_institution_id"]
+    if attempt_id is None:
+        attempt_id = uuid.uuid4()
+        if not await _claim_scan_attempt(document, attempt_id):
+            row = await get_document(transfer, str(document["id"]))
+            if row["scan_status"] in ("clean", "infected"):
+                return row, "replay"
+            return row, "scan_pending"
     try:
         result = await scanner.scan(data)
     except ScannerUnavailableError as exc:
-        # Conditional: a delayed scanner failure must not downgrade a verdict
-        # that landed while this scan was in flight.
+        # Attempt-guarded: only the owning attempt may mark the failure, and
+        # a recorded terminal verdict is never downgraded. Ownership is
+        # released so the error state is retryable without waiting out the
+        # lease.
         await db.query(
             """
             UPDATE transfer_documents
-            SET scan_status = 'error', scan_result = $2
-            WHERE id = $1 AND scan_status NOT IN ('clean', 'infected')
+            SET scan_status = 'error', scan_result = $2,
+                scan_attempt_id = NULL, scan_attempt_expires_at = NULL
+            WHERE id = $1 AND scan_attempt_id = $3
+              AND scan_status NOT IN ('clean', 'infected')
             """,
-            [document["id"], type(exc).__name__],
+            [document["id"], type(exc).__name__, attempt_id],
         )
         await record_operation(
             "scan_completed",
@@ -688,7 +741,7 @@ async def _scan_and_finalize(transfer, document, data, scanner, user, trigger="u
         return row, "scan_pending"
 
     status = "uploaded" if result.status == "clean" else "pending"
-    row = await _persist_scan_result(document, result.status, result.signature, status)
+    row = await _persist_scan_result(document, result.status, result.signature, status, attempt_id)
     await record_operation(
         "scan_completed",
         "success" if result.status == "clean" else "failure",
@@ -699,17 +752,18 @@ async def _scan_and_finalize(transfer, document, data, scanner, user, trigger="u
         detail={"trigger": trigger, "scan_status": result.status, "signature": result.signature},
     )
     if row is None:
-        # A terminal verdict landed while this scan ran — the stored outcome
-        # stands; report the current row rather than our losing result.
+        # This attempt is no longer the owner (or a terminal verdict
+        # landed): the stored outcome stands; report the current row.
         row = await get_document(transfer, str(document["id"]))
         return row, "replay"
     return row, ("uploaded" if result.status == "clean" else "quarantined")
 
 
-async def _persist_scan_result(document, scan_status, signature, status):
-    # Quarantine wins on conflicting scans of the same bytes: 'infected' may
-    # overwrite a racing 'clean', but a delayed 'clean' can never reverse a
-    # recorded 'infected' verdict.
+async def _persist_scan_result(document, scan_status, signature, status, attempt_id):
+    # Only the owning attempt may publish. Quarantine still wins within that
+    # constraint: 'infected' may overwrite a racing 'clean', but a delayed
+    # 'clean' can never reverse a recorded 'infected' verdict. Publishing
+    # clears ownership so the resolved attempt releases the document.
     guard = "scan_status <> 'infected'" if scan_status == "infected" else (
         "scan_status NOT IN ('clean', 'infected')"
     )
@@ -717,11 +771,11 @@ async def _persist_scan_result(document, scan_status, signature, status):
         f"""
         UPDATE transfer_documents
         SET scan_status = $2, scan_result = $3, scanned_at = CURRENT_TIMESTAMP,
-            status = $4
-        WHERE id = $1 AND {guard}
+            status = $4, scan_attempt_id = NULL, scan_attempt_expires_at = NULL
+        WHERE id = $1 AND scan_attempt_id = $5 AND {guard}
         RETURNING {_DOC_READ_COLUMNS}
         """,
-        [document["id"], scan_status, signature, status],
+        [document["id"], scan_status, signature, status, attempt_id],
     )
     return result.rows[0] if result.rows else None
 
@@ -792,11 +846,24 @@ def verify_download_token(token: str, secret: str) -> Optional[dict]:
 
 
 async def get_document_for_download(document_id: str, ai: int) -> dict:
+    # The parent transfer (and its matter, when set) must still exist inside
+    # the caller's institution — a document does not outlive its matter for
+    # readback purposes while the deletion/cascade policy is pending.
     result = await db.query(
         f"""
         SELECT {_DOC_READ_COLUMNS}
-        FROM transfer_documents
-        WHERE id = $1 AND accountable_institution_id = $2
+        FROM transfer_documents d
+        WHERE d.id = $1 AND d.accountable_institution_id = $2
+          AND EXISTS (
+              SELECT 1 FROM transfers t
+              WHERE t.id = d.transfer_id
+                AND t.accountable_institution_id = $2
+                AND (t.matter_id IS NULL OR EXISTS (
+                    SELECT 1 FROM matters m
+                    WHERE m.id = t.matter_id
+                      AND m.accountable_institution_id = $2
+                ))
+          )
         """,
         [document_id, ai],
     )

@@ -612,15 +612,21 @@ Authenticated staff document lane (`python_server/routers/v1/transfers.py` +
 - Download: a 5-min HMAC token (`DOCUMENT_TOKEN_SECRET`, falling back to
   `SECRET_KEY`) scopes the grant, but retrieval RE-AUTHORIZES the caller —
   valid staff JWT + `transfers:read` + token's institution must match the
-  caller's verified institution. Token alone releases nothing; state is
-  re-checked at retrieval. `download_link_issued` and `download_retrieved`
-  are separate op-log events.
+  caller's verified institution, and the document's current parent
+  transfer/matter must still exist in that institution (`EXISTS` check).
+  Token alone releases nothing; state is re-checked at retrieval.
+  `download_link_issued` and `download_retrieved` are separate op-log events.
 - Recovery: same-bytes upload replays, different-bytes conflicts (no
   replacement), `POST .../documents/{id}/rescan` rescans the stored object
-  after a scanner outage without re-upload. Rescan is single-flight (claims
-  error→pending); verdict persistence is guarded — `infected` beats a racing
-  `clean`, a delayed `clean`/error never reverses a terminal verdict; the
-  stored object's sha256 is verified before scanning.
+  after a scanner outage without re-upload. Scanning is owned by a leased
+  attempt (migration 028: `scan_attempt_id` + `scan_attempt_expires_at`) —
+  one atomic claim per document, only the owning attempt may publish, and an
+  expired lease is reclaimable after worker failure. The claim is inside
+  `_scan_and_finalize` so upload, same-bytes retry and rescan share it.
+  Within ownership, `infected` beats a racing `clean`; a delayed
+  `clean`/error never reverses a terminal verdict; the stored object's
+  sha256 is verified before scanning. Real-PostgreSQL concurrency coverage:
+  `tests/test_document_scan_ownership_db.py` (TEST_DATABASE_URL).
 - All rejections and outcomes write `document_operation_log` rows (best
   effort, stderr alert on failure) — file contents and tokens never logged.
   This is the internal operational log, NOT platform audit integration:

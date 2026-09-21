@@ -35,12 +35,27 @@ Two bounded gaps found in the existing lane; both implemented:
    state is still re-checked. The BFF proxy verifies the JWT and forwards it;
    the UI fetches the blob with the Bearer header instead of `window.open`.
 4. **Scan-verdict race safety (review correction).** Verdict persistence is
-   now conditional: `infected` may overwrite a racing `clean` (quarantine
-   wins) but a delayed `clean` or a late scanner failure can never reverse a
-   recorded terminal verdict. Rescan claims `error`→`pending` so concurrent
-   rescans are single-flight, and the stored object's sha256 is verified
-   against the recorded digest before scanning — a verdict can only ever
-   apply to the exact bytes inspected.
+   conditional and now lease-owned: `infected` may overwrite a racing `clean`
+   (quarantine wins) but a delayed `clean` or a late scanner failure can
+   never reverse a recorded terminal verdict. The stored object's sha256 is
+   verified against the recorded digest before scanning — a verdict can only
+   ever apply to the exact bytes inspected.
+5. **Scan-attempt ownership (review correction, migration 028 — proposed).**
+   `transfer_documents` gains `scan_attempt_id` + `scan_attempt_expires_at`
+   (a lease). One atomic claim UPDATE authorises a single attempt: non-
+   terminal state AND (unowned OR same attempt OR expired lease). Publish
+   and error-marker UPDATEs are guarded by the attempt id — only the current
+   owner may write a result — and publishing clears ownership. A worker that
+   dies mid-attempt leaves an expired lease the next claimer reclaims; the
+   document stays `pending` (unavailable) while the attempt is unresolved.
+   The claim lives inside `_scan_and_finalize`, so initial upload,
+   identical-file retry and explicit rescan all funnel through it —
+   concurrent same-bytes uploads and concurrent rescans each launch exactly
+   one scan. A partial index on `scan_attempt_expires_at` supports a future
+   recovery sweep. Strict ownership means a stale attempt's verdict —
+   including `infected` — is discarded once another attempt owns the scan;
+   that assumes verdicts on identical bytes are scanner-deterministic
+   (flagged as a scanner-contract assumption).
 
 No new external contracts were introduced — the rescan path uses the
 existing `DocumentStorage.get` and `MalwareScanner.scan` interfaces only.
@@ -54,7 +69,7 @@ existing `DocumentStorage.get` and `MalwareScanner.scan` interfaces only.
 | Content validation (magic bytes; DOCX = OOXML package + `.docx`) | Done | Synthetic PDF/PNG/DOCX accepted; EXE/renamed-ZIP rejected |
 | Storage state | Done | `LocalDocumentStorage`: atomic publish, content-addressed keys, never-overwrite — real-filesystem + thread tests |
 | Scan state | Done | `pending`/`clean`/`infected`/`error` separate from lifecycle `status`; scanner failure → `error`, never releases; infected final per bytes |
-| Authorized download | Done | `transfers:read` issues 5-min HMAC token; retrieval re-authorizes the caller's session (JWT + institution match + ability) AND re-checks clean/uploaded; `no-store` + `Content-Disposition`; storage key never projected |
+| Authorized download | Done | `transfers:read` issues 5-min HMAC token; retrieval re-authorizes the caller's session (JWT + institution match + ability), re-checks the document's **current parent transfer/matter** still exists in that institution (`EXISTS` clause), and re-checks clean/uploaded; `no-store` + `Content-Disposition`; storage key never projected. Per decisions D6–D8, `transfers:read` + same-institution is the complete approved staff matter-access policy; clients are fail-closed upstream of it |
 | Retry/recovery | Done | Same-bytes replay, different-bytes conflict, single-flight rescan without re-upload, terminal-verdict persistence guards, durable op-log for storage/persist failures |
 | Internal op-log | Done | `document_operation_log` rows for rejections, scans, issuance, retrievals, denials — best-effort with stderr alert; contents/credentials/tokens never logged |
 
@@ -63,10 +78,17 @@ operational record for reconciliation, not the platform audit integration.
 Platform audit (`legitify_auditor` / `AUDIT_DATABASE_URL`) remains an
 outstanding external contract — see §4.
 
-Test totals after this slice: **69** in
-`python_server/tests/test_v1_matter_documents.py` (was 57) and **13** in
-`server/tests/v1Documents.test.ts` (was 12). All synthetic files; no live
-service contacted.
+Test totals after this slice: **80** in
+`python_server/tests/test_v1_matter_documents.py` (mocked fixtures), **6**
+PostgreSQL-backed concurrency cases in
+`python_server/tests/test_document_scan_ownership_db.py` (run against the
+isolated `deedly_proposal_test` scratch DB — simultaneous claimants, lease
+expiry, stale-verdict refusal, live-attempt single-flight, same-bytes upload
+single-scan, parent-transfer check) and **14** in
+`server/tests/v1Documents.test.ts`. All synthetic files; no live service
+contacted. The concurrency suite applies migration 028's columns to the
+scratch DB idempotently; fixture rows are committed for the test window and
+deleted afterwards.
 
 ## 3. Flagged — not fixed in this slice
 
@@ -81,7 +103,13 @@ service contacted.
   — flagged in the service docstring, not invented.
 - **Reconciliation sweep** — the decisions reference failure records being
   "discoverable by the reconciliation sweep"; no sweep exists. Op-log failure
-  rows carry `storage_key`/`file_instance_id` so one can be built.
+  rows carry `storage_key`/`file_instance_id` so one can be built. The
+  `scan_attempt_expires_at` partial index (migration 028) likewise supports
+  a sweep that reclaims expired scan leases without a user retry.
+- **Migration 028 numbering/execution** — proposed under number 028 because
+  026/027 are reserved on other tracks; Jordan confirms the number and
+  reviews before any deployment run. Applied so far only to the isolated
+  scratch DB for test coverage.
 
 ## 4. Blocked — external contracts (do not implement against stubs)
 
@@ -111,8 +139,11 @@ default `none` → `UnavailableScanner` releases nothing.
   caller's JWT + `transfers:read` + same institution — token alone is not
   sufficient; tampered/expired/cross-doc/cross-tenant tokens → 403/404;
   state re-checked at retrieval.
-- Rescan: single-flight per document (concurrent requests converge, no
-  duplicate scans of the same object); a delayed `clean` never reverses a
-  recorded `infected`; stored-bytes sha256 is verified before scanning.
+- Rescan: lease-owned single-flight per document — concurrent rescans and
+  concurrent same-bytes uploads each launch exactly one scan (verified
+  against real PostgreSQL row-locking, not mocked guards); an expired lease
+  is reclaimable after worker failure; a stale attempt's verdict (even
+  `infected`) is refused; a delayed `clean` never reverses a recorded
+  `infected`; stored-bytes sha256 is verified before scanning.
 - Internal identifiers (`storage_key`, `file_instance_id`, `sha256`,
   uploader id) absent from every client projection.
