@@ -13,7 +13,7 @@ export function serviceUnavailableMessage(service: string, error?: unknown): str
  */
 export async function probeMatterPersistence(): Promise<Error | null> {
   try {
-    const response = await apiRequest<ApiResponse<{ transfers?: unknown }>>('/api/v1/transfers/?limit=1')
+    const response = await apiRequest<ApiResponse<{ transfers?: unknown }>>('/api/v1/transfers?limit=1')
     // v1 success envelopes are { message, data } — there is no `success`
     // flag. Validate the actual contract: a paged list payload with a
     // transfers array. Anything else is malformed; fail closed.

@@ -225,7 +225,7 @@ export class TransferApi {
     if (filters.sortBy) params.set('sortBy', filters.sortBy)
     if (filters.sortOrder) params.set('sortOrder', filters.sortOrder)
     const qs = params.toString()
-    const envelope = await apiRequest<{ message?: string; data?: V1ListData }>(`/api/v1/transfers/${qs ? `?${qs}` : ''}`)
+    const envelope = await apiRequest<{ message?: string; data?: V1ListData }>(`/api/v1/transfers${qs ? `?${qs}` : ''}`)
     const rows = envelope.data?.transfers ?? []
     const mapped = rows.map(fromServerAggregate)
     const filtered = filters.status ? mapped.filter(t => t.status === filters.status) : mapped
@@ -328,7 +328,7 @@ export class TransferApi {
   /** Idempotent matter creation. `clientRequestId` must be stable across retries
    * so a repeated request resolves to the same matter rather than duplicating it. */
   static async createMatter(request: CreateMatterRequest): Promise<ApiResponse<MatterCreated>> {
-    return apiRequest('/api/v1/transfers/', { method: 'POST', body: request })
+    return apiRequest('/api/v1/transfers', { method: 'POST', body: request })
   }
 
   /** Attach one party (manual natural person or existing Golden Record). */
