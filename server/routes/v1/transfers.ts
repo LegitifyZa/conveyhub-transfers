@@ -445,6 +445,57 @@ router.get(
   })
 )
 
+// Transfer activity feed — milestone_history joined through the same
+// verified transfer→matter relationship as the milestones route.
+router.get(
+  '/:id/activity',
+  requireJwt,
+  asyncHandler(async (req: Request, res: Response) => {
+    const user = req.currentUser!
+    const { id } = req.params
+
+    if (user.isClient) {
+      res.status(404).json({ success: false, error: 'Not found' })
+      return
+    }
+
+    if (!user.hasAbility('transfers:read')) {
+      res.status(403).json({ success: false, error: 'Forbidden' })
+      return
+    }
+
+    const transfer = await authorizeTransfer(user, id)
+    if (!transfer) {
+      res.status(404).json({ success: false, error: 'Not found' })
+      return
+    }
+
+    const activityResult = await query(
+      `SELECT mh.id, mh.actor_name, mh.action, mh.change_summary, mh.created_at
+       FROM milestone_history mh
+       JOIN matter_milestones mm ON mm.id = mh.milestone_id
+       JOIN matters m ON m.id = mm.matter_id
+       WHERE m.source_record_id = $1
+         AND m.accountable_institution_id = $2
+       ORDER BY mh.created_at DESC
+       LIMIT 100`,
+      [id, user.accountable_institution_id]
+    )
+
+    res.json({
+      message: 'OK',
+      data: {
+        activity: activityResult.rows.map((row: any) => ({
+          id: row.id,
+          user: row.actor_name,
+          action: row.change_summary || row.action,
+          timestamp: row.created_at,
+        })),
+      },
+    })
+  })
+)
+
 router.get(
   '/:id/documents',
   requireJwt,

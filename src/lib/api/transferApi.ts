@@ -312,7 +312,8 @@ export class TransferApi {
   }
 
   static async getMilestones(id: string): Promise<ApiResponse<Milestone[]>> {
-    return apiRequest(`/api/transfers/${id}/milestones`)
+    const envelope = await apiRequest<{ message?: string; data?: { milestones?: Milestone[] } }>(`/api/v1/transfers/${id}/milestones`)
+    return { success: true, message: envelope.message, data: envelope.data?.milestones ?? [] }
   }
 
   static async updateMilestones(id: string, milestones: Milestone[]): Promise<ApiResponse<Milestone[]>> {
@@ -320,7 +321,8 @@ export class TransferApi {
   }
 
   static async getActivity(id: string): Promise<ApiResponse<AuditEntry[]>> {
-    return apiRequest(`/api/transfers/${id}/activity`)
+    const envelope = await apiRequest<{ message?: string; data?: { activity?: AuditEntry[] } }>(`/api/v1/transfers/${id}/activity`)
+    return { success: true, message: envelope.message, data: envelope.data?.activity ?? [] }
   }
 
   // ---- Authenticated v1 matter + party lane (BFF → FastAPI) ----
