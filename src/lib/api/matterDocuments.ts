@@ -97,6 +97,20 @@ export async function uploadMatterDocumentFile(
   return response.data
 }
 
+// Re-scan the stored object without re-uploading — the recovery path when a
+// scan did not complete (scanStatus 'pending'/'error'). Clean/infected
+// verdicts are final and replay unchanged.
+export async function rescanMatterDocumentFile(
+  transferId: string,
+  documentId: string
+): Promise<{ document: MatterDocument; outcome: string }> {
+  const response = await apiRequest<Envelope<{ document: MatterDocument; outcome: string }>>(
+    `/api/v1/transfers/${transferId}/documents/${documentId}/rescan`,
+    { method: 'POST', body: {} }
+  )
+  return response.data
+}
+
 export async function recalculateDocumentRequirements(
   transferId: string
 ): Promise<Pick<MatterDocumentsResult, 'requirements' | 'unevaluatedFacts' | 'unevaluatedRules'>> {

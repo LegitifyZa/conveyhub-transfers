@@ -280,6 +280,47 @@ class DocumentRouteAuthTests(RouteTestBase):
         )
         self.assertEqual(foreign.status_code, 404)
 
+    async def test_rescan_requires_write_ability(self):
+        response = await self.client.post(
+            f"/api/v1/transfers/{OWN}/documents/{DOC_ID}/rescan",
+            headers=self._headers(abilities=["transfers:read"]),
+        )
+        self.assertEqual(response.status_code, 403)
+
+    async def test_rescan_client_denied(self):
+        response = await self.client.post(
+            f"/api/v1/transfers/{OWN}/documents/{DOC_ID}/rescan",
+            headers=self._headers(role=4, abilities=["transfers:write"], golden=str(uuid.uuid4())),
+        )
+        self.assertEqual(response.status_code, 403)
+
+    async def test_rescan_cross_tenant_404(self):
+        response = await self.client.post(
+            f"/api/v1/transfers/{FOREIGN}/documents/{DOC_ID}/rescan",
+            headers=self._headers(),
+        )
+        self.assertEqual(response.status_code, 404)
+
+    async def test_rescan_happy_path_returns_outcome(self):
+        doc = uploaded_clean_row(scan_status="error", status="pending")
+        self.stack.enter_context(
+            patch.object(transfers, "get_document", AsyncMock(return_value=doc))
+        )
+        rescan = self.stack.enter_context(
+            patch.object(
+                transfers,
+                "rescan_document_file",
+                AsyncMock(return_value=(uploaded_clean_row(), "uploaded")),
+            )
+        )
+        response = await self.client.post(
+            f"/api/v1/transfers/{OWN}/documents/{DOC_ID}/rescan",
+            headers=self._headers(),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["data"]["outcome"], "uploaded")
+        rescan.assert_awaited_once()
+
     async def test_declared_oversize_upload_rejected_413(self):
         # A declared body larger than the file cap + multipart overhead is
         # refused before any bytes are consumed or the matter is authorized.
@@ -664,6 +705,27 @@ class UploadServiceTests(unittest.IsolatedAsyncioTestCase):
                 transfer_row(), document_row(), EXE_BYTES, "evil.pdf",
                 storage=self.storage, scanner=FakeScanner(), user=self.user,
             )
+        # The rejection is durably recorded — same audit treatment as the
+        # size/conflict rejections.
+        rejections = [
+            entry for entry in self.oplog
+            if entry["operation"] == "upload_rejected"
+        ]
+        self.assertEqual(len(rejections), 1)
+        self.assertEqual(rejections[0]["detail"]["reason"], "unsupported_type")
+
+    async def test_empty_file_rejected_and_logged(self):
+        with self.assertRaises(svc.DocumentValidationError):
+            await svc.upload_document_file(
+                transfer_row(), document_row(), b"", "empty.pdf",
+                storage=self.storage, scanner=FakeScanner(), user=self.user,
+            )
+        rejections = [
+            entry for entry in self.oplog
+            if entry["operation"] == "upload_rejected"
+        ]
+        self.assertEqual(len(rejections), 1)
+        self.assertEqual(rejections[0]["detail"]["reason"], "empty_file")
 
     async def test_zip_without_docx_extension_rejected(self):
         with self.assertRaises(svc.DocumentValidationError):
@@ -859,6 +921,138 @@ class UploadServiceTests(unittest.IsolatedAsyncioTestCase):
                 transfer_row(), document_row(), PLAIN_ZIP_BYTES, "evil.docx",
                 storage=self.storage, scanner=FakeScanner(), user=self.user,
             )
+
+
+class RescanServiceTests(unittest.IsolatedAsyncioTestCase):
+    """rescan_document_file — recover a stuck scan without re-uploading.
+
+    The bytes are already stored under the document's content-addressed key;
+    the rescan path fetches and re-scans them. Clean/infected verdicts are
+    final and replay; a scanner or storage outage leaves the document
+    unavailable and retryable.
+    """
+
+    async def asyncSetUp(self):
+        self.stack = ExitStack()
+        self.addCleanup(self.stack.close)
+        self.oplog = []
+        self.doc_state = uploaded_clean_row(
+            scan_status="error", status="pending", scan_result="ScannerUnavailableError"
+        )
+        self.stack.enter_context(
+            patch.object(svc.db, "query", AsyncMock(side_effect=self._fixture))
+        )
+        self.user = SimpleNamespace(user_id=7)
+        self.storage = FakeStorage()
+        self.storage.objects[self.doc_state["storage_key"]] = PDF_BYTES
+
+    async def _fixture(self, text, params=None, **kwargs):
+        stripped = text.strip()
+        if stripped.startswith("UPDATE transfer_documents"):
+            if "scanned_at" in stripped:
+                self.doc_state.update(
+                    {"scan_status": params[1], "scan_result": params[2], "status": params[3]}
+                )
+            else:  # scan-failure marker UPDATE
+                self.doc_state.update({"scan_status": "error", "scan_result": params[1]})
+            return db.QueryResult(rows=[document_row(**self.doc_state)], row_count=1)
+        if "FROM transfer_documents" in text:
+            return db.QueryResult(rows=[document_row(**self.doc_state)], row_count=1)
+        if "document_operation_log" in text:
+            self.oplog.append(
+                {
+                    "operation": params[0],
+                    "outcome": params[1],
+                    "detail": json.loads(params[6]) if params[6] else None,
+                }
+            )
+            return db.QueryResult(rows=[], row_count=1)
+        raise AssertionError(f"Unexpected query: {text}")
+
+    async def test_rescan_recovers_error_to_uploaded(self):
+        scanner = FakeScanner(ScanResult(status="clean"))
+        row, outcome = await svc.rescan_document_file(
+            transfer_row(), document_row(**self.doc_state),
+            storage=self.storage, scanner=scanner, user=self.user,
+        )
+        self.assertEqual(outcome, "uploaded")
+        self.assertEqual(row["scan_status"], "clean")
+        self.assertEqual(row["status"], "uploaded")
+        self.assertEqual(scanner.calls, 1)
+        # The stored object is reused — nothing new is written.
+        self.assertEqual(len(self.storage.objects), 1)
+
+    async def test_rescan_infected_verdict_quarantines(self):
+        scanner = FakeScanner(ScanResult(status="infected", signature="Eicar-Test"))
+        row, outcome = await svc.rescan_document_file(
+            transfer_row(), document_row(**self.doc_state),
+            storage=self.storage, scanner=scanner, user=self.user,
+        )
+        self.assertEqual(outcome, "quarantined")
+        self.assertEqual(row["scan_status"], "infected")
+        self.assertEqual(row["status"], "pending")
+
+    async def test_rescan_scanner_still_down_stays_unavailable(self):
+        scanner = FakeScanner(error=ScannerUnavailableError("clamd unreachable"))
+        row, outcome = await svc.rescan_document_file(
+            transfer_row(), document_row(**self.doc_state),
+            storage=self.storage, scanner=scanner, user=self.user,
+        )
+        self.assertEqual(outcome, "scan_pending")
+        self.assertEqual(row["scan_status"], "error")
+        self.assertEqual(row["status"], "pending")
+
+    async def test_rescan_clean_replays_without_scanning(self):
+        doc = document_row(**{**self.doc_state, "scan_status": "clean", "status": "uploaded"})
+        scanner = FakeScanner()
+        row, outcome = await svc.rescan_document_file(
+            transfer_row(), doc,
+            storage=self.storage, scanner=scanner, user=self.user,
+        )
+        self.assertEqual(outcome, "replay")
+        self.assertEqual(scanner.calls, 0)
+        self.assertEqual(row["scan_status"], "clean")
+
+    async def test_rescan_infected_replays_without_scanning(self):
+        # The infected verdict is final for the stored bytes — a rescan must
+        # not re-scan or flip the verdict.
+        doc = document_row(**{**self.doc_state, "scan_status": "infected", "status": "pending"})
+        scanner = FakeScanner()
+        row, outcome = await svc.rescan_document_file(
+            transfer_row(), doc,
+            storage=self.storage, scanner=scanner, user=self.user,
+        )
+        self.assertEqual(outcome, "replay")
+        self.assertEqual(scanner.calls, 0)
+        self.assertEqual(row["scan_status"], "infected")
+
+    async def test_rescan_without_stored_file_is_unavailable(self):
+        doc = document_row(scan_status="pending")  # no storage_key
+        with self.assertRaises(svc.DocumentNotAvailableError):
+            await svc.rescan_document_file(
+                transfer_row(), doc,
+                storage=self.storage, scanner=FakeScanner(), user=self.user,
+            )
+
+    async def test_rescan_storage_read_failure_keeps_state_and_logs(self):
+        class FailingStorage(FakeStorage):
+            def get(self, key):
+                raise RuntimeError("disk unavailable")
+
+        with self.assertRaises(svc.DocumentServiceError):
+            await svc.rescan_document_file(
+                transfer_row(), document_row(**self.doc_state),
+                storage=FailingStorage(), scanner=FakeScanner(), user=self.user,
+            )
+        # State untouched — still unavailable, still retryable later.
+        self.assertEqual(self.doc_state["scan_status"], "error")
+        failures = [
+            entry for entry in self.oplog
+            if entry["operation"] == "scan_completed" and entry["outcome"] == "failure"
+        ]
+        self.assertEqual(len(failures), 1)
+        self.assertEqual(failures[0]["detail"]["stage"], "storage_read")
+        self.assertEqual(failures[0]["detail"]["trigger"], "rescan")
 
 
 class LocalStorageBehaviorTests(unittest.TestCase):

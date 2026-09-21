@@ -10,6 +10,7 @@ import {
   fetchMatterDocuments,
   issueDocumentDownloadLink,
   recalculateDocumentRequirements,
+  rescanMatterDocumentFile,
   uploadMatterDocumentFile,
 } from '@/lib/api/matterDocuments'
 import { cn } from '@/utils/cn'
@@ -28,7 +29,7 @@ function scanBadge(doc: MatterDocument) {
     case 'infected':
       return <Badge variant="error" size="sm">Blocked by security scan</Badge>
     case 'error':
-      return <Badge variant="warning" size="sm">Scan unavailable — retry upload</Badge>
+      return <Badge variant="warning" size="sm">Scan unavailable — retry scan</Badge>
     case 'pending':
       return <Badge variant="warning" size="sm">Awaiting security scan</Badge>
     default:
@@ -150,6 +151,26 @@ export const MatterDocumentsSection: React.FC<Props> = ({ transferId, onDocument
       setRowError('add', err instanceof Error ? err.message : 'Could not add document')
     } finally {
       setAddingFree(false)
+    }
+  }
+
+  // Re-scan the already-stored bytes — no re-upload needed when the earlier
+  // scan did not complete.
+  const handleRescan = async (doc: MatterDocument) => {
+    setBusyKey(doc.id)
+    setRowError(doc.id, '')
+    try {
+      const result = await rescanMatterDocumentFile(transferId, doc.id)
+      if (result.outcome === 'quarantined') {
+        setRowError(doc.id, 'The file failed the security scan and cannot be used')
+      } else if (result.outcome === 'scan_pending') {
+        setRowError(doc.id, 'Security scan is unavailable — the file is stored but not yet downloadable')
+      }
+      await refresh()
+    } catch (err) {
+      setRowError(doc.id, err instanceof Error ? err.message : 'Scan retry failed')
+    } finally {
+      setBusyKey(null)
     }
   }
 
@@ -347,16 +368,14 @@ export const MatterDocumentsSection: React.FC<Props> = ({ transferId, onDocument
                       </label>
                     )}
                     {(doc.scanStatus === 'error' || doc.scanStatus === 'pending') && doc.originalFileName && (
-                      <label
-                        className={cn(
-                          'inline-flex items-center px-3 py-1.5 text-xs rounded-lg font-medium cursor-pointer btn-secondary-premium',
-                          isBusy && 'opacity-50 pointer-events-none'
-                        )}
-                        onClick={() => pickFileForDocument(doc.id)}
+                      <button
+                        onClick={() => handleRescan(doc)}
+                        disabled={isBusy}
+                        className="inline-flex items-center px-3 py-1.5 text-xs rounded-lg font-medium btn-secondary-premium disabled:opacity-50"
                       >
-                        <Upload className="h-3.5 w-3.5 mr-1" />
+                        <RefreshCw className={cn('h-3.5 w-3.5 mr-1', busyKey === doc.id && 'animate-spin')} />
                         Retry scan
-                      </label>
+                      </button>
                     )}
                     {downloadable(doc) && (
                       <button

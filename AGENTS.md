@@ -594,3 +594,31 @@ assessment (facts/scopes, smallest change, acceptance tests):
   proposal applied inside rolled-back transactions only (rules table empty
   afterwards, no 027 ledger row). Before any real execution: confirm
   migration number 027 with Jordan.
+
+## Matter documents — upload & readback lane
+
+Authenticated staff document lane (`python_server/routers/v1/transfers.py` +
+`documents.py`, BFF proxies in `server/routes/v1/`, service in
+`python_server/services/matter_document_service.py`). Full status:
+`docs/deedly-matter-documents-slice-status.md`.
+
+- Downloadable only when `status='uploaded'` AND `scan_status='clean'` AND a
+  `storage_key` exists; storage/scan/lifecycle states are separate columns.
+  Scanner failure leaves the file unavailable — never released.
+- Upload cap is 25 MB, enforced on declared AND actual bytes at both the BFF
+  (streaming byte-count) and FastAPI (`UploadBodyLimitMiddleware` +
+  `file.read(cap+1)`). Content is magic-byte sniffed (PDF/DOCX/JPG/PNG);
+  DOCX must be a real OOXML package with a `.docx` name.
+- Download uses a 5-min HMAC bearer token (`DOCUMENT_TOKEN_SECRET`, falling
+  back to `SECRET_KEY`); retrieval re-checks state. `download_link_issued`
+  and `download_retrieved` are separate op-log events.
+- Recovery: same-bytes upload replays, different-bytes conflicts (no
+  replacement), `POST .../documents/{id}/rescan` rescans the stored object
+  after a scanner outage without re-upload. `clean`/`infected` are final.
+- All rejections and outcomes write `document_operation_log` rows (best
+  effort, stderr alert on failure) — file contents and tokens never logged.
+- Missing external contracts fail closed, do not stub them: files-service
+  (`FILES_SERVICE_BASE_URL` unset → error), ClamAV (default scanner is
+  `UnavailableScanner`), platform audit logger (op-log is the stand-in).
+- Client document access is deliberately excluded — list/download deny
+  `is_client`.

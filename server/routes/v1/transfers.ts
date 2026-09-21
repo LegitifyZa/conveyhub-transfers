@@ -581,6 +581,14 @@ router.post(
 )
 
 router.post(
+  '/:id/documents/:documentId/rescan',
+  requireJwt,
+  asyncHandler(async (req: Request, res: Response) => {
+    await proxyDeedly(req, res, `/${req.params.id}/documents/${req.params.documentId}/rescan`, 'POST')
+  })
+)
+
+router.post(
   '/:id/documents/:documentId/download-link',
   requireJwt,
   asyncHandler(async (req: Request, res: Response) => {

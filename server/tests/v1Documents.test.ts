@@ -214,6 +214,21 @@ describe('v1 document BFF proxies', async () => {
     assert.equal(captured[0].url, `/api/v1/transfers/${TRANSFER_ID}/documents/requirements/recalculate`)
   })
 
+  it('proxies rescan requests', async () => {
+    upstreamResponse = {
+      status: 200,
+      body: { message: 'OK', data: { document: { id: DOC_ID }, outcome: 'uploaded' } },
+    }
+    const res = await postJson(
+      `/api/v1/transfers/${TRANSFER_ID}/documents/${DOC_ID}/rescan`,
+      { Authorization: `Bearer ${makeToken()}` },
+      {}
+    )
+    assert.equal(res.status, 200)
+    assert.equal(captured[0].url, `/api/v1/transfers/${TRANSFER_ID}/documents/${DOC_ID}/rescan`)
+    assert.ok(String(captured[0].headers.authorization).startsWith('Bearer '))
+  })
+
   it('proxies download-link issuance', async () => {
     upstreamResponse = {
       status: 200,

@@ -357,6 +357,15 @@ async def upload_document_file(
     different file is presented for a document that already has one.
     """
     if len(data) == 0:
+        await record_operation(
+            "upload_rejected",
+            "failure",
+            accountable_institution_id=document["accountable_institution_id"],
+            actor_user_id=user.user_id,
+            transfer_id=str(transfer["id"]),
+            document_id=str(document["id"]),
+            detail={"reason": "empty_file"},
+        )
         raise DocumentValidationError("Empty file")
     if len(data) > MAX_FILE_BYTES:
         await record_operation(
@@ -370,7 +379,21 @@ async def upload_document_file(
         )
         raise DocumentValidationError("File exceeds the 25 MB limit")
 
-    content_type = sniff_file_type(data, filename)
+    try:
+        content_type = sniff_file_type(data, filename)
+    except DocumentValidationError:
+        # Type rejections are auditable like size/conflict rejections — an
+        # unsupported file must not pass silently through the op log.
+        await record_operation(
+            "upload_rejected",
+            "failure",
+            accountable_institution_id=document["accountable_institution_id"],
+            actor_user_id=user.user_id,
+            transfer_id=str(transfer["id"]),
+            document_id=str(document["id"]),
+            detail={"reason": "unsupported_type", "filename": filename},
+        )
+        raise
     digest = file_fingerprint(data)
     ai = document["accountable_institution_id"]
 
@@ -512,6 +535,49 @@ async def _rescan_or_record(transfer, document, data, storage, scanner, user):
     return document, "replay"
 
 
+async def rescan_document_file(
+    transfer: dict,
+    document: dict,
+    *,
+    storage: DocumentStorage,
+    scanner: MalwareScanner,
+    user: Any,
+) -> tuple[dict, str]:
+    """Re-scan the stored object without a re-upload.
+
+    Recovery path for a scan that did not complete (scan_status 'pending' or
+    'error'): the bytes are already stored under the document's own
+    content-addressed key, so they are fetched and scanned again instead of
+    being re-sent. 'clean' and 'infected' verdicts are final and replay
+    unchanged. Returns (row, outcome) with the same outcome vocabulary as
+    upload_document_file.
+    """
+    if document["scan_status"] in ("clean", "infected"):
+        return document, "replay"
+    if not document.get("storage_key"):
+        raise DocumentNotAvailableError("No stored file to rescan")
+
+    ai = document["accountable_institution_id"]
+    try:
+        data = storage.get(document["storage_key"])
+    except Exception as exc:
+        # The stored bytes could not be read — keep scan_status unchanged so
+        # the document stays unavailable and a later retry can still recover.
+        await record_operation(
+            "scan_completed",
+            "failure",
+            accountable_institution_id=ai,
+            actor_user_id=user.user_id,
+            transfer_id=str(transfer["id"]),
+            document_id=str(document["id"]),
+            detail={"trigger": "rescan", "stage": "storage_read", "error": type(exc).__name__},
+        )
+        raise DocumentServiceError("Stored file could not be read") from exc
+    return await _scan_and_finalize(
+        transfer, document, data, scanner, user, trigger="rescan"
+    )
+
+
 async def _persist_file_state(
     document: dict,
     *,
@@ -556,7 +622,7 @@ async def _persist_file_state(
     return result.rows[0] if result.rows else None
 
 
-async def _scan_and_finalize(transfer, document, data, scanner, user):
+async def _scan_and_finalize(transfer, document, data, scanner, user, trigger="upload"):
     ai = document["accountable_institution_id"]
     try:
         result = await scanner.scan(data)
@@ -572,7 +638,7 @@ async def _scan_and_finalize(transfer, document, data, scanner, user):
             actor_user_id=user.user_id,
             transfer_id=str(transfer["id"]),
             document_id=str(document["id"]),
-            detail={"error": type(exc).__name__},
+            detail={"trigger": trigger, "error": type(exc).__name__},
         )
         row = await get_document(transfer, str(document["id"]))
         return row, "scan_pending"
@@ -586,7 +652,7 @@ async def _scan_and_finalize(transfer, document, data, scanner, user):
         actor_user_id=user.user_id,
         transfer_id=str(transfer["id"]),
         document_id=str(document["id"]),
-        detail={"scan_status": result.status, "signature": result.signature},
+        detail={"trigger": trigger, "scan_status": result.status, "signature": result.signature},
     )
     return row, ("uploaded" if result.status == "clean" else "quarantined")
 

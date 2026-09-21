@@ -30,6 +30,7 @@ from services.matter_document_service import (
     list_requirements,
     record_operation,
     recalculate_requirements,
+    rescan_document_file,
     upload_document_file,
 )
 from services.matter_service import (
@@ -571,6 +572,45 @@ async def upload_transfer_document_file(
             file.filename,
             storage=storage,
             scanner=scanner,
+            user=user,
+        )
+    except DocumentServiceError as exc:
+        return _document_error_response(exc)
+
+    return {
+        "message": "OK",
+        "data": {"document": _map_transfer_document(row), "outcome": outcome},
+    }
+
+
+@router.post("/{id}/documents/{document_id}/rescan")
+async def rescan_transfer_document_file(
+    id: str,
+    document_id: str,
+    user: CurrentUser = Depends(require_jwt),
+):
+    """Re-scan the stored object for a document whose scan did not complete.
+
+    The retry path without a re-upload: the stored bytes are fetched under
+    the document's content-addressed key and scanned again. 'clean' and
+    'infected' verdicts are final — the endpoint replays them unchanged.
+    """
+
+    _require_transfers_write(user)
+    if not _is_valid_uuid(document_id):
+        raise HTTPException(status_code=404, detail="Not found")
+
+    transfer = await _authorize_transfer(user, id)
+    if not transfer:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    try:
+        document = await get_document(transfer, document_id)
+        row, outcome = await rescan_document_file(
+            transfer,
+            document,
+            storage=build_storage(),
+            scanner=build_scanner(),
             user=user,
         )
     except DocumentServiceError as exc:
