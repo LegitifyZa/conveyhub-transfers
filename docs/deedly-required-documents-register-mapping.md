@@ -9,15 +9,20 @@ Optional**.
 Companion to `docs/deedly-document-catalogue-template.md` (the fill-in/import
 contract this register answers) and `docs/deedly-matter-documents-decisions.md`
 §0 ("Required documents — Included in P0 … Dean will supply the approved
-catalogue"). Seed: `src/lib/migrations/027_deedly_document_requirement_rules_seed.sql`
-(PROPOSED, not executed; numbering coordinated Dean → Jordan).
+catalogue"). Proposed seed:
+`docs/proposals/027_deedly_document_requirement_rules_seed.sql` — kept
+outside `src/lib/migrations/` so `scripts/migrate.mjs` (which executes every
+`*.sql` there) cannot pick it up; numbering to be confirmed with Jordan
+before it is ever moved back. Focused per-classification proposal:
+`docs/deedly-required-documents-pt-na-proposal.md`.
 
-**Register caveat preserved:** the workbook describes its matrix as "editable
-proposals, not approved production rules" and marks every "Signature /
-execution needed?" and "Include in P0?" cell **To review**. Per instruction,
-nothing marked To review or deferred is implemented. The Required-level rows
-are seeded as `active` rules on the basis that the register was supplied as
-the validated P0 catalogue; that interpretation is flagged in §7.1.
+**Register caveat preserved — no approval is assumed.** The workbook describes
+its matrix as "editable proposals, not approved production rules" and marks
+every "Signature / execution needed?" and "Include in P0?" cell **To review**.
+The Required level is therefore treated as a *candidate* baseline, not a P0
+approval: **migration 027 is review content pending the team's validated P0
+selections** and must not be executed or merged until they arrive. Nothing
+marked To review or deferred is implemented.
 
 ---
 
@@ -58,21 +63,22 @@ classification matches) and **conditional** on the fixed vocabulary
 `has_bond` / `cash_purchase`. There is no Optional level, no stage, no
 per-party scope, and no free-text trigger.
 
-| Register level | Engine mapping | Seeded? |
+| Register level | Engine mapping | Proposed for seed? |
 |---|---|---|
-| Required | Baseline rule, `condition_key NULL`, one row per classification | **Yes — 222 cells → 120 rules** |
+| Required | Baseline rule, `condition_key NULL`, one row per classification | **Proposed — 222 cells → 222 rules** |
 | Conditional | Would need `condition_key` + a stored fact. Register triggers are prose; none map to `has_bond`/`cash_purchase` cleanly | **No — see §4.1** |
 | Optional | No "suggested but ungated" state exists | No — docs stay addable free-form by name |
 | Not applicable | Absence of a rule | No rows (correct by construction) |
 
-### 2.1 Seeded set (migration 027)
+### 2.1 Proposed set (`docs/proposals/027_…` — review artifact, pending P0 selections)
 
-- 6 documents Required on all 18 classifications → one `'*'` wildcard rule
-  each: DOC-001 Identity document/passport, DOC-033 FICA questionnaire,
-  DOC-041 Transfer cost quotation, DOC-053 Existing title deed, DOC-054 Deeds
-  search report, DOC-082 Confirmed registration record.
-- 114 classification-scoped rules for the remaining Required cells.
-- `rule_key` = `doc-NNN.{classification_code|'*'}` — encodes both the register
+- One rule per Required cell: **222 rows**, each scoped to an explicit
+  canonical `classification_code`. **No `'*'` wildcards** — a wildcard would
+  extend requirements to `transfer.generic` and any future classification the
+  register never reviewed. The six documents Required on all 18
+  classifications (DOC-001, DOC-033, DOC-041, DOC-053, DOC-054, DOC-082) are
+  seeded as 18 explicit rows each.
+- `rule_key` = `doc-NNN.{classification_code}` — encodes both the register
   document identity and the rule scope; stable and never reused.
 - `sequence_number` = register DOC number (display order only — not a stage).
 - Idempotent upsert on `rule_key` per the proposed import contract (template
@@ -80,13 +86,13 @@ per-party scope, and no free-text trigger.
   `sequence_number` refreshed; a `rule_key` reused for a different
   requirement is a review conflict, not a rename.
 
-Per-classification active baseline counts after seeding (including the 6
-wildcard rules): Private Treaty — NA 12, Sectional Title Register 13,
-Township Register 12, Extension of Scheme 13, Subdivision (PT) 12, Bulk
-Transfer 13, Auction 12, Sale in Execution 14, Property in Possession 12,
-Deceased Estate — Inheritance 15, Deceased Estate — Sale 15, Endorsement s45
-13, Endorsement s45bis 9, Donation 14, New Sectional Title Register 12, New
-Township Register 10, Scheme Extension 11, Subdivision (dev) 10.
+Per-classification baseline counts in the proposal: Private Treaty — NA 12,
+Sectional Title Register 13, Township Register 12, Extension of Scheme 13,
+Subdivision (PT) 12, Bulk Transfer 13, Auction 12, Sale in Execution 14,
+Property in Possession 12, Deceased Estate — Inheritance 15, Deceased
+Estate — Sale 15, Endorsement s45 13, Endorsement s45bis 9, Donation 14, New
+Sectional Title Register 12, New Township Register 10, Scheme Extension 11,
+Subdivision (dev) 10.
 
 ## 3. Document-catalogue attribute mapping
 
@@ -183,15 +189,28 @@ receipt, not a screenshot") and basis/source IDs (S01…S16, P01) have no
 columns. Reviewers currently see `display_name` only. Persisting guidance is
 a schema extension — flagged, not improvised into `display_name` strings.
 
-### 4.6 'transfer.generic' coverage
+### 4.6 'transfer.generic' coverage — sharper with explicit scopes
 
-Wildcard rules cover generic-classified matters for the 6 universal
-documents only. A matter on the `transfer.generic` fallback gets no
-subset-Required rules (the register has no generic column) — and because the
-matter *has* a recorded classification, scoped rules are evaluable-but-inapplicable,
-so nothing surfaces `unevaluatedFacts` to warn that the list may be
-incomplete. Options: map generic → a default classification at capture, or
-accept universal-only coverage. Flagged for Dean; no code change made.
+With explicit classification scopes (no `'*'`), a matter on the
+`transfer.generic` fallback matches **zero** rules — its requirement list is
+empty, and because it *has* a recorded classification nothing surfaces
+`unevaluatedFacts` to warn that the list is incomplete. The register has no
+generic column, so there is no validated baseline for generic matters.
+Options for Dean: disallow/resolve `transfer.generic` at capture, add a
+reviewed generic ruleset, or accept an empty baseline with a UI caveat.
+Flagged; no code change made.
+
+### 4.7 Zero applicable rules must not read as readiness
+
+Related to §4.6 and strictly broader: the engine cannot distinguish "rules
+configured, none applicable" from "no rules configured at all". A matter
+with an unsupported or unconfigured classification (`transfer.generic`, a
+future code, or any classification whose rule set was never approved) must
+present **"Requirements not configured"** — an explicit unknown state —
+rather than an empty requirement list that reads as a successful
+completeness result. Zero applicable rules is an absence of configuration,
+not evidence that nothing is required. The API/UI distinction is a required
+piece of the vocabulary/schema review; not implemented.
 
 ## 5. Conflicts — where the register and existing structure disagree
 
@@ -227,12 +246,13 @@ accept universal-only coverage. Flagged for Dean; no code change made.
    DOC-086 is the court-order row — likely a stale cross-reference; noted,
    no impact on seeding.
 
-6. **Register self-describes as "editable proposals".** The user instruction
-   treats it as validated; seeded rules are `active` accordingly. Any future
-   level change needs a `retired` transition — and retirement semantics for
-   outstanding instances are **unresolved** (template §3.2: retired rules
-   leave instances untouched — do not exercise retirement before that is
-   decided).
+6. **Register self-describes as "editable proposals".** No P0 approval is
+   inferred from the Required level (§7.1). The proposed rows would enter as
+   `active` *if* approved — until then they are unexecuted review content.
+   Any future level change needs a `retired` transition — and retirement
+   semantics for outstanding instances are **unresolved** (template §3.2:
+   retired rules leave instances untouched — do not exercise retirement
+   before that is decided).
 
 ## 6. What was intentionally not extended
 
@@ -258,26 +278,55 @@ accept universal-only coverage. Flagged for Dean; no code change made.
    stage, trigger, evidence, scope, version or doc_code all need Dean →
    Jordan schema work (open items in template §5).
 
-## 7. Interpretation flags for review
+## 7. Open items for review
 
-1. **P0 inclusion.** Every register row marks "Include in P0? = To review".
-   This seed treats the *Required level* as the agreed P0 baseline (the only
-   level that produces a real gate and the only implementable slice). If the
-   intended P0 set is narrower — e.g. only the 6 universal documents, or
-   per-classification subsets pending Louis's sign-off — the seed should be
-   reduced before execution; it is a VALUES list, trivially pruned.
+1. **P0 selection pending.** Every register row marks "Include in P0? = To
+   review" — Required is a *candidate* baseline, not an approved P0 set. The
+   seed file is review content only: it must not execute or merge until the
+   team's validated P0 selections arrive. Once confirmed, the approved subset
+   is pruned from the same VALUES list (explicit scopes only).
 
-2. **Wildcard for universal documents.** `'*'` covers the 18 named
-   classifications plus `transfer.generic` and any future code — a small,
-   deliberate extension beyond the register's literal 18 columns. Explicit
-   18-row seeding is the conservative alternative.
+2. **Explicit scopes, no wildcard.** Universal documents are seeded as 18
+   explicit classification rows; `'*'` is deliberately unused so no
+   requirement can extend to unreviewed classifications (incl.
+   `transfer.generic` — see §4.6).
 
 3. **Migration number 027** assumed free (024/026 reserved on the property
-   branch, 025 on this branch). Coordinated through Dean → Jordan.
+   branch, 025 on this branch) — **confirm with Jordan before moving the
+   proposal back under `src/lib/migrations/`**.
 
-4. **Requirement instances on existing matters** appear only on
+4. **PostgreSQL-backed tests — now run, non-destructively.**
+   `python_server/tests/test_document_requirement_rules_seed_proposal.py`
+   (17 tests, incl. 3 DB cases: insert count, idempotent re-run, canonical
+   classification coverage) passes 17/17 against a scratch database
+   `deedly_proposal_test` on the Neon test branch, with the proposal SQL
+   applied inside rolled-back transactions — `document_requirement_rules`
+   is empty afterwards and the ledger has no 027 row. A static guard test
+   asserts no `document_requirement_rules_seed` file exists under
+   `src/lib/migrations/`, so `scripts/migrate.mjs` cannot execute the
+   proposal. Note: the provided `neondb` branch itself holds the legacy
+   all-`public` layout (no `transfers` schema) and an empty ledger — it
+   predates the schema split and cannot host these tests.
+
+5. **Database exposure flag — commit `a24cdc3`.** That commit placed an
+   earlier version of this seed (120 rules including six `'*'` wildcard
+   scopes) at `src/lib/migrations/027_deedly_document_requirement_rules_seed.sql`.
+   Any database that executed it carries a
+   `public.transfers_schema_migrations` ledger row for that filename plus
+   **unapproved** rules — including wildcard rules that attach documents to
+   `transfer.generic` and future classifications. Such a database is
+   flagged: reset or reconcile it under the approved P0 seed before
+   reliance; its `document_requirement_rules` content is not a baseline.
+   The Neon test branch (`ep-lucky-sun-awl88y3n`) was checked before use —
+   no ledger, no rules table — and is therefore unexposed.
+
+6. **Requirement instances on existing matters** appear only on
    `POST …/requirements/recalculate` — seeding rules does not retro-create
    instances; that is engine behaviour, not a seed gap.
+
+7. **Retirement semantics unresolved** (template §3.2): `status='retired'`
+   leaves existing instances untouched. No retirement may be exercised before
+   Dean/Louis decide the intended end-state for outstanding requirements.
 
 ## 8. Source register digest (per-document metadata not persisted in DB)
 

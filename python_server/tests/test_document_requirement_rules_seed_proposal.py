@@ -3,7 +3,15 @@ import re
 import unittest
 
 
-MIGRATION = "027_deedly_document_requirement_rules_seed.sql"
+# The proposed seed content for transfers.document_requirement_rules lives
+# OUTSIDE src/lib/migrations/ — scripts/migrate.mjs executes every *.sql file
+# under that directory, so the proposal is unreachable by the runner until
+# the team's validated P0 selections arrive and it is deliberately moved back
+# under an approved migration number.
+PROPOSAL = os.path.join(
+    "docs", "proposals", "027_deedly_document_requirement_rules_seed.sql"
+)
+MIGRATIONS_DIR = os.path.join("src", "lib", "migrations")
 
 # The 18 selectable classifications (migrations 015 + 020) the register maps to.
 CANONICAL_CLASSIFICATIONS = {
@@ -33,12 +41,14 @@ VALUE_ROW = re.compile(
 )
 
 
-def _load_migration() -> str:
-    root = os.path.dirname(
+def _repo_root() -> str:
+    return os.path.dirname(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     )
-    path = os.path.join(root, "src", "lib", "migrations", MIGRATION)
-    with open(path, "r", encoding="utf-8") as f:
+
+
+def _load_proposal() -> str:
+    with open(os.path.join(_repo_root(), PROPOSAL), "r", encoding="utf-8") as f:
         return f.read()
 
 
@@ -46,76 +56,92 @@ def _value_rows(sql: str):
     return VALUE_ROW.findall(sql)
 
 
-class Migration027StaticTests(unittest.TestCase):
-    def test_migration_file_exists(self):
-        sql = _load_migration()
+class ProposalStaticTests(unittest.TestCase):
+    def test_proposal_file_exists(self):
+        sql = _load_proposal()
         self.assertIn("027", sql)
         self.assertIn("document_requirement_rules", sql)
 
+    def test_seed_not_in_executable_migrations_dir(self):
+        # migrate.mjs runs every *.sql under src/lib/migrations/ — the
+        # unapproved seed must not exist there in any form, or a routine
+        # migration run would install proposal rules as production data.
+        migrations_dir = os.path.join(_repo_root(), MIGRATIONS_DIR)
+        offenders = [
+            name
+            for name in os.listdir(migrations_dir)
+            if name.endswith(".sql")
+            and "document_requirement_rules_seed" in name
+        ]
+        self.assertEqual(offenders, [])
+
     def test_transactional(self):
-        sql = _load_migration().upper()
+        sql = _load_proposal().upper()
         self.assertIn("BEGIN", sql)
         self.assertIn("COMMIT", sql)
 
     def test_targets_transfers_schema(self):
-        sql = _load_migration()
+        sql = _load_proposal()
         self.assertIn("SET LOCAL search_path TO transfers, public", sql)
         self.assertIn("transfers.document_requirement_rules", sql)
 
     def test_idempotent_upsert_on_rule_key(self):
-        sql = _load_migration()
+        sql = _load_proposal()
         self.assertIn("ON CONFLICT (rule_key) DO UPDATE", sql)
 
-    def test_rule_count_is_120(self):
-        rows = _value_rows(_load_migration())
-        self.assertEqual(len(rows), 120)
+    def test_rule_count_is_222(self):
+        rows = _value_rows(_load_proposal())
+        self.assertEqual(len(rows), 222)
 
-    def test_only_baseline_rules_seeded(self):
+    def test_only_baseline_rules_proposed(self):
         # Conditional register cells require an approved condition vocabulary;
-        # every seeded rule must have condition_key NULL (baseline).
-        for rule_key, _name, _cc, condition_key, _seq in _value_rows(_load_migration()):
+        # every proposed rule must have condition_key NULL (baseline).
+        for rule_key, _name, _cc, condition_key, _seq in _value_rows(
+            _load_proposal()
+        ):
             self.assertEqual(condition_key, "NULL", rule_key)
 
-    def test_no_conditional_vocabulary_seeded(self):
-        sql = _load_migration()
+    def test_no_conditional_vocabulary_proposed(self):
+        sql = _load_proposal()
         for key in ("has_bond", "cash_purchase"):
             self.assertNotIn(f"'{key}'", sql)
 
-    def test_seeded_classifications_are_canonical_or_wildcard(self):
-        for rule_key, _name, cc, _cond, _seq in _value_rows(_load_migration()):
-            if cc == "*":
-                continue
+    def test_no_wildcard_scopes(self):
+        # Explicit classification scopes only — '*' would extend requirements
+        # to 'transfer.generic' and unreviewed future classifications.
+        for rule_key, _name, cc, _cond, _seq in _value_rows(_load_proposal()):
+            self.assertNotEqual(cc, "*", rule_key)
+
+    def test_proposed_classifications_are_canonical(self):
+        for rule_key, _name, cc, _cond, _seq in _value_rows(_load_proposal()):
             self.assertIn(cc, CANONICAL_CLASSIFICATIONS, rule_key)
 
     def test_rule_key_encodes_doc_and_scope(self):
-        for rule_key, _name, cc, _cond, _seq in _value_rows(_load_migration()):
+        for rule_key, _name, cc, _cond, _seq in _value_rows(_load_proposal()):
             self.assertRegex(rule_key, r"^doc-\d{3}\.", rule_key)
             self.assertTrue(
                 rule_key.endswith(f".{cc}"), f"{rule_key} does not encode scope {cc}"
             )
 
-    def test_universal_documents_use_wildcard(self):
-        wildcard = {
-            rk for rk, _n, cc, _c, _s in _value_rows(_load_migration()) if cc == "*"
-        }
-        self.assertEqual(
-            wildcard,
-            {
-                "doc-001.*",
-                "doc-033.*",
-                "doc-041.*",
-                "doc-053.*",
-                "doc-054.*",
-                "doc-082.*",
-            },
-        )
+    def test_universal_documents_cover_all_18_classifications(self):
+        # Documents Required on every register classification produce one
+        # explicit rule per canonical code — never a wildcard.
+        by_doc = {}
+        for rk, _n, cc, _c, seq in _value_rows(_load_proposal()):
+            by_doc.setdefault(int(seq), set()).add(cc)
+        for doc_no in (1, 33, 41, 53, 54, 82):
+            self.assertEqual(
+                by_doc.get(doc_no),
+                CANONICAL_CLASSIFICATIONS,
+                f"doc-{doc_no:03d} coverage",
+            )
 
-    def test_no_retired_rules_seeded(self):
-        sql = _load_migration()
+    def test_no_retired_rules_proposed(self):
+        sql = _load_proposal()
         self.assertNotIn("'retired'", sql)
 
     def test_does_not_touch_legacy_catalogue_structures(self):
-        sql = _load_migration().lower()
+        sql = _load_proposal().lower()
         self.assertEqual(sql.count("insert into"), 1)
         for forbidden in (
             "insert into public.document_catalogue",
@@ -127,7 +153,12 @@ class Migration027StaticTests(unittest.TestCase):
 
 
 @unittest.skipUnless(os.getenv("TEST_DATABASE_URL"), "TEST_DATABASE_URL not configured")
-class Migration027DbIntegrationTests(unittest.IsolatedAsyncioTestCase):
+class ProposalDbIntegrationTests(unittest.IsolatedAsyncioTestCase):
+    """Run the proposal SQL against a test database inside rolled-back
+    transactions. These verify the content applies cleanly to the real
+    schema — they do NOT approve or persist the proposal (the transaction
+    always rolls back)."""
+
     @classmethod
     def setUpClass(cls):
         import tests.db_test_utils as db_test_utils
@@ -154,18 +185,18 @@ class Migration027DbIntegrationTests(unittest.IsolatedAsyncioTestCase):
         ]
         return "\n".join(filtered)
 
-    async def _run_migration_on_connection(self, conn):
+    async def _run_proposal_on_connection(self, conn):
         from db import query
 
-        sql = self._strip_transaction_boundaries(_load_migration())
+        sql = self._strip_transaction_boundaries(_load_proposal())
         await query(sql, connection=conn)
 
-    async def test_027_seeds_120_active_baseline_rules(self):
+    async def test_proposal_inserts_222_active_baseline_rules(self):
         from db import query
         from tests.db_test_utils import with_test_transaction
 
         async def _verify(conn):
-            await self._run_migration_on_connection(conn)
+            await self._run_proposal_on_connection(conn)
             result = await query(
                 """
                 SELECT COUNT(*) AS total
@@ -174,17 +205,17 @@ class Migration027DbIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 """,
                 connection=conn,
             )
-            self.assertEqual(int(result.rows[0]["total"]), 120)
+            self.assertEqual(int(result.rows[0]["total"]), 222)
 
         await with_test_transaction(_verify)
 
-    async def test_027_is_idempotent(self):
+    async def test_proposal_is_idempotent(self):
         from db import query
         from tests.db_test_utils import with_test_transaction
 
         async def _verify(conn):
-            await self._run_migration_on_connection(conn)
-            await self._run_migration_on_connection(conn)
+            await self._run_proposal_on_connection(conn)
+            await self._run_proposal_on_connection(conn)
             result = await query(
                 """
                 SELECT COUNT(*) AS total
@@ -192,16 +223,16 @@ class Migration027DbIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 """,
                 connection=conn,
             )
-            self.assertEqual(int(result.rows[0]["total"]), 120)
+            self.assertEqual(int(result.rows[0]["total"]), 222)
 
         await with_test_transaction(_verify)
 
-    async def test_027_seeded_classifications_exist(self):
+    async def test_proposed_classifications_exist(self):
         from db import query
         from tests.db_test_utils import with_test_transaction
 
         async def _verify(conn):
-            await self._run_migration_on_connection(conn)
+            await self._run_proposal_on_connection(conn)
             result = await query(
                 """
                 SELECT DISTINCT r.classification_code

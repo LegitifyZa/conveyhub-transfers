@@ -541,21 +541,34 @@ python -m pytest -q -rs -p no:cacheprovider tests/test_transfer_party_postgres.p
 Configure the isolated DSN securely and set the opt-in flag only after the above
 specific approval. Skipped PostgreSQL cases are a P0 prerequisite, not certification.
 
-## Document requirement rules — register seed (migration 027, PROPOSED)
+## Document requirement rules — register seed (proposal, NOT a migration)
 
-`transfers.document_requirement_rules` is seeded by
-`src/lib/migrations/027_deedly_document_requirement_rules_seed.sql` from the
-validated Required Documents Register (86 document types x 18 classifications;
-`docs/deedly-required-documents-register-mapping.md` holds the full mapping and
-gap report). Only register **Required** cells are seeded — 120 baseline rules
-(`condition_key NULL`): six `'*'` wildcard rules for documents Required on all
-18 classifications plus one row per (doc, classification) for the rest.
+`docs/proposals/027_deedly_document_requirement_rules_seed.sql` proposes
+seed content for `transfers.document_requirement_rules` derived from the
+Required Documents Register (86 document types x 18 classifications). It is a
+**review artifact — not a migration**: it deliberately lives outside
+`src/lib/migrations/` because `scripts/migrate.mjs` executes every `*.sql`
+file there. Every register row carries "Include in P0? = To review", so
+Required is a candidate baseline only until the team's validated P0
+selections arrive. Mapping and gaps:
+`docs/deedly-required-documents-register-mapping.md`; focused
+`transfer.private_treaty.not_applicable` proposal with the candidate
+condition vocabulary and P0-demo fact subset:
+`docs/deedly-required-documents-pt-na-proposal.md`.
 
-- **Conditional** cells are deliberately NOT seeded: register triggers are
-  prose and the engine vocabulary is only `has_bond`/`cash_purchase`.
-  Conditional coverage needs an approved condition vocabulary plus stored
-  fact sources first — do not seed unsupported `condition_key` values (they
-  surface as permanently `unevaluatedRules` on every matching matter).
+- 222 proposed rows — one per Required cell — each scoped to an **explicit**
+  canonical `classification_code` (`condition_key NULL` baseline). No `'*'`
+  wildcards: requirements must never extend to unreviewed classifications.
+- **Zero applicable rules is not readiness.** A matter on an unsupported or
+  unconfigured classification (`transfer.generic`, a future code) must show
+  "Requirements not configured" — an empty checklist is not a successful
+  completeness result. Engine/API distinction not yet implemented.
+- **Conditional** cells are deliberately NOT proposed as rules: register
+  triggers are prose and the engine vocabulary is only `has_bond`/
+  `cash_purchase` — unapproved heuristics that also conflate purchaser
+  finance with the seller's existing bond (kept separate in the proposal).
+  Seeding unsupported `condition_key` values surfaces permanently
+  `unevaluatedRules` on every matching matter.
 - **Optional** has no engine level; **Not applicable** is absence of a rule.
 - `public.document_catalogue`, `classification_document_map` and
   `document_catalogue_requirements` are legacy/dead on the live v1 lane and
@@ -565,3 +578,11 @@ gap report). Only register **Required** cells are seeded — 120 baseline rules
 - Register "To review" columns (signature/execution, per-doc P0 flag) and
   "Generate in DEEDLY? = Candidate" are not implemented — no
   `document_templates` rows.
+- **Exposure flag:** any database that ran the `a24cdc3` version of this
+  seed (120 rules, six `'*'` scopes) carries unapproved rules + a ledger row
+  — treat as proposal data, reset/reconcile under the approved seed.
+- PostgreSQL verification already done non-destructively: 17/17 in
+  `python_server/tests/test_document_requirement_rules_seed_proposal.py`
+  against scratch DB `deedly_proposal_test` on the Neon test branch, proposal
+  applied inside rolled-back transactions only. Before any real execution:
+  confirm migration number 027 with Jordan.
