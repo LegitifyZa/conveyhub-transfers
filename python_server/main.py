@@ -10,7 +10,9 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from clients.entities import EntitiesClient
 from config import load_settings
 from db import close_pool, get_pool
+from middleware.upload_size_limit import UploadBodyLimitMiddleware
 from routers import address, clauses, document_catalogue, documents, generated_documents, health, milestones, template_data_fields, transfers, users
+from routers.v1 import documents as v1_documents
 from routers.v1 import golden_records as v1_golden_records
 from routers.v1 import transfers as v1_transfers
 
@@ -51,6 +53,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Byte-counting cap on document upload bodies: refuses chunked/undeclared
+# bodies over the 25 MB limit before the multipart parser can spool them.
+app.add_middleware(UploadBodyLimitMiddleware)
+
 
 @app.middleware("http")
 async def protect_response_boundary(request: Request, call_next):
@@ -66,6 +72,7 @@ app.include_router(health.router, prefix="/api/health")
 app.include_router(transfers.router, prefix="/api/transfers")
 app.include_router(v1_transfers.router, prefix="/api/v1/transfers")
 app.include_router(v1_golden_records.router, prefix="/api/v1/golden-records")
+app.include_router(v1_documents.router, prefix="/api/v1/documents")
 app.include_router(milestones.router, prefix="/api")
 app.include_router(document_catalogue.router, prefix="/api/catalogue")
 app.include_router(address.router, prefix="/api/address")

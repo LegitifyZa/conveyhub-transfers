@@ -540,3 +540,100 @@ python -m pytest -q -rs -p no:cacheprovider tests/test_transfer_party_postgres.p
 
 Configure the isolated DSN securely and set the opt-in flag only after the above
 specific approval. Skipped PostgreSQL cases are a P0 prerequisite, not certification.
+
+## Document requirement rules — register seed (proposal, NOT a migration)
+
+`docs/proposals/027_deedly_document_requirement_rules_seed.sql` proposes
+seed content for `transfers.document_requirement_rules` derived from the
+Required Documents Register (86 document types x 18 classifications). It is a
+**review artifact — not a migration**: it deliberately lives outside
+`src/lib/migrations/` because `scripts/migrate.mjs` executes every `*.sql`
+file there. Every register row carries "Include in P0? = To review", so
+Required is a candidate baseline only until the team's validated P0
+selections arrive. Mapping and gaps:
+`docs/deedly-required-documents-register-mapping.md`; focused
+`transfer.private_treaty.not_applicable` proposal with the candidate
+condition vocabulary and P0-demo fact subset:
+`docs/deedly-required-documents-pt-na-proposal.md`; per-requirement gap
+assessment (facts/scopes, smallest change, acceptance tests):
+`docs/deedly-required-documents-pt-na-gap-assessment.md`.
+
+- 222 proposed rows — one per Required cell — each scoped to an **explicit**
+  canonical `classification_code` (`condition_key NULL` baseline). No `'*'`
+  wildcards: requirements must never extend to unreviewed classifications.
+- **Zero applicable rules is not readiness — pending, unimplemented.** A
+  matter on an unsupported or unconfigured classification (`transfer.generic`,
+  a future code) must show "Requirements not configured" — an empty
+  checklist is not a successful completeness result. Today the engine
+  returns an empty list; the engine/API distinction is not built and the
+  proposal tests do not establish readiness behaviour.
+- **Conditional** cells are deliberately NOT proposed as rules: register
+  triggers are prose and the engine vocabulary is only `has_bond`/
+  `cash_purchase` — unapproved heuristics that also conflate purchaser
+  finance with the seller's existing bond (kept separate in the proposal).
+  Seeding unsupported `condition_key` values surfaces permanently
+  `unevaluatedRules` on every matching matter.
+- **Optional** has no engine level; **Not applicable** is absence of a rule.
+- `public.document_catalogue`, `classification_document_map` and
+  `document_catalogue_requirements` are legacy/dead on the live v1 lane and
+  are intentionally not seeded — `Active` catalogue rows would re-arm the
+  quarantined per-transfer auto-seed with all 86 documents regardless of
+  classification.
+- Register "To review" columns (signature/execution, per-doc P0 flag) and
+  "Generate in DEEDLY? = Candidate" are not implemented — no
+  `document_templates` rows.
+- **Exposure flag:** any database that ran the `a24cdc3` version of this
+  seed (120 rules, six `'*'` scopes) carries unapproved rules + a ledger row
+  — treat as proposal data, reset/reconcile under the approved seed.
+- PostgreSQL verification ran against a real Neon database — the scratch DB
+  `deedly_proposal_test` on the branch Dean supplied as
+  `deedly-documents-test` (endpoint `ep-lucky-sun-awl88y3n`; branch name as
+  supplied — endpoint-to-branch mapping unconfirmed pending console/API
+  check). No production or shared application database was migrated. 17/17 in
+  `python_server/tests/test_document_requirement_rules_seed_proposal.py`;
+  proposal applied inside rolled-back transactions only (rules table empty
+  afterwards, no 027 ledger row). Before any real execution: confirm
+  migration number 027 with Jordan.
+
+## Matter documents — upload & readback lane
+
+Authenticated staff document lane (`python_server/routers/v1/transfers.py` +
+`documents.py`, BFF proxies in `server/routes/v1/`, service in
+`python_server/services/matter_document_service.py`). Full status:
+`docs/deedly-matter-documents-slice-status.md`.
+
+- Downloadable only when `status='uploaded'` AND `scan_status='clean'` AND a
+  `storage_key` exists; storage/scan/lifecycle states are separate columns.
+  Scanner failure leaves the file unavailable — never released.
+- Upload cap is 25 MB, enforced on declared AND actual bytes at both the BFF
+  (streaming byte-count) and FastAPI (`UploadBodyLimitMiddleware` +
+  `file.read(cap+1)`). Content is magic-byte sniffed (PDF/DOCX/JPG/PNG);
+  DOCX must be a real OOXML package with a `.docx` name.
+- Download: a 5-min HMAC token (`DOCUMENT_TOKEN_SECRET`, falling back to
+  `SECRET_KEY`) scopes the grant, but retrieval RE-AUTHORIZES the caller —
+  valid staff JWT + `transfers:read` + token's institution must match the
+  caller's verified institution, and the document's current parent
+  transfer/matter must still exist in that institution (`EXISTS` check).
+  Token alone releases nothing; state is re-checked at retrieval.
+  `download_link_issued` and `download_retrieved` are separate op-log events.
+- Recovery: same-bytes upload replays, different-bytes conflicts (no
+  replacement), `POST .../documents/{id}/rescan` rescans the stored object
+  after a scanner outage without re-upload. Scanning is owned by a leased
+  attempt (migration 028: `scan_attempt_id` + `scan_attempt_expires_at`) —
+  one atomic claim per document, only the owning attempt may publish, and an
+  expired lease is reclaimable after worker failure. The claim is inside
+  `_scan_and_finalize` so upload, same-bytes retry and rescan share it.
+  Within ownership, `infected` beats a racing `clean`; a delayed
+  `clean`/error never reverses a terminal verdict; the stored object's
+  sha256 is verified before scanning. Real-PostgreSQL concurrency coverage:
+  `tests/test_document_scan_ownership_db.py` (TEST_DATABASE_URL).
+- All rejections and outcomes write `document_operation_log` rows (best
+  effort, stderr alert on failure) — file contents and tokens never logged.
+  This is the internal operational log, NOT platform audit integration:
+  `legitify_auditor`/`AUDIT_DATABASE_URL` remains an outstanding external
+  contract.
+- Missing external contracts fail closed, do not stub them: files-service
+  (`FILES_SERVICE_BASE_URL` unset → error), ClamAV (default scanner is
+  `UnavailableScanner`), platform audit logger (op-log is the stand-in).
+- Client document access is deliberately excluded — list/download deny
+  `is_client`.

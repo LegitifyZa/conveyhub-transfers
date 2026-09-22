@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express'
+import { Transform } from 'node:stream'
 import { query, withTransaction } from '../../db'
 import { requireJwt } from '../../auth/requireJwt'
 import { asyncHandler } from '../../utils/asyncHandler'
@@ -148,9 +149,24 @@ function mapTransferDocument(row: any) {
     fileSize: row.file_size,
     fileType: row.file_type,
     originalFileName: row.original_file_name,
+    requirementKey: row.requirement_key ?? null,
+    scanStatus: row.scan_status ?? null,
     uploadedAt: row.uploaded_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  }
+}
+
+function mapDocumentRequirement(row: any) {
+  return {
+    id: row.id,
+    requirementKey: row.requirement_key,
+    displayName: row.display_name,
+    source: row.source,
+    conditionKey: row.condition_key,
+    status: row.status,
+    satisfiedDocumentId: row.satisfied_document_id ?? null,
+    linkedDocumentId: row.linked_document_id ?? null,
   }
 }
 
@@ -209,7 +225,7 @@ const isUuid = (value: string): boolean => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-
 const SELECT_TRANSFER_COLUMNS = `
   SELECT t.id, t.transfer_id, t.matter_id, t.property_address, t.purchase_price, t.status,
          t.current_step, t.total_steps, t.progress, t.created_at, t.updated_at,
-         t.updated_at::text AS updated_at_text
+         t.updated_at::text AS updated_at_text, t.accountable_institution_id
 `
 
 // All callers are scoped to their verified institution — there is no
@@ -429,6 +445,57 @@ router.get(
   })
 )
 
+// Transfer activity feed — milestone_history joined through the same
+// verified transfer→matter relationship as the milestones route.
+router.get(
+  '/:id/activity',
+  requireJwt,
+  asyncHandler(async (req: Request, res: Response) => {
+    const user = req.currentUser!
+    const { id } = req.params
+
+    if (user.isClient) {
+      res.status(404).json({ success: false, error: 'Not found' })
+      return
+    }
+
+    if (!user.hasAbility('transfers:read')) {
+      res.status(403).json({ success: false, error: 'Forbidden' })
+      return
+    }
+
+    const transfer = await authorizeTransfer(user, id)
+    if (!transfer) {
+      res.status(404).json({ success: false, error: 'Not found' })
+      return
+    }
+
+    const activityResult = await query(
+      `SELECT mh.id, mh.actor_name, mh.action, mh.change_summary, mh.created_at
+       FROM milestone_history mh
+       JOIN matter_milestones mm ON mm.id = mh.milestone_id
+       JOIN matters m ON m.id = mm.matter_id
+       WHERE m.source_record_id = $1
+         AND m.accountable_institution_id = $2
+       ORDER BY mh.created_at DESC
+       LIMIT 100`,
+      [id, user.accountable_institution_id]
+    )
+
+    res.json({
+      message: 'OK',
+      data: {
+        activity: activityResult.rows.map((row: any) => ({
+          id: row.id,
+          user: row.actor_name,
+          action: row.change_summary || row.action,
+          timestamp: row.created_at,
+        })),
+      },
+    })
+  })
+)
+
 router.get(
   '/:id/documents',
   requireJwt,
@@ -454,21 +521,224 @@ router.get(
       return
     }
 
+    // Metadata-only. storage_key/file_path/file_instance_id are internal and
+    // must never be projected to clients.
     const documentsQuery = `
       SELECT id, transfer_id, catalogue_document_id, name, status, notes,
-             file_size, file_type, original_file_name, uploaded_at, created_at, updated_at
+             file_size, file_type, original_file_name, requirement_key,
+             scan_status, uploaded_at, created_at, updated_at
       FROM transfer_documents
       WHERE transfer_id = $1
       ORDER BY created_at
     `
     const documentsResult = await query(documentsQuery, [id])
 
+    const requirementsResult = await query(
+      `
+      SELECT r.id, r.requirement_key, r.display_name, r.source,
+             r.condition_key, r.status,
+             (SELECT d.id FROM transfer_documents d
+              WHERE d.transfer_id = r.transfer_id
+                AND d.requirement_key = r.requirement_key
+                AND d.status = 'uploaded' AND d.scan_status = 'clean'
+              ORDER BY d.uploaded_at DESC NULLS LAST LIMIT 1) AS satisfied_document_id,
+             (SELECT d.id FROM transfer_documents d
+              WHERE d.transfer_id = r.transfer_id
+                AND d.requirement_key = r.requirement_key
+              ORDER BY d.created_at DESC LIMIT 1) AS linked_document_id
+      FROM transfer_document_requirements r
+      WHERE r.transfer_id = $1 AND r.accountable_institution_id = $2
+      ORDER BY r.applied_at, r.requirement_key
+      `,
+      [id, transfer.accountable_institution_id]
+    )
+
+    // Evaluation flags — mirrors matter_document_service.evaluation_flags so
+    // readback surfaces what could not be decided. A matter with no recorded
+    // classification is visibly unevaluated, never presented as a complete
+    // requirement set. Fact sources are implementation choices pending
+    // Dean's approved rule definitions (tri-state: missing ≠ negative).
+    const matterContext = await query(
+      `SELECT classification_code FROM matters
+       WHERE id = $1 AND accountable_institution_id = $2`,
+      [transfer.matter_id, transfer.accountable_institution_id]
+    )
+    const classificationCode = matterContext.rows[0]?.classification_code ?? null
+    const bondRows = await query(
+      'SELECT 1 AS present FROM bonds WHERE transfer_id = $1 LIMIT 1',
+      [id]
+    )
+    const loanRows = await query(
+      'SELECT loan_amount FROM transfer_financials WHERE transfer_id = $1 LIMIT 1',
+      [id]
+    )
+    let hasBond: boolean | null = null
+    if (bondRows.rows.length > 0) {
+      hasBond = true
+    } else if (loanRows.rows.length > 0 && loanRows.rows[0].loan_amount !== null) {
+      hasBond = Number(loanRows.rows[0].loan_amount) > 0
+    }
+
+    const rulesResult = await query(
+      `SELECT rule_key, classification_code, condition_key
+       FROM document_requirement_rules WHERE status = 'active'`,
+      []
+    )
+    const SUPPORTED_CONDITIONS = new Set(['has_bond', 'cash_purchase'])
+    const ruleEvaluable = (rule: {
+      classification_code: string | null
+      condition_key: string | null
+    }) => {
+      const cls = rule.classification_code
+      if (cls && cls !== '*' && classificationCode === null) return false
+      const cond = rule.condition_key
+      if (cond === null) return true
+      if (!SUPPORTED_CONDITIONS.has(cond)) return false
+      if ((cond === 'has_bond' || cond === 'cash_purchase') && hasBond === null) return false
+      return true
+    }
+
     res.json({
       message: 'OK',
       data: {
         documents: documentsResult.rows.map(mapTransferDocument),
+        requirements: requirementsResult.rows.map(mapDocumentRequirement),
+        unevaluatedFacts: [
+          ...(classificationCode === null ? ['classification_code'] : []),
+          ...(hasBond === null ? ['has_bond'] : []),
+        ],
+        unevaluatedRules: rulesResult.rows
+          .filter(rule => !ruleEvaluable(rule))
+          .map(rule => ({ ruleKey: rule.rule_key, conditionKey: rule.condition_key })),
       },
     })
+  })
+)
+
+router.post(
+  '/:id/documents',
+  requireJwt,
+  asyncHandler(async (req: Request, res: Response) => {
+    await proxyDeedly(req, res, `/${req.params.id}/documents`, 'POST')
+  })
+)
+
+router.post(
+  '/:id/documents/requirements/recalculate',
+  requireJwt,
+  asyncHandler(async (req: Request, res: Response) => {
+    await proxyDeedly(req, res, `/${req.params.id}/documents/requirements/recalculate`, 'POST')
+  })
+)
+
+router.post(
+  '/:id/documents/:documentId/rescan',
+  requireJwt,
+  asyncHandler(async (req: Request, res: Response) => {
+    await proxyDeedly(req, res, `/${req.params.id}/documents/${req.params.documentId}/rescan`, 'POST')
+  })
+)
+
+router.post(
+  '/:id/documents/:documentId/download-link',
+  requireJwt,
+  asyncHandler(async (req: Request, res: Response) => {
+    await proxyDeedly(req, res, `/${req.params.id}/documents/${req.params.documentId}/download-link`, 'POST')
+  })
+)
+
+// Multipart file upload: the raw request body is forwarded unchanged to the
+// FastAPI lane (express.json only parses application/json, so the multipart
+// stream is still intact here). Content sniffing, the 25 MB cap, storage and
+// scanning all happen upstream — but a declared oversize body is refused
+// here first so an oversized stream is never proxied.
+const MAX_UPLOAD_BYTES = 25 * 1024 * 1024 + 64 * 1024 // file cap + multipart overhead
+
+router.post(
+  '/:id/documents/:documentId/file',
+  requireJwt,
+  asyncHandler(async (req: Request, res: Response) => {
+    const declared = Number(req.headers['content-length'] || '0')
+    if (declared > MAX_UPLOAD_BYTES) {
+      res.status(413).json({ success: false, error: 'File exceeds the 25 MB limit' })
+      return
+    }
+    const baseUrl = process.env.DEEDLY_API_BASE_URL
+    if (!baseUrl) {
+      res.status(503).json(DEEDLY_UNAVAILABLE)
+      return
+    }
+    // Actual-size guard for chunked/undeclared bodies: count streamed bytes
+    // through a Transform — a missing Content-Length must not proxy an
+    // unbounded body upstream. On overflow the controller aborts the
+    // upstream fetch immediately and the handler answers 413.
+    let received = 0
+    let tooLarge = false
+    const abort = new AbortController()
+    const limited = new Transform({
+      transform(chunk: Buffer, _encoding, callback) {
+        received += chunk.length
+        if (received > MAX_UPLOAD_BYTES) {
+          if (!tooLarge) {
+            tooLarge = true
+            abort.abort()
+          }
+          // Keep draining: the transform drops overflow bytes but continues
+          // reading so the socket stays consumed while the 413 flushes —
+          // stopping reads here would RST the connection mid-response.
+          callback()
+          return
+        }
+        callback(null, chunk)
+      },
+    })
+    limited.on('error', () => {}) // never propagate as an unhandled stream error
+    req.on('error', () => limited.destroy())
+    req.pipe(limited)
+    try {
+      const headers: Record<string, string> = {
+        Authorization: req.headers.authorization as string,
+      }
+      if (req.headers['content-type']) {
+        headers['Content-Type'] = req.headers['content-type']
+      }
+      if (req.headers['content-length']) {
+        headers['Content-Length'] = req.headers['content-length']
+      }
+      const upstream = await fetch(
+        `${baseUrl.replace(/\/+$/, '')}/api/v1/transfers/${req.params.id}/documents/${req.params.documentId}/file`,
+        {
+          method: 'POST',
+          headers,
+          body: limited as unknown as BodyInit,
+          // @ts-expect-error Node fetch requires duplex for stream bodies
+          duplex: 'half',
+          redirect: 'error',
+          signal: AbortSignal.any([abort.signal, AbortSignal.timeout(120_000)]),
+        }
+      )
+      const body = await upstream.text()
+      if (upstream.status >= 500) {
+        res.status(503).json(DEEDLY_UNAVAILABLE)
+        return
+      }
+      const contentType = upstream.headers.get('content-type')
+      if (contentType) {
+        res.setHeader('Content-Type', contentType)
+      }
+      res.status(upstream.status).send(body)
+    } catch {
+      if (res.headersSent) return
+      if (tooLarge) {
+        // The body exceeded the cap mid-stream — refuse it, never proxy.
+        // The socket stays open and keeps draining the remaining body:
+        // closing with inbound data still in flight forces RST, and the
+        // client would see ECONNRESET instead of the 413.
+        res.status(413).json({ success: false, error: 'File exceeds the 25 MB limit' })
+        return
+      }
+      res.status(503).json(DEEDLY_UNAVAILABLE)
+    }
   })
 )
 

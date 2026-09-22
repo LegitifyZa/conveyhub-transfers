@@ -78,7 +78,9 @@ describe('matter persistence gate', () => {
   })
 
   it('does not claim write availability when the list endpoint answers', async () => {
-    respond({ success: true, data: [], pagination: { page: 1, limit: 1, total: 0, totalPages: 0 } })
+    // The real v1 list contract is { message, data: { transfers, pagination } }
+    // — no `success` flag, and `data` is an object, not the array itself.
+    respond({ message: 'OK', data: { transfers: [], pagination: { page: 1, limit: 1, total: 0, totalPages: 0 } } })
     assert.equal(await probeMatterPersistence(), null)
   })
 })

@@ -336,9 +336,9 @@ const TransfersDashboard: React.FC = () => {
                               size="sm"
                               onClick={() => {
                                 if (display.status === 'in_progress') {
-                                  navigate(`/transfers/${display.id}/milestones`)
+                                  navigate(`/transfers/${transfer.id}/milestones`)
                                 } else {
-                                  navigate('/transfers/workflow', { state: { transferId: display.id } })
+                                  navigate('/transfers/workflow', { state: { transferId: transfer.id } })
                                 }
                               }}
                             >

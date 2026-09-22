@@ -32,6 +32,8 @@ class Settings:
     redis_url: str
     audit_database_url: Optional[str]
     jwt_secret: Optional[str] = None
+    document_token_secret: Optional[str] = field(default=None, repr=False)
+    document_link_ttl_seconds: int = 300
     # TEMPORARY: server-controlled tenant for the unauthenticated legacy POST /api/transfers.
     # This bridge is deleted once the legacy write path is retired or JWT auth is added.
     legacy_accountable_institution_id: Optional[int] = None
@@ -90,6 +92,8 @@ def load_settings() -> Settings:
         node_env=node_env,
         secret_key=secret_key,
         jwt_secret=raw_jwt_secret,
+        document_token_secret=os.getenv("DOCUMENT_TOKEN_SECRET"),
+        document_link_ttl_seconds=int(os.getenv("DOCUMENT_LINK_TTL_SECONDS", "300")),
         legitify_api_base_url=os.getenv("LEGITIFY_API_BASE_URL", "http://localhost:8000"),
         redis_url=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
         audit_database_url=os.getenv("AUDIT_DATABASE_URL"),

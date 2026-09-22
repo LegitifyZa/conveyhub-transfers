@@ -71,17 +71,6 @@ interface ServerAggregate {
   nextDueDate?: string
 }
 
-function buildQueryString(filters: TransferFilters): string {
-  const params = new URLSearchParams()
-  if (filters.status) params.set('status', filters.status)
-  if (filters.search) params.set('search', filters.search)
-  if (filters.page) params.set('page', String(filters.page))
-  if (filters.limit) params.set('limit', String(filters.limit))
-  if (filters.sortBy) params.set('sortBy', filters.sortBy)
-  if (filters.sortOrder) params.set('sortOrder', filters.sortOrder)
-  return params.toString()
-}
-
 function isLegacyCreatePayload(data: unknown): data is { property_address: string; purchase_price: number } {
   return Boolean(data && typeof data === 'object' && typeof (data as Record<string, unknown>).property_address === 'string' && typeof (data as Record<string, unknown>).purchase_price === 'number')
 }
@@ -163,7 +152,7 @@ function mapServerDocument(document: ServerDocument): TransferDocument {
 function fromServerAggregate(server: ServerAggregate): TransferAggregate {
   const property = server.property || {}
   const financials = server.financials || {}
-  const status = server.status === 'completed' ? 'completed' : server.status === 'in_progress' ? 'in_progress' : 'draft'
+  const status = server.status === 'completed' || server.status === 'complete' ? 'completed' : server.status === 'in_progress' ? 'in_progress' : 'draft'
   return {
     id: server.id,
     transfer_id: server.transferId || server.transfer_id,
@@ -218,16 +207,43 @@ function fromServerAggregate(server: ServerAggregate): TransferAggregate {
   }
 }
 
+/** v1 list/detail endpoints return the upstream `{message, data}` envelope
+ * rather than `{success, data}` — map explicitly instead of trusting
+ * `response.success`. */
+interface V1ListData {
+  transfers?: ServerAggregate[]
+  pagination?: PaginatedResponse<TransferAggregate>['pagination']
+}
+
 export class TransferApi {
   static async getTransfers(filters: TransferFilters = {}): Promise<PaginatedResponse<TransferAggregate>> {
-    const qs = buildQueryString(filters)
-    const response = await apiRequest<PaginatedResponse<ServerAggregate>>(`/api/transfers${qs ? `?${qs}` : ''}`)
-    return { ...response, data: (response.data || []).map(fromServerAggregate) }
+    // The v1 list supports page/limit/sort only — status is applied
+    // client-side on the returned page.
+    const params = new URLSearchParams()
+    if (filters.page) params.set('page', String(filters.page))
+    if (filters.limit) params.set('limit', String(filters.limit))
+    if (filters.sortBy) params.set('sortBy', filters.sortBy)
+    if (filters.sortOrder) params.set('sortOrder', filters.sortOrder)
+    const qs = params.toString()
+    const envelope = await apiRequest<{ message?: string; data?: V1ListData }>(`/api/v1/transfers${qs ? `?${qs}` : ''}`)
+    const rows = envelope.data?.transfers ?? []
+    const mapped = rows.map(fromServerAggregate)
+    const filtered = filters.status ? mapped.filter(t => t.status === filters.status) : mapped
+    return {
+      success: true,
+      data: filtered,
+      pagination: envelope.data?.pagination ?? {
+        page: filters.page ?? 1,
+        limit: filters.limit ?? 10,
+        total: filtered.length,
+        totalPages: 1
+      }
+    }
   }
 
   static async getTransfer(id: string): Promise<ApiResponse<TransferAggregate>> {
-    const response = await apiRequest<ApiResponse<ServerAggregate>>(`/api/transfers/${id}`)
-    return { ...response, data: response.data ? fromServerAggregate(response.data) : undefined }
+    const envelope = await apiRequest<{ message?: string; data?: ServerAggregate }>(`/api/v1/transfers/${id}`)
+    return { success: true, message: envelope.message, data: envelope.data ? fromServerAggregate(envelope.data) : undefined }
   }
 
   static async createTransfer(data: Partial<TransferAggregate> | { property_address: string; purchase_price: number }): Promise<ApiResponse<TransferAggregate>> {
@@ -296,7 +312,8 @@ export class TransferApi {
   }
 
   static async getMilestones(id: string): Promise<ApiResponse<Milestone[]>> {
-    return apiRequest(`/api/transfers/${id}/milestones`)
+    const envelope = await apiRequest<{ message?: string; data?: { milestones?: Milestone[] } }>(`/api/v1/transfers/${id}/milestones`)
+    return { success: true, message: envelope.message, data: envelope.data?.milestones ?? [] }
   }
 
   static async updateMilestones(id: string, milestones: Milestone[]): Promise<ApiResponse<Milestone[]>> {
@@ -304,7 +321,8 @@ export class TransferApi {
   }
 
   static async getActivity(id: string): Promise<ApiResponse<AuditEntry[]>> {
-    return apiRequest(`/api/transfers/${id}/activity`)
+    const envelope = await apiRequest<{ message?: string; data?: { activity?: AuditEntry[] } }>(`/api/v1/transfers/${id}/activity`)
+    return { success: true, message: envelope.message, data: envelope.data?.activity ?? [] }
   }
 
   // ---- Authenticated v1 matter + party lane (BFF → FastAPI) ----
@@ -312,7 +330,7 @@ export class TransferApi {
   /** Idempotent matter creation. `clientRequestId` must be stable across retries
    * so a repeated request resolves to the same matter rather than duplicating it. */
   static async createMatter(request: CreateMatterRequest): Promise<ApiResponse<MatterCreated>> {
-    return apiRequest('/api/v1/transfers/', { method: 'POST', body: request })
+    return apiRequest('/api/v1/transfers', { method: 'POST', body: request })
   }
 
   /** Attach one party (manual natural person or existing Golden Record). */

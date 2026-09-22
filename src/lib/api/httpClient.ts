@@ -15,6 +15,9 @@ export interface ApiRequestOptions {
   credentials?: RequestCredentials
   mode?: RequestMode
   cache?: RequestCache
+  // Return the raw Response instead of parsing JSON — for binary downloads
+  // and other non-envelope endpoints. Refresh-and-retry still applies.
+  rawResponse?: boolean
 }
 
 export class ApiRequestError extends Error {
@@ -101,5 +104,8 @@ export async function apiRequest<T>(path: string, options: ApiRequestOptions = {
     throw new ApiRequestError(response.status, `${response.status} ${response.statusText}: ${text}`)
   }
 
+  if (options.rawResponse) {
+    return response as unknown as T
+  }
   return response.json() as Promise<T>
 }
