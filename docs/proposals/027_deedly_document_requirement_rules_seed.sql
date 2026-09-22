@@ -5,12 +5,22 @@
 -- docs/proposals/, NOT src/lib/migrations/: scripts/migrate.mjs executes
 -- every *.sql under src/lib/migrations/, so this content is unreachable by
 -- the migration runner by design. It must not be moved back, executed
--- against any database, or merged as a migration until the team's validated
--- P0 selections are confirmed. Every row below is a proposal, not an
--- approved rule: the register's Required level is a research recommendation,
--- and every register row still carries "Include in P0? = To review". Treat
--- Required as a *candidate* baseline — the approved subset is what gets
--- executed.
+-- against any database, or merged as a migration until the migration
+-- number is confirmed with Jordan and the team approves execution.
+--
+-- P0 selection status (register dated 21 September 2026, updated review
+-- pass): "Include in P0?" = Yes on all 86 rows and "Your final level" =
+-- Required on all 86 rows — the confirmed P0 document set. The
+-- requirements matrix itself is unchanged (222 Required / 825 Conditional
+-- / 473 Not applicable / 28 Optional cells).
+--
+-- INTERPRETATION — confirmed by the team: "Your final level = Required"
+-- means required WHERE APPLICABLE. The matrix remains the
+-- per-classification applicability map: Conditional cells stay
+-- trigger-gated (blocked on the approved condition vocabulary), and
+-- Optional cells stay Optional — each Optional -> Required upgrade needs
+-- its own explicit approval before it is seeded. This seed therefore
+-- covers Required cells only (222 rows).
 --
 -- EXPOSURE FLAG — databases that ran the earlier version of this file:
 --   Commit a24cdc3 first committed this seed at
@@ -69,24 +79,32 @@
 --     only attach to classifications the team has validated.
 --
 --   NOT PROPOSED — engine cannot express them today (mapping doc §4):
---     - "Conditional" cells (825): register triggers are prose and the engine
+--     - "Conditional" cells (825): confirmed P0 documents whose applicability
+--       is trigger-gated. Register triggers are prose and the engine
 --       vocabulary is limited to has_bond/cash_purchase, neither of which
 --       matches a register trigger cleanly — and purchaser finance vs the
 --       seller's existing bond are different facts (see the focused proposal
 --       for the minimal vocabulary). Seeding an unsupported condition_key
 --       would manufacture permanently-unevaluated rules on every matching
 --       matter — the import contract in
---       docs/deedly-document-catalogue-template.md §3.2 rejects that.
---     - "Optional" cells (28): no "suggested but not gated" requirement
---       state exists; optional documents remain addable free-form by name.
+--       docs/deedly-document-catalogue-template.md §3.2 rejects that. These
+--       cells are now APPROVED for P0, so the vocabulary/fact-source work is
+--       the blocking path to full coverage.
+--     - "Optional" cells (28): stay Optional — the confirmed final level
+--       means "required where applicable", and each Optional -> Required
+--       upgrade needs its own explicit approval. No "suggested but not
+--       gated" state exists in the engine anyway; optional documents remain
+--       addable free-form by name.
 --     - "Not applicable" cells (473): absence of a rule, not a record.
 --     - Register columns with no engine field: category, origin/collection
 --       route, applies-to-party (per-party scope unsupported), due stage
 --       (no stage/gate concept — sequence_number is display order only),
 --       accepted-evidence/alternative text, signature/execution flag
---       (all "To review"), "Generate in DEEDLY?" candidate flag (unverified
---       capability — no document_templates rows created), per-doc
---       "Include in P0?" flag (all "To review"), rule version.
+--       (now decided — 19 Yes / 67 No — but with no DB column; the
+--       signature decision does not approve e-sign integration),
+--       "Generate in DEEDLY?" candidate flag (unverified capability — no
+--       document_templates rows created), per-doc "Include in P0?" flag
+--       (now all Yes), rule version.
 --
 --   NOT TOUCHED — parallel legacy structures (mapping doc §6):
 --     public.document_catalogue, classification_document_map and

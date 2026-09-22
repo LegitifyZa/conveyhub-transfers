@@ -1,17 +1,28 @@
 # Focused proposal — `transfer.private_treaty.not_applicable` document requirements
 
-**Status: PROPOSAL for review — nothing here is approved, seeded as a gate, or
-executed.** Companion to `docs/deedly-required-documents-register-mapping.md`
-and the proposed seed in
-`docs/proposals/027_deedly_document_requirement_rules_seed.sql` (deliberately
-outside `src/lib/migrations/` — the migration runner cannot reach it).
+**Status: P0 selection CONFIRMED — execution still pending.** The updated
+register (21 Sep 2026 review pass) marks "Include in P0? = Yes" and
+"Your final level = Required" on all 86 rows. Nothing is seeded, executed
+or merged yet — the seed stays in
+`docs/proposals/027_deedly_document_requirement_rules_seed.sql`
+(deliberately outside `src/lib/migrations/` — the migration runner cannot
+reach it) pending migration-number confirmation with Jordan and execution
+approval. The final-level semantics are confirmed: "Required" means
+required where applicable — Conditional cells stay trigger-gated and
+Optional cells stay Optional pending explicit per-upgrade approval
+(mapping doc §7.1). Companion to
+`docs/deedly-required-documents-register-mapping.md`.
 Source:
 DEEDLY_Required_Documents_Register.xlsx (21 Sep 2026), columns C (level),
-"Rule guidance" (stage / trigger / evidence / review issue).
+"Rule guidance" (stage / trigger / evidence / review issue / final level).
 
 Scope: ordinary private sale with no linked development subtype — the most
 common DEEDLY workflow. Register coverage for this classification:
-**12 Required / 51 Conditional / 1 Optional / 22 Not applicable.**
+**12 Required / 51 Conditional / 1 Optional / 22 Not applicable** — the
+12 Required cells are the seedable baseline rules; the 51 Conditional
+cells are approved P0 documents still blocked on the §3 vocabulary, and
+the Optional cell (DOC-043) stays Optional pending an explicit upgrade
+approval.
 
 ## 1. What the current engine can and cannot represent
 
@@ -115,6 +126,13 @@ facts.** The current `has_bond` / `cash_purchase` heuristics conflate them (a
 the *seller's* title). Neither existing key is reused here.
 
 ### 3.1 Candidate inventory — 35 keys covering all 51 Conditional cells
+
+*(This table is scoped to `transfer.private_treaty.not_applicable`. The
+full-register extension — 48 keys covering all 65 conditional documents /
+825 cells — is proposed in
+`docs/deedly-condition-vocabulary-fact-sources.md` for Dean/Jordan review;
+13 additional keys cover estate, endorsement, development, auction and
+execution routes.)*
 
 | condition_key | Meaning / fact needed | Proposed fact source | Gates |
 |---|---|---|---|
@@ -251,10 +269,14 @@ unchanged:
 
 ## 5. What needs deciding before any of this can seed
 
-1. The P0 selection itself (register "Include in P0?" is all To review).
+1. ~~The P0 selection itself~~ — **confirmed** ("Include in P0?" = Yes on
+   all 86 rows). "Your final level = Required" is confirmed to mean
+   required where applicable: Conditional cells stay trigger-gated,
+   Optional cells stay Optional pending explicit per-upgrade approval.
 2. The §3 vocabulary: key names, composite rules, and each fact's
    authoritative source (Dean) — then engine work to extend
-   `_SUPPORTED_CONDITIONS` + `_load_matter_context`.
+   `_SUPPORTED_CONDITIONS` + `_load_matter_context`. **Now the critical
+   path**: the 51 Conditional documents are confirmed P0.
 3. Where staff-declared facts are captured (matter/party fields or a fact
    checklist) — product decision.
 4. Stage gating / blocking — decisions doc §4 leaves this open; the

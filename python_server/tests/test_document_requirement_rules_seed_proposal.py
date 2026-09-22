@@ -90,6 +90,10 @@ class ProposalStaticTests(unittest.TestCase):
         self.assertIn("ON CONFLICT (rule_key) DO UPDATE", sql)
 
     def test_rule_count_is_222(self):
+        # 222 Required cells only. Optional cells (28) stay unseeded — the
+        # confirmed "Your final level = Required" preserves the matrix, and
+        # each Optional -> Required upgrade needs explicit approval.
+        # Conditional cells remain unseeded pending the vocabulary.
         rows = _value_rows(_load_proposal())
         self.assertEqual(len(rows), 222)
 

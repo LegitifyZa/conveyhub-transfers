@@ -18,13 +18,20 @@ before it is ever moved back. Focused per-classification proposal:
 implementation gap assessment for the same classification:
 `docs/deedly-required-documents-pt-na-gap-assessment.md`.
 
-**Register caveat preserved — no approval is assumed.** The workbook describes
-its matrix as "editable proposals, not approved production rules" and marks
-every "Signature / execution needed?" and "Include in P0?" cell **To review**.
-The Required level is therefore treated as a *candidate* baseline, not a P0
-approval: **migration 027 is review content pending the team's validated P0
-selections** and must not be executed or merged until they arrive. Nothing
-marked To review or deferred is implemented.
+**P0 selection confirmed (updated review pass, 21 Sep 2026).** The updated
+register fills the decision columns: "Include in P0?" = **Yes** on all 86
+rows, "Your final level" = **Required** on all 86 rows, and "Signature /
+execution needed?" is now decided (19 Yes / 67 No). The matrix itself is
+unchanged (222 Required / 825 Conditional / 473 Not applicable / 28
+Optional cells); "Your final rule / decision", "Your notes" and the matrix
+U/V override columns are all empty — no per-row overrides. "Generate in
+DEEDLY?" remains Candidate/No — a capability proposal, not a decision, and
+Sources "Louis to approve" is still empty.
+
+The migration is still **review content**: it must not be executed or
+merged until migration number 027 is confirmed with Jordan and execution
+is approved. See §7.1 for the remaining interpretation flag on what
+"final level = Required" means for Conditional cells.
 
 ---
 
@@ -67,12 +74,12 @@ per-party scope, and no free-text trigger.
 
 | Register level | Engine mapping | Proposed for seed? |
 |---|---|---|
-| Required | Baseline rule, `condition_key NULL`, one row per classification | **Proposed — 222 cells → 222 rules** |
-| Conditional | Would need `condition_key` + a stored fact. Register triggers are prose; none map to `has_bond`/`cash_purchase` cleanly | **No — see §4.1** |
-| Optional | No "suggested but ungated" state exists | No — docs stay addable free-form by name |
+| Required | Baseline rule, `condition_key NULL`, one row per classification | **Approved — 222 cells → 222 rules** |
+| Conditional | Would need `condition_key` + a stored fact. Register triggers are prose; none map to `has_bond`/`cash_purchase` cleanly | **Approved docs, blocked on vocabulary — see §4.1** |
+| Optional | No "suggested but ungated" state exists | **No — stays Optional.** The confirmed final level means "required where applicable"; each Optional → Required upgrade needs its own explicit approval |
 | Not applicable | Absence of a rule | No rows (correct by construction) |
 
-### 2.1 Proposed set (`docs/proposals/027_…` — review artifact, pending P0 selections)
+### 2.1 Proposed set (`docs/proposals/027_…` — review artifact, approved content pending execution sign-off)
 
 - One rule per Required cell: **222 rows**, each scoped to an explicit
   canonical `classification_code`. **No `'*'` wildcards** — a wildcard would
@@ -110,9 +117,9 @@ Register sheet 2 attributes vs `document_requirement_rules` columns:
 | Origin / collection route | — | **Not persisted** — no column |
 | Applies to party | — | **Not persisted** — per-matter engine only (§4.3) |
 | Basis / source (S01…S16, P01) | — | **Not persisted** — no column; kept in this doc/register |
-| Generate in DEEDLY? = "Candidate" | — | **Not implemented** — unverified capability (§7.3) |
-| Signature / execution needed? = "To review" | — | **Not approved** — all 86 rows To review |
-| Include in P0? = "To review" | — | **Not persisted** — see §7.1 interpretation flag |
+| Generate in DEEDLY? = "Candidate" | — | **Not implemented** — unverified capability (§7.3); still a proposal, not a decision |
+| Signature / execution needed? = Yes(19)/No(67) | — | **Confirmed metadata** — decided on all 86 rows; no DB column exists, persistence is a schema question for Jordan |
+| Include in P0? = "Yes" | — | **Confirmed** — all 86 rows approved for P0; not persisted (see §7.1 interpretation flag) |
 | `legal_authority`-equivalent | — | Basis text has no rules-table column (§6.2) |
 
 ## 4. Gaps — engine vs register
@@ -158,6 +165,10 @@ already defines. Until then, seeded unknown keys would produce permanently
 `unevaluatedRules` noise on every matching matter — the import contract
 (template §3.2) explicitly rejects that.
 
+The full vocabulary/fact-source proposal covering all 65 conditional
+documents is `docs/deedly-condition-vocabulary-fact-sources.md` — submitted
+for Dean/Jordan review, unapproved and unimplemented.
+
 ### 4.2 No Optional level
 
 28 cells (e.g. DOC-043 Registration notification everywhere, DOC-058 beetle
@@ -165,7 +176,11 @@ certificate on endorsement/development routes, DOC-060 valuations on
 auction/execution). The engine has only "rule applies / rule doesn't" —
 nothing expresses "available, not required". These documents remain
 collectable free-form via `POST …/documents` by name; they get no checklist
-visibility. A `level`/`requiredness` column is a schema decision.
+visibility. The confirmed "Your final level = Required" does **not**
+auto-upgrade them: the team confirmed it means "required where
+applicable", so each Optional → Required upgrade needs its own explicit
+approval before it can be seeded. A `level`/`requiredness` column is a
+schema decision if Optional is ever to be represented.
 
 ### 4.3 No per-party scope
 
@@ -276,8 +291,10 @@ inside the same vocabulary/schema review; do not claim it covered.
    reads `document_requirement_rules` exclusively.
 
 3. **No `document_templates` rows** — "Generate in DEEDLY? = Candidate" is a
-   template *candidate* flag, explicitly "not verified DEEDLY capability";
-   signature/execution flags are all "To review".
+   template *candidate* flag, explicitly "not verified DEEDLY capability"
+   and still undecided. Signature/execution flags are now decided
+   (19 Yes / 67 No) but have no DB column — persisting them is a schema
+   question for Jordan, not assumed here.
 
 4. **No condition vocabulary invented** — §4.1's fact domains are listed for
    Dean's approval; nothing was coerced into `has_bond`/`cash_purchase`.
@@ -288,11 +305,16 @@ inside the same vocabulary/schema review; do not claim it covered.
 
 ## 7. Open items for review
 
-1. **P0 selection pending.** Every register row marks "Include in P0? = To
-   review" — Required is a *candidate* baseline, not an approved P0 set. The
-   seed file is review content only: it must not execute or merge until the
-   team's validated P0 selections arrive. Once confirmed, the approved subset
-   is pruned from the same VALUES list (explicit scopes only).
+1. **P0 selection confirmed; final-level semantics confirmed.** "Include
+   in P0? = Yes" on all 86 rows approves the document set. "Your final
+   level = Required" is confirmed to mean *required where applicable* —
+   the matrix remains the per-classification applicability map:
+   Conditional cells stay trigger-gated (blocked on the condition
+   vocabulary), Optional cells stay Optional (each Optional → Required
+   upgrade needs its own explicit approval), and N/A cells stay excluded.
+   The seed covers the 222 Required cells only. It must not execute or
+   merge until the migration number is confirmed with Jordan and execution
+   is approved.
 
 2. **Explicit scopes, no wildcard.** Universal documents are seeded as 18
    explicit classification rows; `'*'` is deliberately unused so no
