@@ -49,7 +49,7 @@ function makeApi(t = {}) {
     if (path === '/api/auth/refresh' && method === 'POST') {
       return r.fulfill(json({ message: 'OK', data: { token: 'pw-access-token', expires: Math.floor(Date.now() / 1000) + 3600 } }))
     }
-    if (path === '/api/v1/transfers/' && method === 'GET') {
+    if (path === '/api/v1/transfers' && method === 'GET') {
       // The persistence probe's real contract: {message, data:{transfers:[],
       // pagination}}. probeMalformed simulates the legacy {success:true}
       // envelope the old check wrongly trusted — controls must stay locked.
@@ -289,7 +289,7 @@ await check('scanner unavailable keeps the file undownloadable', async () => {
   await page.locator('input[data-upload-key="doc-1"]').setInputFiles({
     name: 'deed.pdf', mimeType: 'application/pdf', buffer: PDF_BYTES,
   })
-  await page.getByText('Scan unavailable — retry upload').waitFor()
+  await page.getByText('Scan unavailable — retry scan').waitFor()
   assert.equal(await page.getByRole('button', { name: 'Download' }).count(), 0)
   assert.equal(api.calls.downloadLink.length, 0)
   await context.close()
@@ -358,7 +358,7 @@ await check('persistence probe accepts the real {message,data:{transfers}} envel
   // Save Draft / Submit Transfer to unlock.
   const api = makeApi({})
   const { context, page } = await newAuthedPage(api)
-  const probeResponse = page.waitForResponse(r => r.url().includes('/api/v1/transfers/?limit=1'))
+  const probeResponse = page.waitForResponse(r => r.url().includes('/api/v1/transfers?limit=1'))
   await page.goto(`${BASE}/transfers/workflow`)
   await probeResponse
   const save = page.getByRole('button', { name: 'Save Draft' })
@@ -374,7 +374,7 @@ await check('persistence probe accepts the real {message,data:{transfers}} envel
 await check('persistence probe fails closed on a malformed envelope', async () => {
   const api = makeApi({ probeMalformed: true })
   const { context, page } = await newAuthedPage(api)
-  const probeResponse = page.waitForResponse(r => r.url().includes('/api/v1/transfers/?limit=1'))
+  const probeResponse = page.waitForResponse(r => r.url().includes('/api/v1/transfers?limit=1'))
   await page.goto(`${BASE}/transfers/workflow`)
   await probeResponse
   const save = page.getByRole('button', { name: 'Save Draft' })
