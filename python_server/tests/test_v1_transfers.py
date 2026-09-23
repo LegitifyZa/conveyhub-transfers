@@ -139,19 +139,21 @@ class V1TransfersAuthTests(unittest.TestCase):
         self.assertEqual(data["pagination"]["total"], 0)
         self.assertEqual(len(data["transfers"]), 0)
 
-    def test_role_1_super_admin_sees_all(self):
+    def test_role_1_cannot_list_another_institutions_transfers(self):
         r = self.client.get("/api/v1/transfers/", headers=_auth_header(1, 999))
         self.assertEqual(r.status_code, 200)
         data = r.json()["data"]
-        self.assertEqual(data["pagination"]["total"], 8)
-        self.assertEqual(len(data["transfers"]), 8)
+        self.assertEqual(data["pagination"]["total"], 0)
+        self.assertEqual(data["transfers"], [])
 
-    def test_role_6_admin_agent_sees_all(self):
-        r = self.client.get("/api/v1/transfers/", headers=_auth_header(6, 999))
+    def test_role_1_can_list_own_institutions_transfers(self):
+        r = self.client.get("/api/v1/transfers/", headers=_auth_header(1, 5))
         self.assertEqual(r.status_code, 200)
-        data = r.json()["data"]
-        self.assertEqual(data["pagination"]["total"], 8)
-        self.assertEqual(len(data["transfers"]), 8)
+        self.assertEqual(r.json()["data"]["pagination"]["total"], 8)
+
+    def test_retired_role_6_cannot_authenticate(self):
+        r = self.client.get("/api/v1/transfers/", headers=_auth_header(6, 999))
+        self.assertEqual(r.status_code, 401)
 
     def test_client_role_4_sees_0(self):
         r = self.client.get(
@@ -244,17 +246,21 @@ class V1TransferDetailTests(unittest.TestCase):
         r = self.client.get("/api/v1/transfers/not-a-uuid", headers=_auth_header(3, 5))
         self.assertEqual(r.status_code, 404)
 
-    def test_detail_role_1_ok(self):
+    def test_detail_role_1_foreign_institution_404(self):
         transfer_id = self._first_transfer_id()
         r = self.client.get(f"/api/v1/transfers/{transfer_id}", headers=_auth_header(1, 999))
+        self.assertEqual(r.status_code, 404)
+
+    def test_detail_role_1_same_institution_ok(self):
+        transfer_id = self._first_transfer_id()
+        r = self.client.get(f"/api/v1/transfers/{transfer_id}", headers=_auth_header(1, 5))
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["data"]["id"], transfer_id)
 
-    def test_detail_role_6_ok(self):
+    def test_detail_retired_role_6_401(self):
         transfer_id = self._first_transfer_id()
         r = self.client.get(f"/api/v1/transfers/{transfer_id}", headers=_auth_header(6, 999))
-        self.assertEqual(r.status_code, 200)
-        self.assertEqual(r.json()["data"]["id"], transfer_id)
+        self.assertEqual(r.status_code, 401)
 
     def test_detail_missing_ability_403(self):
         transfer_id = self._first_transfer_id()
@@ -288,12 +294,13 @@ class V1TransferDetailTests(unittest.TestCase):
         )
         self.assertEqual(r.status_code, 404)
 
-    def test_legacy_detail_unchanged(self):
+    def test_legacy_detail_requires_auth_and_remains_quarantined(self):
         transfer_id = self._first_transfer_id()
         r = self.client.get(f"/api/transfers/{transfer_id}")
-        self.assertEqual(r.status_code, 200)
-        self.assertIn("success", r.json())
-        self.assertEqual(r.json()["data"]["id"], transfer_id)
+        self.assertEqual(r.status_code, 401)
+        authenticated = self.client.get(f"/api/transfers/{transfer_id}", headers=_auth_header(3, 5))
+        self.assertEqual(authenticated.status_code, 503)
+        self.assertNotIn("data", authenticated.json())
 
 
 from db import query as db_query
@@ -406,17 +413,21 @@ class V1TransferPartiesTests(unittest.TestCase):
         r = self.client.get(f"/api/v1/transfers/{uuid.uuid4()}/parties", headers=_auth_header(3, 5))
         self.assertEqual(r.status_code, 404)
 
-    def test_parties_role_1_ok(self):
+    def test_parties_role_1_foreign_institution_404(self):
         transfer_id = self._first_transfer_id()
         r = self.client.get(f"/api/v1/transfers/{transfer_id}/parties", headers=_auth_header(1, 999))
+        self.assertEqual(r.status_code, 404)
+
+    def test_parties_role_1_same_institution_ok(self):
+        transfer_id = self._first_transfer_id()
+        r = self.client.get(f"/api/v1/transfers/{transfer_id}/parties", headers=_auth_header(1, 5))
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["data"]["parties"], [])
 
-    def test_parties_role_6_ok(self):
+    def test_parties_retired_role_6_401(self):
         transfer_id = self._first_transfer_id()
         r = self.client.get(f"/api/v1/transfers/{transfer_id}/parties", headers=_auth_header(6, 999))
-        self.assertEqual(r.status_code, 200)
-        self.assertEqual(r.json()["data"]["parties"], [])
+        self.assertEqual(r.status_code, 401)
 
     def test_parties_client_no_golden_record_404(self):
         transfer_id = self._first_transfer_id()
@@ -446,12 +457,13 @@ class V1TransferPartiesTests(unittest.TestCase):
             self.assertNotIn("fica", party)
             self.assertNotIn("address", party)
 
-    def test_legacy_parties_unchanged(self):
+    def test_legacy_parties_require_auth_and_remain_quarantined(self):
         transfer_id = self._first_transfer_id()
         r = self.client.get(f"/api/transfers/{transfer_id}/parties")
-        self.assertEqual(r.status_code, 200)
-        self.assertIn("success", r.json())
-        self.assertIn("data", r.json())
+        self.assertEqual(r.status_code, 401)
+        authenticated = self.client.get(f"/api/transfers/{transfer_id}/parties", headers=_auth_header(3, 5))
+        self.assertEqual(authenticated.status_code, 503)
+        self.assertNotIn("data", authenticated.json())
 
 
 class TransferPartiesPolicyTests(unittest.IsolatedAsyncioTestCase):
@@ -638,13 +650,13 @@ class V1TransferMilestonesTests(unittest.TestCase):
         )
         self.assertEqual(r.status_code, 200)
 
-    def test_milestones_role_6_200(self):
+    def test_milestones_retired_role_6_401(self):
         transfer_id = self._first_transfer_id()
         r = self.client.get(
             f"/api/v1/transfers/{transfer_id}/milestones",
             headers={"Authorization": f"Bearer {_token(6, 5)}"},
         )
-        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.status_code, 401)
 
     def test_milestones_missing_ability_403(self):
         transfer_id = self._first_transfer_id()
@@ -748,13 +760,13 @@ class V1TransferDocumentsTests(unittest.TestCase):
         )
         self.assertEqual(r.status_code, 200)
 
-    def test_documents_role_6_200(self):
+    def test_documents_retired_role_6_401(self):
         transfer_id = self._first_transfer_id()
         r = self.client.get(
             f"/api/v1/transfers/{transfer_id}/documents",
             headers={"Authorization": f"Bearer {_token(6, 5)}"},
         )
-        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.status_code, 401)
 
     def test_documents_missing_ability_403(self):
         transfer_id = self._first_transfer_id()
@@ -772,16 +784,14 @@ class V1TransferDocumentsTests(unittest.TestCase):
         )
         self.assertEqual(r.status_code, 404)
 
-    def test_legacy_documents_embedded_unchanged(self):
+    def test_legacy_embedded_documents_remain_quarantined(self):
         transfer_id = self._first_transfer_id()
         r = self.client.get(
             f"/api/transfers/{transfer_id}",
             headers={"Authorization": f"Bearer {_token(3, 5)}"},
         )
-        self.assertEqual(r.status_code, 200)
-        body = r.json()
-        self.assertTrue(body["success"])
-        self.assertIn("documents", body["data"])
+        self.assertEqual(r.status_code, 503)
+        self.assertNotIn("data", r.json())
 
 
 class V1TransferFinancialsTests(unittest.TestCase):
@@ -866,13 +876,13 @@ class V1TransferFinancialsTests(unittest.TestCase):
         )
         self.assertEqual(r.status_code, 200)
 
-    def test_financials_role_6_200(self):
+    def test_financials_retired_role_6_401(self):
         transfer_id = self._first_transfer_id()
         r = self.client.get(
             f"/api/v1/transfers/{transfer_id}/financials",
             headers={"Authorization": f"Bearer {_token(6, 5)}"},
         )
-        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.status_code, 401)
 
     def test_financials_missing_ability_403(self):
         transfer_id = self._first_transfer_id()
@@ -890,16 +900,14 @@ class V1TransferFinancialsTests(unittest.TestCase):
         )
         self.assertEqual(r.status_code, 404)
 
-    def test_legacy_financials_embedded_unchanged(self):
+    def test_legacy_embedded_financials_remain_quarantined(self):
         transfer_id = self._first_transfer_id()
         r = self.client.get(
             f"/api/transfers/{transfer_id}",
             headers={"Authorization": f"Bearer {_token(3, 5)}"},
         )
-        self.assertEqual(r.status_code, 200)
-        body = r.json()
-        self.assertTrue(body["success"])
-        self.assertIn("financials", body["data"])
+        self.assertEqual(r.status_code, 503)
+        self.assertNotIn("data", r.json())
 
 
 class TransferMilestonesPolicyTests(unittest.IsolatedAsyncioTestCase):
