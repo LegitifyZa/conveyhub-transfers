@@ -1,6 +1,6 @@
 import { apiRequest } from './http'
 import type { ApiResponse, PaginatedResponse, TransferFilters } from '../types'
-import type { TransferState, Document as TransferDocument, Party } from '../../components/transfers/TransferForm'
+import type { TransferState, Document as TransferDocument, Party, PropertyDetails } from '../../components/transfers/TransferForm'
 
 export interface TransferAggregate extends TransferState {
   id?: string
@@ -357,6 +357,31 @@ export class TransferApi {
   static async updateMatterCore(transferId: string, request: UpdateMatterCoreRequest): Promise<ApiResponse<MatterCoreDetail>> {
     return apiRequest(`/api/v1/transfers/${transferId}`, { method: 'PATCH', body: request })
   }
+
+  // ---- Matter–property linking and readback (staff surfaces) ----
+
+  /** Same-institution property discovery for selecting a link target. */
+  static async searchProperties(query: string, limit = 25): Promise<ApiResponse<PropertyRecordApi[]>> {
+    const params = new URLSearchParams()
+    if (query.trim()) params.set('query', query.trim())
+    params.set('limit', String(limit))
+    const response = await apiRequest<ApiResponse<{ properties: PropertyRecordApi[] }>>(`/api/v1/properties?${params}`)
+    return { ...response, data: response.data?.properties }
+  }
+
+  /** Attach a property to a matter: link an existing property_id or capture a
+   * manual institution-private property, atomically. Retries must reuse the
+   * same client_request_id so a replay resolves to the original rows. */
+  static async attachMatterProperty(transferId: string, request: AttachMatterPropertyRequest): Promise<ApiResponse<MatterPropertyLinkApi>> {
+    return apiRequest(`/api/v1/transfers/${transferId}/properties`, { method: 'POST', body: request })
+  }
+
+  /** Saved link + property readback for reopening a matter. Existing links
+   * remain readable regardless of the property's current status. */
+  static async getMatterProperties(transferId: string): Promise<ApiResponse<MatterPropertyLinkApi[]>> {
+    const response = await apiRequest<ApiResponse<{ properties: MatterPropertyLinkApi[] }>>(`/api/v1/transfers/${transferId}/properties`)
+    return { ...response, data: response.data?.properties }
+  }
 }
 
 export interface CreateMatterRequest {
@@ -513,6 +538,132 @@ export function buildAttachPartyRequest(party: Party): AttachPartyRequest | { er
       email: party.email || null,
       phone: party.phone || null,
       address: party.address || null
+    }
+  }
+}
+
+// ---- Matter–property API types ----
+
+/** GET /api/v1/properties projection (camelCase, staff view). */
+export interface PropertyRecordApi {
+  id: string
+  propertyId: string | null
+  erfNumber: string | null
+  streetAddress: string | null
+  suburb: string | null
+  city: string | null
+  postalCode: string | null
+  province: string | null
+  country: string | null
+  propertyType: string | null
+  legalDescription: string | null
+  yearBuilt: number | null
+  squareFootage: number | null
+  extentSqm: number | null
+  status: string | null
+  sourceSystem: string | null
+  /** True only for institution-private manual capture — never verified. */
+  manual: boolean
+  accountableInstitutionId: number | null
+  clientRequestId: string | null
+  createdAt: string | null
+  updatedAt: string | null
+}
+
+/** GET/POST /api/v1/transfers/{id}/properties link projection. */
+export interface MatterPropertyLinkApi {
+  id: string
+  matterId: string
+  propertyId: string | null
+  propertyKind: 'input' | 'output' | string
+  registrationStatus: string | null
+  roleInMatter: string | null
+  externalPropertyId: string | null
+  propertySource: string | null
+  accountableInstitutionId: number | null
+  clientRequestId: string | null
+  createdAt: string | null
+  updatedAt: string | null
+  property: PropertyRecordApi | null
+  /** Present on POST responses: false when the request replayed a stored link. */
+  created?: boolean
+}
+
+/** Manual capture payload — institution-private and unverified. Area capture
+ * (square_footage / extent_sqm) is deferred and not part of this contract. */
+export interface ManualPropertyPayload {
+  street_address: string
+  suburb?: string | null
+  city: string
+  postal_code?: string | null
+  province: string
+  country?: string | null
+  property_type: string
+  erf_number?: string | null
+  legal_description?: string | null
+  year_built?: number | null
+}
+
+export type AttachMatterPropertyRequest =
+  | { client_request_id: string; property_id: string }
+  | { client_request_id: string; property: ManualPropertyPayload }
+
+/** The nine property types permitted by the properties CHECK constraint. */
+export const PROPERTY_TYPES = [
+  'Freehold',
+  'Sectional Title',
+  'Share Block',
+  'Life Rights',
+  'Agricultural Holding',
+  'Farm',
+  'Commercial',
+  'Mixed Use',
+  'Vacant Land'
+] as const
+
+const SA_POSTAL_CODE = /^\d{4}$/
+
+/**
+ * Build the v1 capture+link request for the form's property details, or a
+ * failure reason when they cannot be expressed. Manual capture is
+ * institution-private and unverified; a supplied postal code must be a valid
+ * four-digit SA value — malformed input fails here instead of being nulled.
+ */
+export function buildManualPropertyRequest(
+  details: PropertyDetails,
+  clientRequestId: string
+): AttachMatterPropertyRequest | { error: string } {
+  if (!details.address.trim() || !details.city.trim() || !details.state.trim()) {
+    return { error: 'Street address, city and province are required' }
+  }
+  if (!details.propertyType) {
+    return { error: 'Property type is required' }
+  }
+  if (!(PROPERTY_TYPES as readonly string[]).includes(details.propertyType)) {
+    return { error: 'Property type is not a supported value' }
+  }
+  const postalCode = details.zipCode.trim()
+  if (postalCode && !SA_POSTAL_CODE.test(postalCode)) {
+    return { error: 'Postal code must be a four-digit South African value' }
+  }
+  const yearBuilt = details.yearBuilt.trim()
+  const parsedYear = yearBuilt ? Number.parseInt(yearBuilt, 10) : null
+  if (yearBuilt && (!Number.isInteger(parsedYear) || String(parsedYear) !== yearBuilt)) {
+    return { error: 'Year built must be a whole number' }
+  }
+  return {
+    client_request_id: clientRequestId,
+    property: {
+      street_address: details.address.trim(),
+      city: details.city.trim(),
+      province: details.state.trim(),
+      postal_code: postalCode || null,
+      property_type: details.propertyType,
+      // "Erf number" writes only erf_number; legal description writes only
+      // legal_description. No cross-mapping or dual-write fallbacks.
+      erf_number: details.lotNumber.trim() || null,
+      legal_description: details.legalDescription.trim() || null,
+      year_built: parsedYear
     }
   }
 }

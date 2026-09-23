@@ -8,6 +8,7 @@ import { useTransfers, TransferAggregate } from '@/hooks/useTransfers'
 import { TransferDocumentsPanel } from '@/components/transfers/TransferDocumentsPanel'
 import { TransferAccountsTab } from '@/components/transfers/accounts/TransferAccountsTab'
 import { TransferApi, type MatterCoreDetail } from '@/lib/api/transferApi'
+import { MatterPropertiesPanel } from '@/components/transfers/MatterPropertiesPanel'
 import { ApiRequestError } from '@/lib/api/http'
 import { cn } from '@/utils/cn'
 
@@ -525,6 +526,8 @@ const TransferMilestones: React.FC = () => {
             )}
           </CardContent>
         </Card>
+
+        {resolvedTransferId && <MatterPropertiesPanel transferId={resolvedTransferId} />}
 
         {/* Tabs */}
         <div className="mb-6 border-b border-gray-200 dark:border-navy-700">

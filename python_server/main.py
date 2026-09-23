@@ -14,6 +14,7 @@ from middleware.upload_size_limit import UploadBodyLimitMiddleware
 from routers import address, clauses, document_catalogue, documents, generated_documents, health, milestones, template_data_fields, transfers, users
 from routers.v1 import documents as v1_documents
 from routers.v1 import golden_records as v1_golden_records
+from routers.v1 import properties as v1_properties
 from routers.v1 import transfers as v1_transfers
 
 
@@ -73,6 +74,7 @@ app.include_router(transfers.router, prefix="/api/transfers")
 app.include_router(v1_transfers.router, prefix="/api/v1/transfers")
 app.include_router(v1_golden_records.router, prefix="/api/v1/golden-records")
 app.include_router(v1_documents.router, prefix="/api/v1/documents")
+app.include_router(v1_properties.router, prefix="/api/v1/properties")
 app.include_router(milestones.router, prefix="/api")
 app.include_router(document_catalogue.router, prefix="/api/catalogue")
 app.include_router(address.router, prefix="/api/address")

@@ -14,7 +14,7 @@ import { StepReview } from '@/components/transfers/StepReview'
 import { TransferNavigation } from '@/components/transfers/TransferNavigation'
 import { UnavailableNotice } from '@/components/ui'
 import { useTransfers } from '@/hooks/useTransfers'
-import { TransferApi, buildAttachPartyRequest, transferPartyToFormParty } from '@/lib/api/transferApi'
+import { TransferApi, buildAttachPartyRequest, buildManualPropertyRequest, transferPartyToFormParty } from '@/lib/api/transferApi'
 import { isPersistenceDisabled, isPersistenceUnavailable, probeMatterPersistence, serviceUnavailableMessage } from '@/lib/api/serviceStatus'
 
 const Transfers: React.FC = () => {
@@ -43,6 +43,9 @@ const TransferWorkflow: React.FC = () => {
   // Stable idempotency key for matter creation; generated once per form session
   // so a retried save resolves to the same matter instead of duplicating it.
   const matterRequestKey = useRef<string | null>(null)
+  // Stable idempotency key for the property link/capture; reused on retries so
+  // a replay resolves to the original property and link rather than duplicating.
+  const propertyRequestKey = useRef<string | null>(null)
 
   // Probe the matter-persistence lane once so Save/Submit are disabled up front
   // while the legacy transfers API is unavailable, instead of failing on click.
@@ -64,19 +67,39 @@ const TransferWorkflow: React.FC = () => {
 
     let cancelled = false
     const load = async () => {
-      const [aggregate, partiesResponse] = await Promise.all([
+      const [aggregate, partiesResponse, propertiesResponse] = await Promise.all([
         fetchTransfer(transferId),
-        TransferApi.getMatterParties(transferId).catch(() => null)
+        TransferApi.getMatterParties(transferId).catch(() => null),
+        TransferApi.getMatterProperties(transferId).catch(() => null)
       ])
       if (cancelled) return
 
-      const serverParties = partiesResponse?.success ? partiesResponse.data || [] : null
+      const serverParties = partiesResponse?.data || null
+      // Reopen a persisted property link read-only: the saved link + its
+      // property projection come from the server, never from local guesses.
+      const firstLink = propertiesResponse?.data?.find(link => link.propertyKind === 'input' && link.property)
+      const linkedHydration = firstLink?.property
+        ? {
+            persistedPropertyLinkId: firstLink.id,
+            propertyRequestId: firstLink.clientRequestId || undefined,
+            linkedProperty: {
+              id: firstLink.property.id,
+              streetAddress: firstLink.property.streetAddress || '',
+              city: firstLink.property.city || '',
+              province: firstLink.property.province || '',
+              postalCode: firstLink.property.postalCode || '',
+              propertyType: firstLink.property.propertyType || '',
+              status: firstLink.property.status || '',
+              manual: firstLink.property.manual
+            }
+          }
+        : {}
       if (aggregate) {
         dispatch({
           type: 'HYDRATE_TRANSFER',
           payload: serverParties
-            ? { ...aggregate, parties: serverParties.map(transferPartyToFormParty) }
-            : aggregate
+            ? { ...aggregate, parties: serverParties.map(transferPartyToFormParty), ...linkedHydration }
+            : { ...aggregate, ...linkedHydration }
         })
         if (serverParties) {
           setPartySaveState(Object.fromEntries(serverParties.map(p => [p.id, 'saved' as const])))
@@ -94,7 +117,8 @@ const TransferWorkflow: React.FC = () => {
             propertyDetails: { address: '', city: '', state: '', zipCode: '', propertyType: '', lotNumber: '', legalDescription: '', yearBuilt: '', squareFootage: '' },
             parties: serverParties.map(transferPartyToFormParty),
             financials: { purchasePrice: '', depositAmount: '', loanAmount: '', interestRate: '', loanTerm: '', transferDuty: '', conveyancingFees: '', deedsOfficeFees: '', vat: '', postPetty: '', clearanceCertificate: '', ratesClearance: '' },
-            documents: []
+            documents: [],
+            ...linkedHydration
           }
         })
         setPartySaveState(Object.fromEntries(serverParties.map(p => [p.id, 'saved' as const])))
@@ -112,11 +136,13 @@ const TransferWorkflow: React.FC = () => {
     dispatch({ type: 'SET_CURRENT_STEP', payload: Math.min(5, currentStep + 1) })
   }
 
-  // Saves the matter (once, idempotently) then attaches each unsaved party.
-  // Returns the matter id plus the ids of parties that failed; callers must not
-  // report complete success or navigate while failures are non-empty. The
-  // matter id is preserved in state so a retry never creates a second matter.
-  const persistAggregate = async (): Promise<{ matterId: string; failedPartyIds: string[] } | null> => {
+  // Saves the matter (once, idempotently), attaches the property link, then
+  // attaches each unsaved party. Returns the matter id plus the failures;
+  // callers must not report complete success or navigate while failures are
+  // non-empty. The matter id is preserved in state so a retry never creates
+  // a second matter, and the property request key is stable so a retried
+  // link/capture replays instead of duplicating.
+  const persistAggregate = async (): Promise<{ matterId: string; failedPartyIds: string[]; propertyFailed: boolean } | null> => {
     setSaveError(null)
     setSaveNotice(null)
     if (isPersistenceDisabled(persistenceChecked, persistenceError)) return null
@@ -133,8 +159,8 @@ const TransferWorkflow: React.FC = () => {
           firm_reference: matterDetails?.fileReference || null,
           classification_code: null
         })
-        if (!created.success || !created.data?.id) {
-          setSaveError(created.error || 'The matter could not be created. Your entries remain on this page.')
+        if (!created.data?.id) {
+          setSaveError('The matter could not be created. Your entries remain on this page.')
           return null
         }
         matterId = created.data.id
@@ -147,9 +173,59 @@ const TransferWorkflow: React.FC = () => {
         matterRequestKey.current ||= crypto.randomUUID()
       }
 
-      // 2. Attach each party that has not yet been persisted.
+      // 2. Attach the property: an existing selected property is linked, or the
+      // captured details create an institution-private manual property. Both
+      // share one stable client_request_id so retries replay to the same link.
+      let propertyFailed: string | null = null
+      if (!state.persistedPropertyLinkId) {
+        state.propertyRequestId ||= crypto.randomUUID()
+        propertyRequestKey.current = state.propertyRequestId
+        dispatch({ type: 'UPDATE_PROPERTY_LINK', payload: { propertyRequestId: state.propertyRequestId } })
+        let request
+        if (state.selectedPropertyId) {
+          request = { client_request_id: state.propertyRequestId, property_id: state.selectedPropertyId }
+        } else {
+          const built = buildManualPropertyRequest(state.propertyDetails, state.propertyRequestId)
+          if ('error' in built) {
+            propertyFailed = built.error
+          } else {
+            request = built
+          }
+        }
+        if (request) {
+          try {
+            const attached = await TransferApi.attachMatterProperty(matterId, request)
+            if (attached.data?.id) {
+              dispatch({
+                type: 'UPDATE_PROPERTY_LINK',
+                payload: {
+                  persistedPropertyLinkId: attached.data.id,
+                  linkedProperty: attached.data.property
+                    ? {
+                        id: attached.data.property.id,
+                        streetAddress: attached.data.property.streetAddress || '',
+                        city: attached.data.property.city || '',
+                        province: attached.data.property.province || '',
+                        postalCode: attached.data.property.postalCode || '',
+                        propertyType: attached.data.property.propertyType || '',
+                        status: attached.data.property.status || '',
+                        manual: attached.data.property.manual
+                      }
+                    : state.linkedProperty
+                }
+              })
+            } else {
+              propertyFailed = 'The property link could not be saved.'
+            }
+          } catch (err) {
+            propertyFailed = err instanceof Error ? err.message : 'The property link could not be saved.'
+          }
+        }
+      }
+
+      // 3. Attach each party that has not yet been persisted.
       const failedPartyIds: string[] = []
-      const failureReasons: string[] = []
+      const failureReasons: string[] = propertyFailed ? [`Property: ${propertyFailed}`] : []
       const nextSaveState: Record<string, 'saved' | 'failed'> = { ...partySaveState }
       for (const party of state.parties) {
         if (party.persistedPartyId) {
@@ -165,7 +241,7 @@ const TransferWorkflow: React.FC = () => {
         }
         try {
           const attached = await TransferApi.attachParty(matterId, request)
-          if (attached.success && attached.data) {
+          if (attached.data?.id) {
             nextSaveState[party.id] = 'saved'
             dispatch({
               type: 'UPDATE_PARTY',
@@ -179,7 +255,7 @@ const TransferWorkflow: React.FC = () => {
             })
           } else {
             failedPartyIds.push(party.id)
-            failureReasons.push(`${party.name || 'Unnamed party'}: ${attached.error || 'save failed'}`)
+            failureReasons.push(`${party.name || 'Unnamed party'}: save failed`)
             nextSaveState[party.id] = 'failed'
           }
         } catch (err) {
@@ -190,17 +266,17 @@ const TransferWorkflow: React.FC = () => {
       }
       setPartySaveState(nextSaveState)
 
-      if (failedPartyIds.length > 0) {
+      if (failedPartyIds.length > 0 || propertyFailed) {
         const savedCount = state.parties.length - failedPartyIds.length
         setSaveError(
           `Matter saved; ${savedCount} of ${state.parties.length} parties saved. ` +
-          `${failureReasons.join(' ')} Retry to save the remaining parties — the same matter is kept.`
+          `${failureReasons.join(' ')} Retry to save the remainder — the same matter and request keys are kept.`
         )
-        return { matterId, failedPartyIds }
+        return { matterId, failedPartyIds, propertyFailed: Boolean(propertyFailed) }
       }
 
-      setSaveNotice('Matter and all parties saved.')
-      return { matterId, failedPartyIds }
+      setSaveNotice('Matter, property and all parties saved.')
+      return { matterId, failedPartyIds, propertyFailed: false }
     } catch (err) {
       const failure = err instanceof Error ? err : new Error('The transfer could not be saved')
       setSaveError(`${serviceUnavailableMessage('Matter saving', failure)} Your entries remain on this page.`)
@@ -222,8 +298,8 @@ const TransferWorkflow: React.FC = () => {
 
   const handleSubmit = async () => {
     const result = await persistAggregate()
-    // Never claim success or navigate while any party failed to attach.
-    if (!result || result.failedPartyIds.length > 0) {
+    // Never claim success or navigate while any party or the property failed.
+    if (!result || result.failedPartyIds.length > 0 || result.propertyFailed) {
       setSaveError(current => current ?? 'The transfer could not be submitted. Your entries remain on this page.')
       return
     }

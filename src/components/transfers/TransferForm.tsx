@@ -80,11 +80,33 @@ export interface Document {
   originalFileName?: string
 }
 
+/** Display summary for a property selected via discovery or already linked
+ * to the matter — enough to render the linked-property card read-only. */
+export interface LinkedPropertySummary {
+  id?: string
+  streetAddress?: string
+  city?: string
+  province?: string
+  postalCode?: string
+  propertyType?: string
+  status?: string
+  /** True only for institution-private manual capture — never verified. */
+  manual?: boolean
+}
+
 export interface TransferState {
   id?: string
   transfer_id?: string
   currentStep: number
   propertyDetails: PropertyDetails
+  /** An existing same-institution property chosen in Step 1 to link on save. */
+  selectedPropertyId?: string
+  /** Summary of the selected/saved property for read-only display. */
+  linkedProperty?: LinkedPropertySummary
+  /** Server matter_properties row id once the link is persisted. */
+  persistedPropertyLinkId?: string
+  /** Stable idempotency key for the property attach; reused on retries. */
+  propertyRequestId?: string
   parties: Party[]
   financials: Financials
   documents: Document[]
@@ -139,6 +161,7 @@ type TransferAction =
   | { type: 'SET_DOCUMENTS'; payload: Document[] }
   | { type: 'SET_STATUS'; payload: 'draft' | 'in_progress' | 'completed' }
   | { type: 'SET_TRANSFER_ID'; payload: { id?: string; transfer_id?: string } }
+  | { type: 'UPDATE_PROPERTY_LINK'; payload: Pick<TransferState, 'selectedPropertyId' | 'linkedProperty' | 'persistedPropertyLinkId' | 'propertyRequestId'> }
   | { type: 'HYDRATE_TRANSFER'; payload: TransferState }
   | { type: 'RESET_FORM' }
 
@@ -220,6 +243,12 @@ const transferReducer = (state: TransferState, action: TransferAction): Transfer
         transfer_id: action.payload.transfer_id
       }
 
+    case 'UPDATE_PROPERTY_LINK':
+      return {
+        ...state,
+        ...action.payload
+      }
+
     case 'HYDRATE_TRANSFER':
       return {
         ...initialState,
@@ -240,9 +269,10 @@ const TransferContext = createContext<{
   dispatch: React.Dispatch<TransferAction>
 } | null>(null)
 
-// Provider
-export const TransferProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  const [state, dispatch] = useReducer(transferReducer, initialState)
+// Provider. initialValue seeds state for tests/server rendering only —
+// production mounts omit it.
+export const TransferProvider: React.FC<{ children: ReactNode; initialValue?: TransferState }> = ({ children, initialValue }) => {
+  const [state, dispatch] = useReducer(transferReducer, initialValue ?? initialState)
 
   return (
     <TransferContext.Provider value={{ state, dispatch }}>
@@ -261,8 +291,10 @@ export const useTransfer = () => {
 }
 
 // Validation functions
-export const validatePropertyDetails = (details: PropertyDetails): boolean => {
-  return !!(details.address && details.city && details.state && details.zipCode)
+export const validatePropertyDetails = (details: PropertyDetails, linked = false): boolean => {
+  // A saved or selected link satisfies the step; manual capture requires the
+  // DB floor (street/city/province/property_type) plus the UI-required code.
+  return linked || !!(details.address && details.city && details.state && details.zipCode && details.propertyType)
 }
 
 export const validateParties = (parties: Party[]): boolean => {
@@ -310,7 +342,7 @@ export const calculateTransferCosts = (financials: Financials): {
 export const getProgressPercentage = (state: TransferState): number => {
   const steps = 5
   const completedSteps = [
-    validatePropertyDetails(state.propertyDetails),
+    validatePropertyDetails(state.propertyDetails, Boolean(state.persistedPropertyLinkId || state.selectedPropertyId)),
     validateParties(state.parties),
     validateFinancials(state.financials),
     validateDocuments(state.documents),
