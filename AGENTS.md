@@ -637,3 +637,57 @@ Authenticated staff document lane (`python_server/routers/v1/transfers.py` +
   `UnavailableScanner`), platform audit logger (op-log is the stand-in).
 - Client document access is deliberately excluded — list/download deny
   `is_client`.
+
+## PostgreSQL property validation and migration checksums
+
+- The property DB suite requires both `TEST_DATABASE_URL` and
+  `RUN_MATTER_PROPERTY_DB_TESTS=1`. It creates and removes a scratch schema;
+  its generator is a schema-adjusted copy, not the installed migration-026
+  function. Validate the actual migrated tables and
+  `public.generate_property_id()` separately.
+- Pin test connection settings after application imports: `config.py` calls
+  `load_dotenv()` at import time and can restore higher-precedence application
+  DSNs removed earlier. Assert the resolved DSN before opening a pool, then
+  assert `current_database()` and `current_schema()` before test writes.
+- The migration runner hashes raw UTF-8 file contents without newline
+  normalization. Windows CRLF checkouts produce different ledger checksums
+  from Git's LF blobs: migration 024 is `fa3f3f59…` with CRLF versus
+  `c280d874…` with LF. Both appear in historical documentation. Check
+  `git ls-files --eol` and the exact deployment artifact before migrating;
+  do not rewrite applied files or ledger entries to suppress a mismatch.
+- Migration 012 is not a generic ownership backfill: it permits an empty
+  database or its guarded eight-matter/eight-transfer dataset only. A legacy
+  database without a ledger requires a reviewed baseline and ownership plan;
+  do not fabricate migration history or assign tenants to unknown records.
+- Fresh-schema validation at `be9803f` exposed the sibling defect in migration
+  001's `public.generate_transfer_id()`: under `search_path=transfers,public`,
+  its `WHERE transfer_id = transfer_id` raises SQLSTATE `42702`, and v1
+  matter creation returns 500. Migration 026 repairs only the property
+  generator. Forward migration `029_deedly_generate_transfer_id_ambiguity_fix.sql`
+  repairs the transfer generator with distinct variable names and a qualified
+  table reference, preserving its signature and ID-format algorithm. Apply it
+  through the runner before relying on new-matter creation; migration 001 is
+  unchanged.
+- Durable actual-schema coverage is in
+  `python_server/tests/test_matter_property_workflow_db.py`. Its workflow
+  cases create parent matters through the authenticated v1 API, not SQL
+  fixtures; its installed-generator collision probe rolls back. It requires
+  `RUN_MATTER_PROPERTY_WORKFLOW_DB_TESTS=1`, `TEST_DATABASE_URL`, and explicit
+  `TEST_DATABASE_HOST` / `TEST_DATABASE_NAME` matching an approved disposable
+  target (original `neondb` and system database names are rejected). The
+  migrations must already be installed. Synthetic workflow rows are labelled
+  `__workflow_test_*` and retained; the suite does not reset application tables.
+  Run from `python_server/`: `python -B -m pytest -q -rs -p no:cacheprovider
+  tests/test_matter_property_workflow_db.py`.
+- `node --test scripts/migrate.test.mjs` runs offline checksum-contract tests
+  against the runner in a no-connection sandbox. LF/CRLF mismatches and SQL
+  changes remain hard failures, and unchanged artifacts cause no ledger writes.
+  A read-only audit of the validation ledger found 7 LF and 19 CRLF historical
+  entries, with no unexplained differences; this is an artifact-portability
+  finding, not permission to normalize recorded migrations.
+- Evidence boundary: these database checks ran from local Windows against an
+  approved disposable database with synthetic fixtures and test JWTs. Publishing
+  the code does not apply migrations or establish browser, live authentication,
+  staging or production certification. A staging migration needs separate
+  authorization, exact-artifact checksum preflight, target ledger/schema
+  verification, and resolution of the existing-data upgrade path.
