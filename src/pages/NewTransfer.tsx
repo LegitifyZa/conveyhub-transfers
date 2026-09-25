@@ -5,39 +5,12 @@ import { Button, Input } from '@/components/ui'
 import { Search, Building, Folder, ArrowRight, AlertCircle, CheckCircle } from 'lucide-react'
 import type { GoldenRecordEntityType } from '@/lib/api/goldenRecordsApi'
 import { GoldenRecordCandidateDetails, GoldenRecordDetails, useGoldenRecordSearch } from '@/components/GoldenRecordsSearch'
-type MatterCategory = 'transfer' | 'development'
-
-const transferOptions = [
-  'Private Treaty',
-  'Auction',
-  'Sale in Execution',
-  'Property in Possession',
-  'Deceased Estate - Inheritance',
-  'Endorsement - Section 45',
-  'Donation',
-  'Not Applicable'
-]
-
-const developmentOptions = [
-  'New Sectional Title Register',
-  'New Township Register/Establishment',
-  'Scheme Extension (Sections)',
-  'Subdivision'
-]
-
-const transferFromOptions = [
-  'Sectional Title Register',
-  'Township Register',
-  'Extension of Scheme',
-  'Subdivision',
-  'Bulk Transfer'
-]
+import { useTransferClassifications } from '@/hooks/useTransferClassifications'
+import { MatterClassificationSelect } from '@/components/transfers/MatterClassificationSelect'
 
 interface MatterDetails {
   fileReference: string
-  matterCategory: MatterCategory
-  matterType: string
-  transferFrom: string
+  classificationCode: string
 }
 
 const NewTransfer: React.FC = () => {
@@ -45,9 +18,8 @@ const NewTransfer: React.FC = () => {
 
   const [step, setStep] = useState<'matter' | 'search'>('matter')
   const [fileReference, setFileReference] = useState('')
-  const [matterCategory, setMatterCategory] = useState<MatterCategory>('transfer')
-  const [matterType, setMatterType] = useState('')
-  const [transferFrom, setTransferFrom] = useState('')
+  const [classificationCode, setClassificationCode] = useState('')
+  const classificationData = useTransferClassifications()
 
   const {
     searchTerm, setSearchTerm, searchType, setSearchType, isSearching, isRetrieving,
@@ -55,18 +27,17 @@ const NewTransfer: React.FC = () => {
     handleSearch, handleSelectCandidate, retryRetrieval, canRetryRetrieval
   } = useGoldenRecordSearch(step === 'search')
 
-  const canContinueToSearch = !!(fileReference.trim() && matterType.trim())
+  const canContinueToSearch = Boolean(fileReference.trim()) && !classificationData.loading && !classificationData.error
+    && classificationData.classifications.some(option => option.canonicalCode === classificationCode)
 
   const buildMatterDetails = (): MatterDetails => ({
     fileReference: fileReference.trim(),
-    matterCategory,
-    matterType,
-    transferFrom
+    classificationCode
   })
 
   const handleContinueToSearch = () => {
     if (!canContinueToSearch) {
-      setError('Please enter a matter reference number and select a matter type')
+      setError('Please enter a matter reference number and select an available transfer classification')
       return
     }
     setError(null)
@@ -149,56 +120,14 @@ const NewTransfer: React.FC = () => {
                   />
                 </div>
 
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                    Matter Type
-                  </label>
-                  <select
-                    value={matterCategory}
-                    onChange={(e) => {
-                      setMatterCategory(e.target.value as MatterCategory)
-                      setMatterType('')
-                    }}
-                    className="flex h-10 w-full rounded-lg border border-gray-300 dark:border-navy-600 bg-white dark:bg-navy-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-teal-500"
-                  >
-                    <option value="transfer">Transfer</option>
-                    <option value="development">Development</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                    {matterCategory === 'transfer' ? 'Transfer Type' : 'Development Type'}
-                  </label>
-                  <select
-                    value={matterType}
-                    onChange={(e) => setMatterType(e.target.value)}
-                    className="flex h-10 w-full rounded-lg border border-gray-300 dark:border-navy-600 bg-white dark:bg-navy-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-teal-500"
-                  >
-                    <option value="">Select {matterCategory === 'transfer' ? 'a transfer' : 'a development'} type...</option>
-                    {(matterCategory === 'transfer' ? transferOptions : developmentOptions).map(option => (
-                      <option key={option} value={option}>{option}</option>
-                    ))}
-                  </select>
-                </div>
-
-                {matterCategory === 'development' && (
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                      Transfer From
-                    </label>
-                    <select
-                      value={transferFrom}
-                      onChange={(e) => setTransferFrom(e.target.value)}
-                      className="flex h-10 w-full rounded-lg border border-gray-300 dark:border-navy-600 bg-white dark:bg-navy-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-teal-500"
-                    >
-                      <option value="">Select transfer from...</option>
-                      {transferFromOptions.map(option => (
-                        <option key={option} value={option}>{option}</option>
-                      ))}
-                    </select>
-                  </div>
-                )}
+                <MatterClassificationSelect
+                  value={classificationCode}
+                  options={classificationData.classifications}
+                  loading={classificationData.loading}
+                  error={classificationData.error}
+                  onChange={setClassificationCode}
+                  onRetry={classificationData.retry}
+                />
 
                 {error && step === 'matter' && (
                   <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">

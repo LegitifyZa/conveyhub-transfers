@@ -116,6 +116,52 @@ describe('v1 matter create + party attach BFF proxies', async () => {
     upstreamResponse = { status: 201, body: { message: 'Created', data: { id: TRANSFER_ID } } }
   })
 
+  it('guards classification discovery before contacting FastAPI', async () => {
+    for (const [authorization, status] of [
+      [undefined, 401],
+      [`Bearer ${makeToken(['transfers:read'], 4)}`, 404],
+      [`Bearer ${makeToken(['transfers:write'])}`, 403],
+      [`Bearer ${makeToken(['transfers:read'], 6)}`, 401],
+    ] as const) {
+      const response = await fetch(`${baseUrl}/api/v1/transfers/classifications`, {
+        headers: authorization ? { Authorization: authorization } : {},
+      })
+      assert.equal(response.status, status)
+    }
+    assert.equal(captured.length, 0)
+  })
+
+  it('proxies classification reference data as GET with the caller JWT and no body', async () => {
+    const token = makeToken(['transfers:read'])
+    const envelope = { message: 'OK', data: { classifications: [{ canonicalCode: 'transfer.donation', displayLabel: 'Donation' }] } }
+    upstreamResponse = { status: 200, body: envelope }
+    const response = await fetch(`${baseUrl}/api/v1/transfers/classifications`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), envelope)
+    assert.equal(captured.length, 1)
+    assert.equal(captured[0].method, 'GET')
+    assert.equal(captured[0].url, '/api/v1/transfers/classifications')
+    assert.equal(captured[0].headers.authorization, `Bearer ${token}`)
+    assert.equal(captured[0].body, '')
+  })
+
+  it('fails closed when classification reference data is unavailable', async () => {
+    const headers = { Authorization: `Bearer ${makeToken(['transfers:read'])}` }
+    upstreamResponse = { status: 500, body: { error: 'private upstream detail' } }
+    let response = await fetch(`${baseUrl}/api/v1/transfers/classifications`, { headers })
+    assert.equal(response.status, 503)
+    assert.doesNotMatch(await response.text(), /private upstream detail/)
+    delete process.env.DEEDLY_API_BASE_URL
+    try {
+      response = await fetch(`${baseUrl}/api/v1/transfers/classifications`, { headers })
+      assert.equal(response.status, 503)
+    } finally {
+      process.env.DEEDLY_API_BASE_URL = upstreamBaseUrl
+    }
+  })
+
   it('returns 401 for matter creation without a JWT and never calls upstream', async () => {
     const res = await httpPost('/api/v1/transfers/', {}, { property_address: 'A', purchase_price: 1 })
     assert.equal(res.status, 401)

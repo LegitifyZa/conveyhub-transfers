@@ -138,6 +138,48 @@ class MatterPropertyWorkflowDbTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 201)
         return response.json()["data"]
 
+    async def test_all_transfer_classifications_create_replay_and_read_back(self):
+        response = await self.client.get("/api/v1/transfers/classifications", headers=self.headers())
+        self.assertEqual(response.status_code, 200)
+        options = response.json()["data"]["classifications"]
+        expected = {
+            "transfer.private_treaty." + source for source in (
+                "not_applicable", "sectional_title_register", "township_register",
+                "extension_of_scheme", "subdivision", "bulk_transfer",
+            )
+        } | {
+            "transfer." + subtype for subtype in (
+                "auction", "sale_in_execution", "property_in_possession",
+                "deceased_estate_inheritance", "deceased_estate_sale",
+                "endorsement_section_45", "endorsement_section_45bis", "donation",
+            )
+        }
+        self.assertEqual({option["canonicalCode"] for option in options}, expected)
+        self.assertEqual(len(options), 14)
+        for index, option in enumerate(options):
+            with self.subTest(classification=option["canonicalCode"]):
+                body = {
+                    "property_address": self.marker, "purchase_price": 100000,
+                    "client_request_id": str(uuid.uuid4()),
+                    "classification_code": option["canonicalCode"],
+                    "firm_reference": self.marker + "-" + str(index),
+                }
+                created = await self.client.post("/api/v1/transfers/", json=body, headers=self.headers())
+                self.assertEqual(created.status_code, 201)
+                replay = await self.client.post("/api/v1/transfers/", json=body, headers=self.headers())
+                self.assertEqual(replay.status_code, 200)
+                identifier = created.json()["data"]["id"]
+                self.assertEqual(replay.json()["data"]["id"], identifier)
+                detail = await self.client.get(f"/api/v1/transfers/{identifier}", headers=self.headers())
+                self.assertEqual(detail.status_code, 200)
+                self.assertEqual(detail.json()["data"]["matter"]["classificationCode"], option["canonicalCode"])
+                self.assertEqual(detail.json()["data"]["matter"]["firmReference"], body["firm_reference"])
+        for code in ("transfer.generic", "development.subdivision", "transfer.unknown"):
+            invalid = await self.client.post("/api/v1/transfers/", headers=self.headers(), json={
+                "property_address": self.marker, "purchase_price": 100000, "classification_code": code,
+            })
+            self.assertEqual(invalid.status_code, 400)
+
     async def test_new_matter_capture_link_and_readback(self):
         key = str(uuid.uuid4())
         created, replay = await self.create(key=key), await self.create(key=key)
