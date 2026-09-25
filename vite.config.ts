@@ -26,8 +26,7 @@ export default defineConfig({
     'process.env.NODE_ENV': JSON.stringify('production'),
   },
   server: {
-    host: '0.0.0.0',
-    allowedHosts: true,
+    host: '127.0.0.1',
     proxy: {
       '/api': {
         target: `http://localhost:${API_PORT}`,
@@ -36,6 +35,7 @@ export default defineConfig({
     },
   },
   build: {
+    target: ['es2020', 'edge88', 'firefox78', 'chrome87', 'safari14'],
     rollupOptions: {
       output: {
         manualChunks(id) {
@@ -59,7 +59,9 @@ export default defineConfig({
             packageName === 'react-dom' ||
             packageName === 'react-router-dom' ||
             packageName === 'react-router' ||
-            packageName === '@remix-run/router'
+            packageName === '@remix-run/router' ||
+            packageName === 'scheduler' ||
+            packageName === 'loose-envify'
           ) {
             return 'react'
           }
