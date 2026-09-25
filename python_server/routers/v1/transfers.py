@@ -280,6 +280,36 @@ def _parse_pagination_params(request: Request):
     return {"page": page, "limit": limit, "sort_by": sort_by, "sort_order": sort_order}
 
 
+@router.get("/classifications")
+async def get_transfer_classifications(user: CurrentUser = Depends(require_jwt)):
+    if user.is_client:
+        raise HTTPException(status_code=404, detail="Not found")
+    if not user.has_ability("transfers:read"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    result = await query(
+        """
+        SELECT canonical_code, subtype, display_label, transfer_from,
+               transfer_from_label, requires_transfer_from
+        FROM matter_classification_options
+        WHERE category = 'transfer' AND is_selectable = TRUE AND is_active = TRUE
+        ORDER BY display_label, transfer_from_label NULLS FIRST, canonical_code
+        """,
+        [],
+    )
+    return {"message": "OK", "data": {"classifications": [
+        {
+            "canonicalCode": row["canonical_code"],
+            "subtype": row["subtype"],
+            "displayLabel": row["display_label"],
+            "transferFrom": row["transfer_from"],
+            "transferFromLabel": row["transfer_from_label"],
+            "requiresTransferFrom": row["requires_transfer_from"],
+        }
+        for row in result.rows
+    ]}}
+
+
 @router.get("/")
 async def list_transfers(
     request: Request,

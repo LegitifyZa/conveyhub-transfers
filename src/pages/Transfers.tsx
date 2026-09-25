@@ -1,6 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui'
+import { Card, CardHeader, CardTitle, CardContent, Input } from '@/components/ui'
+import { useTransferClassifications } from '@/hooks/useTransferClassifications'
+import { MatterClassificationSelect } from '@/components/transfers/MatterClassificationSelect'
 import {
   TransferProvider,
   useTransfer,
@@ -31,7 +33,24 @@ const TransferWorkflow: React.FC = () => {
   const { state, dispatch } = useTransfer()
   const { currentStep } = state
   const transferId = (location.state as { transferId?: string } | null)?.transferId || new URLSearchParams(location.search).get('id') || undefined
-  const matterDetails = (location.state as { matterDetails?: { fileReference?: string } } | null)?.matterDetails
+  const matterDetails = (location.state as { matterDetails?: { fileReference?: string; classificationCode?: string } } | null)?.matterDetails
+  const incomingReference = matterDetails?.fileReference
+  const incomingClassification = matterDetails?.classificationCode
+  const classificationData = useTransferClassifications()
+  const existingMatter = Boolean(state.id || state.transfer_id || transferId)
+  const classificationReady = !classificationData.loading && !classificationData.error
+    && classificationData.classifications.some(option => option.canonicalCode === state.classificationCode)
+
+  useEffect(() => {
+    if (transferId || (incomingReference === undefined && incomingClassification === undefined)) return
+    dispatch({
+      type: 'UPDATE_MATTER_DETAILS',
+      payload: {
+        firmReference: typeof incomingReference === 'string' ? incomingReference : null,
+        classificationCode: typeof incomingClassification === 'string' ? incomingClassification : null,
+      },
+    })
+  }, [transferId, incomingReference, incomingClassification, dispatch])
 
   const { fetchTransfer, error, isLoading } = useTransfers()
   const [isSaving, setIsSaving] = useState(false)
@@ -146,6 +165,10 @@ const TransferWorkflow: React.FC = () => {
     setSaveError(null)
     setSaveNotice(null)
     if (isPersistenceDisabled(persistenceChecked, persistenceError)) return null
+    if (!existingMatter && !classificationReady) {
+      setSaveError('Choose an available transfer classification before creating the matter.')
+      return null
+    }
     setIsSaving(true)
     try {
       // 1. Ensure the matter exists (idempotent via a stable client key).
@@ -156,8 +179,8 @@ const TransferWorkflow: React.FC = () => {
           client_request_id: matterRequestKey.current,
           property_address: state.propertyDetails.address,
           purchase_price: Number.parseFloat(state.financials.purchasePrice) || 0,
-          firm_reference: matterDetails?.fileReference || null,
-          classification_code: null
+          firm_reference: state.firmReference?.trim() || null,
+          classification_code: state.classificationCode
         })
         if (!created.data?.id) {
           setSaveError('The matter could not be created. Your entries remain on this page.')
@@ -335,6 +358,32 @@ const TransferWorkflow: React.FC = () => {
           </p>
         </div>
 
+        <Card className="mb-6">
+          <CardHeader><CardTitle>Matter classification</CardTitle></CardHeader>
+          <CardContent className="space-y-4">
+            <div>
+              <label htmlFor="workflow-firm-reference" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Firm reference</label>
+              <Input
+                id="workflow-firm-reference"
+                value={state.firmReference ?? ''}
+                readOnly={existingMatter}
+                disabled={isSaving}
+                onChange={event => dispatch({ type: 'UPDATE_MATTER_DETAILS', payload: { firmReference: event.target.value } })}
+              />
+            </div>
+            <MatterClassificationSelect
+              value={state.classificationCode}
+              options={classificationData.classifications}
+              loading={classificationData.loading}
+              error={classificationData.error}
+              onChange={classificationCode => dispatch({ type: 'UPDATE_MATTER_DETAILS', payload: { classificationCode } })}
+              onRetry={classificationData.retry}
+              readOnly={existingMatter}
+              disabled={isSaving}
+            />
+          </CardContent>
+        </Card>
+
         {persistenceError && (
           <div className="mb-6">
             <UnavailableNotice
@@ -377,7 +426,7 @@ const TransferWorkflow: React.FC = () => {
               onSave={handleSaveDraft}
               onSubmit={handleSubmit}
               isSaving={isSaving}
-              persistenceDisabled={isPersistenceDisabled(persistenceChecked, persistenceError)}
+              persistenceDisabled={isPersistenceDisabled(persistenceChecked, persistenceError) || (!existingMatter && !classificationReady)}
             />
           </div>
 

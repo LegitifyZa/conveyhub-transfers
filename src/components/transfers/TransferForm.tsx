@@ -97,6 +97,8 @@ export interface LinkedPropertySummary {
 export interface TransferState {
   id?: string
   transfer_id?: string
+  classificationCode?: string | null
+  firmReference?: string | null
   currentStep: number
   propertyDetails: PropertyDetails
   /** An existing same-institution property chosen in Step 1 to link on save. */
@@ -150,6 +152,7 @@ const initialState: TransferState = {
 // Action types
 type TransferAction =
   | { type: 'SET_CURRENT_STEP'; payload: number }
+  | { type: 'UPDATE_MATTER_DETAILS'; payload: Pick<TransferState, 'classificationCode' | 'firmReference'> }
   | { type: 'UPDATE_PROPERTY_DETAILS'; payload: Partial<PropertyDetails> }
   | { type: 'ADD_PARTY'; payload: Party }
   | { type: 'UPDATE_PARTY'; payload: { id: string; updates: Partial<Party> } }
@@ -170,6 +173,9 @@ const transferReducer = (state: TransferState, action: TransferAction): Transfer
   switch (action.type) {
     case 'SET_CURRENT_STEP':
       return { ...state, currentStep: action.payload }
+
+    case 'UPDATE_MATTER_DETAILS':
+      return state.id ? state : { ...state, ...action.payload }
     
     case 'UPDATE_PROPERTY_DETAILS':
       return {

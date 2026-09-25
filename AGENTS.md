@@ -691,3 +691,71 @@ Authenticated staff document lane (`python_server/routers/v1/transfers.py` +
   staging or production certification. A staging migration needs separate
   authorization, exact-artifact checksum preflight, target ledger/schema
   verification, and resolution of the existing-data upgrade path.
+
+## Canonical transfer classification slice
+
+- `GET /api/v1/transfers/classifications` is a staff-only, `transfers:read`
+  reference-data read. The BFF verifies/forwards the caller JWT; FastAPI
+  selects only active, selectable `category='transfer'` rows. No local UI
+  fallback catalogue is used. Selectability does not certify a specialist
+  workflow or document readiness.
+- New-matter UI carries the canonical code and firm reference through create
+  and readback. Existing saved classifications are read-only in the wizard;
+  null/unavailable historical values are not silently reassigned. The existing
+  API's optional/null classification compatibility remains unchanged.
+- The guarded actual-schema workflow suite includes all 14 transfer codes
+  from migrations 015/020, with create/replay/readback and invalid-code checks.
+  Its fixtures are synthetic and retained in the approved disposable target;
+  it does not apply migrations.
+- `node e2e/matter-classifications.check.mjs` uses a loopback frontend server
+  (default `http://127.0.0.1:4173`), intercepts every API call and blocks external
+  requests. Prefer a static build served from a dedicated output directory for
+  review until SEC-DEV-01 below is resolved; do not expose the existing Vite dev
+  configuration. Optional `DEMO_ARTIFACT_DIR` captures labelled synthetic-demo
+  screenshots. This is browser-contract evidence, not real BFF/FastAPI/auth
+  certification. Playwright 1.63.0 is explicitly pinned as a dev dependency.
+- Baseline environment findings on 2026-09-24: the machine's global Node was
+  25.8.0 although the project requires 24.x; focused verification used a
+  temporary npm-cached Node 24.21.0 without changing global configuration.
+  `npm run lint` could not run because no ESLint configuration exists, and
+  `npm audit` reported 24 findings (13 high) in unchanged dependencies.
+  These remain separate baseline work; no audit fix or engine-policy change
+  was used to suppress them.
+
+### Baseline follow-ups recorded at classification review (2026-09-24)
+
+- **SEC-DEV-01 — urgent before network-exposed development/preview use.**
+  Vite 4.5.14 has Windows command-injection and file-disclosure advisories;
+  `vite.config.ts` binds `0.0.0.0` and sets `allowedHosts: true`. Review a
+  maintained patched Vite/plugin combination and safe default interface/host
+  restrictions in a separate change. Loopback alone is not a security waiver.
+  Never serve the pilot using a development server. Do not probe real secrets
+  to demonstrate these issues.
+- **SEC-BUILD-02 — narrowly remediate the development dependency tree.**
+  All 13 high audit entries are dev-only in the installed graph: the five
+  `@typescript-eslint/*` packages at 6.21.0 inherit minimatch findings;
+  remaining affected entries are brace-expansion, browserslist, js-yaml,
+  minimatch, nanoid, picomatch, postcss and vite. They are not 13 independent
+  production HTTP vulnerabilities. Treat untrusted build/config/CSS/glob input
+  as unsafe until fixed; use compatibility-reviewed updates, not a broad
+  `npm audit fix --force` or a lowered audit gate.
+- **SEC-RUNTIME-03 — separately triage the production graph.**
+  `npm audit --omit=dev` reported zero high/critical but seven moderate entries
+  in Express/body-parser/qs, React Router and DOMPurify. This is dependency
+  classification, not proof of deployed safety. The vulnerable nanoid 3.3.11
+  belongs to PostCSS; docx's production nanoid 5.1.16 is a separate copy not
+  flagged by this audit. Verify the actual deployment artifact/entrypoint.
+- **TOOL-LINT-01 — establish a real lint baseline.** Frontend/tooling owner:
+  add a reviewed ESLint configuration compatible with the chosen parser/plugin
+  and Node 24, preserve React Hooks/security checks, and report/fix scoped
+  violations without disabling checks globally. Acceptance: a clean checkout
+  loads the configuration and runs `npm run lint`; missing config is not a pass.
+- **TOOL-NODE-01 — reproducible Node 24 setup.** Tooling/CI owner: select and
+  document an exact supported Node 24 patch and Windows setup, align CI, retain
+  the `24.x` engine requirement, and verify `npm ci`, typechecks, build and
+  focused tests without relying on an undocumented npm-cache executable path.
+  Do not silently change the machine-wide Node installation.
+
+The detailed package/version/advisory triage and demonstration evidence are
+recorded in the existing MVP0 plan checkpoint. These follow-ups are open; the
+classification review does not waive them or authorize deployment.

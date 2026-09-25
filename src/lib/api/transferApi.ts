@@ -52,7 +52,34 @@ interface ServerDocument {
   uploadDate?: unknown
 }
 
+export interface TransferClassification {
+  canonicalCode: string
+  subtype: string
+  displayLabel: string
+  transferFrom: string | null
+  transferFromLabel: string | null
+  requiresTransferFrom: boolean
+}
+
+export function classificationLabel(option: TransferClassification): string {
+  return option.transferFromLabel ? `${option.displayLabel} — ${option.transferFromLabel}` : option.displayLabel
+}
+
+function isTransferClassification(input: unknown): input is TransferClassification {
+  if (!input || typeof input !== 'object') return false
+  const option = input as Record<string, unknown>
+  const nonEmpty = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0
+  return nonEmpty(option.canonicalCode) && /^transfer\.[a-z0-9_]+(?:\.[a-z0-9_]+)*$/.test(option.canonicalCode)
+    && option.canonicalCode !== 'transfer.generic'
+    && nonEmpty(option.subtype) && nonEmpty(option.displayLabel)
+    && (option.transferFrom === null || nonEmpty(option.transferFrom))
+    && (option.transferFromLabel === null || nonEmpty(option.transferFromLabel))
+    && typeof option.requiresTransferFrom === 'boolean'
+    && (!option.requiresTransferFrom || (nonEmpty(option.transferFrom) && nonEmpty(option.transferFromLabel)))
+}
+
 interface ServerAggregate {
+  matter?: { classificationCode?: string | null; firmReference?: string | null } | null
   id?: string
   transferId?: string
   transfer_id?: string
@@ -156,6 +183,8 @@ function fromServerAggregate(server: ServerAggregate): TransferAggregate {
   return {
     id: server.id,
     transfer_id: server.transferId || server.transfer_id,
+    classificationCode: server.matter?.classificationCode ?? null,
+    firmReference: server.matter?.firmReference ?? null,
     progress: typeof server.progress === 'number' ? server.progress : undefined,
     created_at: server.createdAt,
     updated_at: server.updatedAt,
@@ -216,6 +245,18 @@ interface V1ListData {
 }
 
 export class TransferApi {
+  static async getClassifications(): Promise<TransferClassification[]> {
+    const response = await apiRequest<{ data?: { classifications?: unknown } }>(
+      '/api/v1/transfers/classifications', { cache: 'no-store' },
+    )
+    const options = response?.data?.classifications
+    if (!Array.isArray(options) || !options.every(isTransferClassification)
+      || new Set(options.map(option => option.canonicalCode)).size !== options.length) {
+      throw new Error('Invalid classification response')
+    }
+    return options
+  }
+
   static async getTransfers(filters: TransferFilters = {}): Promise<PaginatedResponse<TransferAggregate>> {
     // The v1 list supports page/limit/sort only — status is applied
     // client-side on the returned page.

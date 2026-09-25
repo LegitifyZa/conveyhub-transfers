@@ -335,6 +335,66 @@ class ManualPartyRouteTests(unittest.IsolatedAsyncioTestCase):
     def _headers(self, **claims):
         return {"Authorization": f"Bearer {token(**claims)}"}
 
+    async def test_classifications_require_staff_read_access(self):
+        for headers, expected in (
+            ({}, 401),
+            (self._headers(role=4), 404),
+            (self._headers(abilities=["transfers:write"]), 403),
+            (self._headers(role=6), 401),
+        ):
+            response = await self.client.get("/api/v1/transfers/classifications", headers=headers)
+            self.assertEqual(response.status_code, expected)
+        self.query.assert_not_awaited()
+
+    async def test_classifications_are_filtered_reference_data_with_allowlisted_fields(self):
+        self.query.side_effect = None
+        self.query.return_value = db.QueryResult(rows=[{
+            "canonical_code": "transfer.private_treaty.not_applicable",
+            "subtype": "private_treaty", "display_label": "Private Treaty",
+            "transfer_from": "not_applicable", "transfer_from_label": "Not Applicable",
+            "requires_transfer_from": True, "private_column": "must not escape",
+        }], row_count=1)
+        response = await self.client.get("/api/v1/transfers/classifications", headers=self._headers())
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"message": "OK", "data": {"classifications": [{
+            "canonicalCode": "transfer.private_treaty.not_applicable",
+            "subtype": "private_treaty", "displayLabel": "Private Treaty",
+            "transferFrom": "not_applicable", "transferFromLabel": "Not Applicable",
+            "requiresTransferFrom": True,
+        }]}})
+        sql = self.query.await_args.args[0]
+        self.assertIn("category = 'transfer'", sql)
+        self.assertIn("is_selectable = TRUE", sql)
+        self.assertIn("is_active = TRUE", sql)
+        self.entities.get_entity.assert_not_called()
+        self.entities.get_client_by_golden_record.assert_not_called()
+
+    async def test_empty_classification_catalogue_has_no_fabricated_defaults(self):
+        self.query.side_effect = None
+        self.query.return_value = db.QueryResult(rows=[], row_count=0)
+        response = await self.client.get("/api/v1/transfers/classifications", headers=self._headers())
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["data"]["classifications"], [])
+
+    async def test_create_passes_canonical_classification_and_rejects_ineligible_codes(self):
+        self.query.side_effect = None
+        self.query.return_value = db.QueryResult(rows=[{"ok": 1}], row_count=1)
+        response = await self.client.post("/api/v1/transfers/", headers=self._headers(), json={
+            "property_address": "12 Test Street", "purchase_price": 100,
+            "classification_code": "transfer.endorsement_section_45bis", "firm_reference": "REF-45B",
+        })
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(self.create_matter.await_args.kwargs["classification_code"], "transfer.endorsement_section_45bis")
+        self.assertEqual(self.create_matter.await_args.kwargs["firm_reference"], "REF-45B")
+        self.query.return_value = db.QueryResult(rows=[], row_count=0)
+        self.create_matter.reset_mock()
+        for code in ("transfer.generic", "development.subdivision", "transfer.retired", "unknown"):
+            response = await self.client.post("/api/v1/transfers/", headers=self._headers(), json={
+                "property_address": "12 Test Street", "purchase_price": 100, "classification_code": code,
+            })
+            self.assertEqual(response.status_code, 400)
+        self.create_matter.assert_not_called()
+
     async def test_create_requires_authentication_and_ability(self):
         body = {"property_address": "12 Test Street", "purchase_price": 100}
         self.assertEqual((await self.client.post("/api/v1/transfers/", json=body)).status_code, 401)

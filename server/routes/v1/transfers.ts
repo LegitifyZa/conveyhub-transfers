@@ -261,6 +261,23 @@ async function authorizeTransfer(user: CurrentUser, id: string): Promise<any | n
 }
 
 router.get(
+  '/classifications',
+  requireJwt,
+  asyncHandler(async (req: Request, res: Response) => {
+    const user = req.currentUser!
+    if (user.isClient) {
+      res.status(404).json({ success: false, error: 'Not found' })
+      return
+    }
+    if (!user.hasAbility('transfers:read')) {
+      res.status(403).json({ success: false, error: 'Forbidden' })
+      return
+    }
+    await proxyDeedly(req, res, '/classifications', 'GET')
+  })
+)
+
+router.get(
   '/',
   requireJwt,
   asyncHandler(async (req: Request, res: Response) => {
