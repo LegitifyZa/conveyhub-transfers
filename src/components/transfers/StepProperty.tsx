@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
+import { readNavigationState } from '@/lib/navigationState'
 import { Building, MapPin, Home, FileText, Map as MapIcon, Search, Link2, X } from 'lucide-react'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
@@ -14,7 +15,7 @@ const StepProperty: React.FC = () => {
   const { state, dispatch } = useTransfer()
   const { propertyDetails } = state
   const location = useLocation()
-  const goldenRecord = location.state?.goldenRecord
+  const goldenRecord = readNavigationState(location.state)?.goldenRecord
 
   // Auto-populate from golden record if available
   useEffect(() => {

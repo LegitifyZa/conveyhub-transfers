@@ -1,12 +1,13 @@
+import { Fragment } from 'react'
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider, useAuth } from '@/hooks/useAuth'
 import { MainLayout } from '@/layouts'
 import { Dashboard, Cases, Documents, DocumentCatalogue, DataDictionary, TemplateEngine, ClauseLibrary, DocumentGenerator, Settings, Login, NewTransfer, Transfers, Bonds, Cancellations, TransfersDashboard, TransferMilestones, AccountsCalculator } from '@/pages'
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
-  const { isAuthenticated, isRestoring } = useAuth()
+  const { isAuthenticated, isRestoring, sessionGeneration } = useAuth()
   if (isRestoring) return null
-  return isAuthenticated ? <>{children}</> : <Navigate to="/login" replace />
+  return isAuthenticated ? <Fragment key={sessionGeneration}>{children}</Fragment> : <Navigate to="/login" replace />
 }
 
 function AuthenticatedRoutes() {
@@ -14,7 +15,7 @@ function AuthenticatedRoutes() {
   return (
     <Routes>
       <Route path="/" element={isRestoring ? null : isAuthenticated ? <Navigate to="/transfers" replace /> : <Navigate to="/login" replace />} />
-      <Route path="/login" element={<Login />} />
+      <Route path="/login" element={isAuthenticated && !isRestoring ? <Navigate to="/transfers" replace /> : <Login />} />
       <Route path="/dashboard" element={<RequireAuth><MainLayout><Dashboard /></MainLayout></RequireAuth>} />
       <Route path="/cases" element={<RequireAuth><MainLayout><Cases /></MainLayout></RequireAuth>} />
       <Route path="/documents" element={<RequireAuth><MainLayout><Documents /></MainLayout></RequireAuth>} />

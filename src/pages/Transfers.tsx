@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
+import { readNavigationState } from '@/lib/navigationState'
 import { Card, CardHeader, CardTitle, CardContent, Input } from '@/components/ui'
 import { useTransferClassifications } from '@/hooks/useTransferClassifications'
 import { MatterClassificationSelect } from '@/components/transfers/MatterClassificationSelect'
@@ -33,7 +34,7 @@ const TransferWorkflow: React.FC = () => {
   const { state, dispatch } = useTransfer()
   const { currentStep } = state
   const transferId = (location.state as { transferId?: string } | null)?.transferId || new URLSearchParams(location.search).get('id') || undefined
-  const matterDetails = (location.state as { matterDetails?: { fileReference?: string; classificationCode?: string } } | null)?.matterDetails
+  const matterDetails = (readNavigationState(location.state) as { matterDetails?: { fileReference?: string; classificationCode?: string } } | null)?.matterDetails
   const incomingReference = matterDetails?.fileReference
   const incomingClassification = matterDetails?.classificationCode
   const classificationData = useTransferClassifications()

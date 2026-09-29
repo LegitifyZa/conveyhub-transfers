@@ -1,5 +1,6 @@
 import React, { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { bindNavigationState } from '@/lib/navigationState'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui'
 import { Button, Input } from '@/components/ui'
 import { Search, Building, Folder, ArrowRight, AlertCircle, CheckCircle } from 'lucide-react'
@@ -48,10 +49,10 @@ const NewTransfer: React.FC = () => {
     if (searchResult && !isSearching && !isRetrieving) {
       resetSearch()
       navigate('/transfers/workflow', {
-        state: {
+        state: bindNavigationState({
           goldenRecord: searchResult,
           matterDetails: buildMatterDetails()
-        }
+        })
       })
     }
   }
@@ -61,13 +62,13 @@ const NewTransfer: React.FC = () => {
   const handleContinueWithoutRecord = () => {
     resetSearch()
     navigate('/transfers/workflow', {
-      state: {
+      state: bindNavigationState({
         goldenRecordSearch: {
           entityType: searchType,
           query: searchTerm.trim()
         },
         matterDetails: buildMatterDetails()
-      }
+      })
     })
   }
 

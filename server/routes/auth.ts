@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { Router, Request, Response, NextFunction } from 'express'
 import { asyncHandler } from '../utils/asyncHandler'
 import { verifyJwt } from '../auth/jwt'
@@ -100,6 +100,15 @@ function trustedAuthOrigin(req: Request, res: Response, next: NextFunction): voi
 }
 
 router.use(trustedAuthOrigin)
+
+function verifiedPrincipalKey(token: string): string {
+  const user = verifyJwt(token, process.env.JWT_SECRET)
+  return createHash('sha256').update(JSON.stringify([
+    user.user_id, user.accountable_institution_id, user.user_roles_id,
+    user.tenant_id?.toLowerCase() ?? null, user.golden_record_id?.toLowerCase() ?? null,
+    [...new Set(user.abilities)].sort(),
+  ])).digest('hex')
+}
 
 function authBaseUrl(): string | null {
   const baseUrl = process.env.LEGITIFY_API_BASE_URL
@@ -312,8 +321,9 @@ router.post('/login', asyncHandler(async (req: Request, res: Response) => {
     res.status(503).json(AUTH_UNAVAILABLE)
     return
   }
+  let principalKey: string
   try {
-    verifyJwt(data.token as string, process.env.JWT_SECRET)
+    principalKey = verifiedPrincipalKey(data.token as string)
   } catch {
     // Issued claims fail this boundary's checks (e.g. retired/unknown role).
     // Fail closed rather than establishing a session that cannot be used.
@@ -321,7 +331,7 @@ router.post('/login', asyncHandler(async (req: Request, res: Response) => {
     return
   }
   const sid = randomUUID()
-  const clientData: Record<string, unknown> = { ...data, sid }
+  const clientData: Record<string, unknown> = { ...data, sid, principalKey }
   delete clientData.refresh_token
   delete clientData.refresh_expires
   delete clientData.dev_otp
@@ -365,15 +375,16 @@ router.post('/refresh', asyncHandler(async (req: Request, res: Response) => {
     res.status(503).json(AUTH_UNAVAILABLE)
     return
   }
+  let principalKey: string
   try {
-    verifyJwt(data.token as string, process.env.JWT_SECRET)
+    principalKey = verifiedPrincipalKey(data.token as string)
   } catch {
     res.status(401).json({ success: false, error: 'Authentication required' })
     return
   }
   res.status(result.status).json({
     message: envelope.message,
-    data: { token: data.token, expires: data.expires },
+    data: { token: data.token, expires: data.expires, principalKey },
   })
 }))
 

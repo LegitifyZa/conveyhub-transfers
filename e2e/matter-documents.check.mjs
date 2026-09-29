@@ -49,7 +49,7 @@ function makeApi(t = {}) {
     const method = r.request().method()
 
     if (path === '/api/auth/refresh' && method === 'POST') {
-      return r.fulfill(json({ message: 'OK', data: { token: 'pw-access-token', expires: Math.floor(Date.now() / 1000) + 3600 } }))
+      return r.fulfill(json({ message: 'OK', data: { principalKey: 'a'.repeat(64), token: 'pw-access-token', expires: Math.floor(Date.now() / 1000) + 3600 } }))
     }
     if (path === '/api/v1/transfers/classifications') {
       return r.fulfill(json({ message: 'OK', data: { classifications: [{

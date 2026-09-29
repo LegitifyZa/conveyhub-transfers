@@ -1,5 +1,6 @@
 import React from 'react'
 import { useLocation } from 'react-router-dom'
+import { readNavigationState } from '@/lib/navigationState'
 import { Home, Users, DollarSign, FileText, CheckCircle, Edit3, Star } from 'lucide-react'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui'
 import { Button } from '@/components/ui'
@@ -42,7 +43,7 @@ const StepReview: React.FC = () => {
   const { state, dispatch } = useTransfer()
   const { propertyDetails, parties, financials, documents } = state
   const location = useLocation()
-  const goldenRecord = location.state?.goldenRecord
+  const goldenRecord = readNavigationState(location.state)?.goldenRecord
 
   const goToStep = (step: number) => {
     dispatch({ type: 'SET_CURRENT_STEP', payload: step })

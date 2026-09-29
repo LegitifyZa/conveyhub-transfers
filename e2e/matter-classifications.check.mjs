@@ -77,7 +77,7 @@ async function scenario(run, { savedCode, status = 200, options = classification
     if (!path.startsWith('/api/')) return route.continue()
     if (!path.startsWith('/api/auth/') && !['GET', 'HEAD'].includes(method)) writes.push({ method, path })
     if (path === '/api/auth/refresh') {
-      return route.fulfill(json({ message: 'OK', data: { token: 'mock-classification-browser-token', expires: Math.floor(Date.now() / 1000) + 3600 } }))
+      return route.fulfill(json({ message: 'OK', data: { principalKey: 'a'.repeat(64), token: 'mock-classification-browser-token', expires: Math.floor(Date.now() / 1000) + 3600 } }))
     }
     if (path === '/api/v1/transfers/classifications') {
       return route.fulfill(state.status === 200

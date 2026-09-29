@@ -29,7 +29,7 @@ async function scenario(name, run) {
     if (!url.pathname.startsWith('/api/')) return route.continue()
     if (url.pathname === '/api/auth/refresh') {
       return route.fulfill(json({ message: 'OK', data: {
-        token: 'synthetic-staff-list-browser-token', expires: Math.floor(Date.now() / 1000) + 3600,
+        principalKey: 'a'.repeat(64), token: 'synthetic-staff-list-browser-token', expires: Math.floor(Date.now() / 1000) + 3600,
       } }))
     }
     if (url.pathname === '/api/v1/transfers' && route.request().method() === 'GET') {
