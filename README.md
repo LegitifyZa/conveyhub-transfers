@@ -1,6 +1,6 @@
 # Legitify Convey Hub
 
-A modern, production-ready web application for conveyancing and legal document management, built with **React, TypeScript, Vite, and Tailwind CSS** on the frontend and **Python, FastAPI, and asyncpg** on the backend.
+A conveyancing application under development, built with **React, TypeScript, Vite, and Tailwind CSS**, a browser-facing **Node Express BFF**, and a **Python FastAPI/asyncpg** domain service. Offline verification does not certify live authentication, database migrations or pilot readiness.
 
 ## Features
 
@@ -50,163 +50,221 @@ A modern, production-ready web application for conveyancing and legal document m
 
 ## Getting Started
 
-### Prerequisites
+### Runtime and prerequisites
 
-- Node.js 18.0.0 or higher
-- npm or yarn package manager
-- Python 3.12 or higher
-- PostgreSQL 12+ (for database features)
+Run three processes, not just Vite and Python:
 
-### Installation
+| Process | Command/script | Local port used below | Responsibility |
+|---|---|---|---|
+| Vite frontend | `npm run dev:client` | 5173 | SPA; proxies `/api` to the Node BFF |
+| Node BFF | `npm run dev:server` (`tsx server/index.ts`) | 3000 | Browser auth, JWT verification, scoped reads and FastAPI proxies |
+| FastAPI | `python -m uvicorn main:app --app-dir python_server` | 3100 | Authoritative staff list/filter/totals, matter writes, documents and S2S routes |
 
-1. Clone the repository:
-```bash
-git clone <repository-url>
-cd legitify-convey-hub
-```
+Use **Node 24.x** (the package engine requirement), npm with the committed
+lockfile, Python 3.12+, and PostgreSQL 13+ for an approved database run.
+Provisioning a database, applying migrations and
+live upstream authentication are separate approvals, not startup steps.
+FastAPI opens its database pool during application startup: do not start it
+with ambient/shared credentials merely to inspect the UI. Use offline/mocked
+checks when no approved environment exists. This checkpoint does not authorize
+M1 migration, TLS, infrastructure or pilot-release work.
 
-2. Install Node.js dependencies:
-```bash
-npm install
-```
+### Install dependencies
 
-3. Set up the Python virtual environment and install backend dependencies:
+From the repository root, after selecting Node 24:
 
-**Windows:**
 ```powershell
-cd python_server
-python -m venv .venv
-.venv\Scripts\pip install -r requirements.txt
-cd ..
+node --version
+npm ci
+python -m venv python_server/.venv
+python_server/.venv/Scripts/python.exe -m pip install -r python_server/requirements.txt
 ```
 
-**macOS/Linux:**
-```bash
-cd python_server
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-cd ..
+On macOS/Linux, use `python3` to create the venv and
+`python_server/.venv/bin/python` for subsequent Python commands. Most Python
+requirements are currently unpinned; reproducible Python dependency pinning is
+still a verification gap, not a guarantee supplied by these instructions.
+
+### Configure an approved local environment
+
+Only if `.env` does not already exist, copy `.env.example` to `.env` in the
+repository root. Never overwrite an existing configuration blindly or commit
+credentials. Node loads this file from its working directory; Python's
+`load_dotenv()` also discovers the root file. Process environment values take
+precedence. Do not put database URLs or signing/service keys in `VITE_*`.
+
+| Variable | Consumer and meaning |
+|---|---|
+| `PORT` | Both APIs read this name. Node defaults to 3001; Python settings default to 3000. Use separate terminal overrides below. |
+| `VITE_API_PORT` | Vite config reads **process.env** before `.env` loading; explicitly set it in the frontend terminal to match the BFF. Its fallback is 3001. |
+| `VITE_API_BASE_URL` | Browser API base; `/api` keeps requests same-origin through the BFF. |
+| `DEEDLY_API_BASE_URL` | Node-only FastAPI origin, locally `http://127.0.0.1:3100`; never point it back to the BFF or to the platform auth gateway. |
+| `LEGITIFY_API_BASE_URL` | Approved Legitify gateway; Node uses its `/api/v1/auth/*` routes and Python uses the S2S lane. |
+| `JWT_SECRET` | Server-only shared upstream JWT verification secret, provisioned to **both** APIs. Blank/missing means authentication fails closed. |
+| `SECRET_KEY` | Server-only Legitify S2S service key; distinct from the JWT verification secret. |
+| `AUTH_ALLOWED_ORIGINS` | Optional exact auth-origin allowlist; blank retains the documented same-origin/loopback development policy. Do not broaden it to work around hosting problems. |
+| `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_SSL` | Approved database connection when no higher-precedence DSN is present. |
+| `DB_SCHEMA` | `transfers` (lowercase) for the migrated application schema. |
+| `NODE_ENV` | Set `development` for these local API processes; production has additional secret requirements. |
+
+Both APIs resolve DSNs in this order:
+`ConveyHub_Transfers_POSTGRES_URL_NON_POOLING`, `POSTGRES_URL_NON_POOLING`,
+`ConveyHub_Transfers_POSTGRES_URL`, `POSTGRES_URL`, `DATABASE_URL`.
+Check the resolved target without printing credentials; changing only `DB_HOST`
+does not override a DSN. Test DSNs/opt-in flags must stay unset outside a
+separately approved isolated test run. `API_BASE_URL` is not a runtime setting
+used by these three processes.
+
+### Start all three processes locally
+
+Run each block in a **separate PowerShell terminal at the repository root**.
+These commands require an already prepared, approved local/test database and
+approved upstream configuration; they are not offline verification commands.
+
+**Terminal 1 — FastAPI:**
+
+```powershell
+$env:NODE_ENV = "development"
+$env:PORT = "3100"
+python_server/.venv/Scripts/python.exe -m uvicorn main:app --app-dir python_server --host 127.0.0.1 --port 3100
 ```
 
-4. Set up environment variables:
-```bash
-cp .env.example .env
-# Edit .env with your database credentials
+**Terminal 2 — Node BFF:**
+
+```powershell
+$env:NODE_ENV = "development"
+$env:PORT = "3000"
+$env:DEEDLY_API_BASE_URL = "http://127.0.0.1:3100"
+npm run dev:server
 ```
 
-5. Set up the database:
-```bash
-npm run setup:db
-npm run migrate
+`VERCEL` must be unset in a local BFF terminal: its presence suppresses the
+listener for serverless imports. Node currently calls `app.listen(PORT)`
+without a host restriction, so it listens on default interfaces; use a trusted
+local environment/firewall rather than assuming a loopback-only Node bind.
+The commands above explicitly bind FastAPI, and the command below binds Vite,
+to loopback. Do not use `python main.py` as a substitute: that entry point
+binds `0.0.0.0` and reads the shared `PORT` default.
+
+**Terminal 3 — frontend:**
+
+```powershell
+$env:VITE_API_PORT = "3000"
+$env:VITE_API_BASE_URL = "/api"
+npm run dev:client -- --host 127.0.0.1 --port 5173 --strictPort
 ```
 
-6. Start the Python API server:
-```bash
-cd python_server
-.venv\Scripts\python -m uvicorn main:app --host 0.0.0.0 --port 3000
-```
+Open `http://127.0.0.1:5173`. On macOS/Linux, the equivalent process-local
+prefixes are `NODE_ENV=development PORT=3100` for Python,
+`NODE_ENV=development PORT=3000 DEEDLY_API_BASE_URL=http://127.0.0.1:3100`
+for Node, and `VITE_API_PORT=3000 VITE_API_BASE_URL=/api` for Vite.
+Use `python_server/.venv/bin/python` and the same Uvicorn arguments.
 
-Or using the built-in entry point with auto-reload:
-```bash
-cd python_server
-.venv\Scripts\python main.py
-```
+`npm run dev` starts **only Vite and Node**, not FastAPI. It can replace
+terminals 2/3 only when their process environment settings are supplied together;
+FastAPI must still run separately. Neither npm dev script adds a server watcher.
+Vite's existing production-React override is intentional and unchanged.
 
-7. In a second terminal, start the Vite development client:
-```bash
-npm run dev:client
-```
+Staff login is the approved platform password/OTP flow, not a local demo login.
+Web Locks and Secure cookies are required. Loopback HTTP browser exceptions vary;
+if a browser refuses Secure cookies, use approved local HTTPS/same-origin proxy
+configuration rather than weakening cookie flags. Missing FastAPI configuration,
+unreachable service or upstream 5xx produces a generic 503: the dashboard shows
+unavailability and dashes for totals, and the wizard persistence probe disables
+saving. There is no direct-DB or fake-auth fallback.
 
-8. Open your browser and navigate to `http://localhost:5173`
+### Builds are not deployments
 
-### Build for Production
-
-```bash
+```powershell
 npm run build
+npm run build:server
+node scripts/fix-server-imports.mjs
 ```
 
-The built client files will be in the `dist` directory.
+The SPA is built into `dist`; Node output is under `dist/server`. The import-fix
+step is required for the emitted Node ESM imports. `npm start` starts the BFF
+only; it does not serve the SPA or start FastAPI. `npm run preview` serves the
+built frontend for local review, not production/pilot hosting.
 
-### Linting
+The root Vercel configuration packages the SPA and Node serverless entrypoints;
+it does **not** provision FastAPI, PostgreSQL, credentials or provider contracts.
+A deployment needs a separately hosted/reachable FastAPI URL in the BFF's
+`DEEDLY_API_BASE_URL`, shared verification keys, the approved database/schema,
+and the same-origin HTTPS `/api` routing required by auth cookies. Ship compatible
+BFF and SPA versions: login/refresh now require the BFF-derived `principalKey`
+metadata for session isolation; absent metadata fails closed. It is an invalidation
+marker derived from verified JWT claims, never an authorization credential.
+Production DB TLS/CA verification remains an unresolved M1 prerequisite; the
+current clients still relax certificate verification. These are rollout
+prerequisites, not authorization to deploy or begin M1. See the auth certification
+checklist and `AGENTS.md` for unresolved live-auth, TLS and release requirements.
 
-```bash
-npm run lint
-```
+### Verification boundaries
 
-To automatically fix linting issues:
+Use the offline modes in `AGENTS.md`: disable dotenv loading for Python,
+clear test DSNs and every DB opt-in, and guard Node DB access before importing
+the app. Never run full discovery with an ambient DSN. Vitest is not installed;
+TypeScript suites use Node's test runner through `tsx`. ESLint scripts exist,
+but the missing reviewed ESLint configuration remains an open tooling gap.
 
-```bash
-npm run lint:fix
-```
+The session browser regression (`node e2e/session-isolation.check.mjs`) uses a
+loopback Vite development server on port 4292 (`SESSION_TEST_BASE` overrides),
+intercepts all API/auth requests and blocks external HTTP requests. It imports
+the actual session module to exercise transitions without adding runtime test
+hooks. Existing matter/list harnesses use a loopback static build. Neither form
+of browser evidence certifies live JWT issuance or a deployed upstream contract.
 
-### Database Setup
+### Session-switch isolation
 
-For full functionality with database features:
+The BFF adds a non-secret `principalKey` to successful login/refresh responses,
+derived from verified user, institution, role, tenant, Golden Record and ability
+claims. The browser advances its session generation on logout, a new login or
+changed verified claims, not on an ordinary same-principal token refresh.
+Protected pages remount at that boundary; old API responses (including delayed
+JSON bodies) are discarded, and expired writes cannot be retried under a new
+institution. Session-bound intake navigation data cannot repopulate another
+session's form through history/Back; persisted matters still reload by UUID.
 
-1. **Install PostgreSQL** (if not already installed):
-```bash
-# Ubuntu/Debian
-sudo apt-get install postgresql postgresql-contrib
+Cooperating tabs invalidate one another through BroadcastChannel. Cookie checks
+on focus, visibility changes and protected request/response boundaries also
+catch a changed login marker when that channel is unavailable. They clear local
+state rather than adopting another tab's token. This is UI isolation, not
+upstream token revocation or cancellation of an already accepted server write.
+Live provider authentication and the full M3 client/role shell remain separate.
 
-# macOS
-brew install postgresql
+### Future isolated PostgreSQL verification — deferred, not enabled
 
-# Windows
-# Download from https://www.postgresql.org/download/windows/
-```
+Before any DB run, obtain explicit approval for the host/database, synthetic
+fixtures, allowed writes, retained rows and cleanup/drop operations. Use a
+dedicated disposable target, disable dotenv, override all competing DSNs
+process-locally, and assert resolved host/name plus `current_database()` and
+`current_schema()` before writes. Preserve historical migration bytes/checksums.
+Provisioning/migrations and M1 target/TLS work remain on hold at this checkpoint.
 
-2. **Create Database**:
-```bash
-sudo -u postgres psql
-CREATE DATABASE legitify_convey_hub;
-CREATE USER legitify_user WITH PASSWORD 'your_password';
-GRANT ALL PRIVILEGES ON DATABASE legitify_convey_hub TO legitify_user;
-\q
-```
+| Relevant suite | Gate and lifecycle to approve separately |
+|---|---|
+| `test_v1_transfers.py` — 85 DB-gated cases | `TEST_DATABASE_URL`; actual migrated schema. Module setup can commit eight synthetic transfer/financial rows and uses dataset-count assumptions. Do not mix blindly with retained fixtures from another suite. |
+| `test_migrations_016.py` — 5 DB cases | `TEST_DATABASE_URL`; exercises migration SQL/constraints inside rollback helpers. Review its DDL and prerequisite schema before approval. Static checks alone do not prove installed constraints. |
+| `test_matter_property_workflow_db.py` — 8 cases | `TEST_DATABASE_URL`, `RUN_MATTER_PROPERTY_WORKFLOW_DB_TESTS`, `TEST_DATABASE_HOST`, `TEST_DATABASE_NAME`; exact migrations through 029 must already be installed. Rejects `neondb`/system databases and retains labelled synthetic workflow rows. |
+| `test_v1_matter_properties_db.py` / `test_v1_matter_editing_db.py` — 18 / 7 cases | `TEST_DATABASE_URL` plus their respective `RUN_MATTER_PROPERTY_DB_TESTS` / `RUN_MATTER_EDITING_DB_TESTS` opt-in; create/drop scratch schemas. They do not certify the installed migration chain. |
+| `test_transfer_status_authority.py` — 8 cases | `TEST_DATABASE_URL`; legacy direct-handler coverage, not certification of current v1 status filtering. |
 
-3. **Run Migrations**:
-```bash
-npm run migrate
-```
+The current list/filter/totals tests use mocked SQL results. A future guarded
+actual-schema test must cover both canonical statuses across two institutions,
+roles/abilities/client denial, pagination and empty pages, and totals independent
+of filtering. Existing DB suites are not a substitute for that missing case.
+Measure representative query plans before deciding on indexes.
 
-4. **Test Connection**:
-```bash
-npm run test:db
-```
+Separate-read consistency remains unchanged: page count, rows and institution
+totals are separate reads, not a shared transactional snapshot. Concurrent writes
+can temporarily make them disagree; no snapshot-consistency claim is made.
 
-### Environment Variables
-
-Create a `.env` file in the root directory:
-
-```env
-# PostgreSQL Database Configuration
-DB_HOST=localhost
-DB_PORT=5432
-DB_NAME=legitify_convey_hub
-DB_USER=your_username
-DB_PASSWORD=your_password
-DB_SSL=false
-DB_SCHEMA=Transfers
-
-# Database Connection Pool Settings
-DB_MIN_CONNECTIONS=2
-DB_MAX_CONNECTIONS=10
-
-# Application Configuration
-NODE_ENV=development
-PORT=3000
-API_BASE_URL=http://localhost:3000/api
-VITE_API_BASE_URL=/api
-VITE_API_PORT=3000
-
-# Loqate Address Verification API
-LOQATE_API_KEY=your_loqate_key
-```
-
-The Python backend uses the same `.env` file and is configured in `python_server/db.py`.
-
-**Note**: Never commit the `.env` file to version control.
+Do not enable broad DB discovery: other suites have different lifecycles. In
+particular, migration-chain tests use `TEST_MIGRATION_DATABASE_URL` and
+`RUN_MIGRATION_CHAIN_TESTS`, require an empty dedicated database, and can drop
+entire schemas during cleanup. They are not part of this review checkpoint.
+The remaining skipped source-contract module needs `ENTITIES_SOURCE_ROOT` and
+runs against a source snapshot, not live authentication or PostgreSQL.
 
 ## Project Structure
 
@@ -286,6 +344,11 @@ The application uses a layered architecture for data management, providing clean
 
 ### API Layer
 
+**Node BFF**
+- Browser-facing routes and auth proxy in `server/`; the SPA does not call FastAPI directly.
+- New domain behavior stays in FastAPI; existing Node scoped reads remain where not yet migrated.
+- Legacy Accounts and other quarantined routes remain unavailable, even with a valid JWT.
+
 **FastAPI Backend**
 - **Connection Pooling**: asyncpg pool managed in `python_server/db.py`
 - **CORS**: Configured to allow the Vite client in development
@@ -323,16 +386,16 @@ The application uses a layered architecture for data management, providing clean
 ### Data Flow
 
 ```
-UI Components → React Hooks → Service Layer → FastAPI Router → asyncpg → PostgreSQL
-     ↓              ↓              ↓              ↓              ↓            ↓
-User Actions → State Updates → Business Logic → Validation → SQL Queries → Data
+Browser → same-origin /api → Node BFF → FastAPI → PostgreSQL
+                              └── existing scoped reads → PostgreSQL
+                              └── auth proxy → Legitify gateway
 ```
 
 ### Golden Records Integration
 
 **Search Functionality**
 - **Inline Search**: ID number, name, or registration number search on the New Transfer page
-- **Mock Data**: Pre-populated golden records for testing
+- **Live dependency**: Requires approved Legitify authentication/S2S contracts; mocked test results are not live Golden Records
 - **Pre-population**: Auto-fills transfer forms with found records
 - **Manual Entry**: Passes the search term into the workflow when no record is found
 

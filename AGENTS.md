@@ -834,3 +834,38 @@ classification review does not waive them or authorize deployment.
   5 migration-016, 8 property-workflow and 25 core-edit/property DB cases.
   Eight status-authority skips exercise legacy handlers, not the v1 list.
   No live database, provider or authentication certification is implied.
+
+## Startup and session-isolation review checkpoint
+
+- `README.md` now documents the actual three-process startup: Vite 5173,
+  Node BFF 3000, FastAPI 3100. Vite's proxy config reads `VITE_API_PORT` from
+  process.env before dotenv loading, so export it explicitly; `.env` alone
+  does not configure that proxy port. `npm run dev` does not start Python.
+  Startup instructions are for an already approved environment, not permission
+  to connect to shared services or apply migrations. M1 remains on hold.
+- Login/refresh now carry a BFF-derived `principalKey` fingerprint of verified
+  JWT identity/institution/role/ability claims. It is only a UI invalidation
+  marker, never an authorization credential. Deploy compatible BFF/SPA versions;
+  missing/malformed metadata fails closed. Existing JWT, tenant, cookie, CSRF
+  and Web Locks checks remain authoritative and unchanged.
+- Session generations invalidate outstanding protected responses, JSON bodies
+  and replay attempts, and key protected React subtrees. Normal same-principal
+  refresh preserves state. Cross-tab boundary messages and cookie checks on
+  focus/visibility/request boundaries clear local state without adopting tokens.
+  Intake history/prefill has a resettable per-session scope, preventing old
+  navigation data from rehydrating another session's forms.
+- `node e2e/session-isolation.check.mjs` requires a loopback Vite dev server
+  on 4292 (override `SESSION_TEST_BASE`). It intercepts all API/auth traffic,
+  blocks external HTTP requests, and drives the actual session module through
+  its loaded URL, including any Vite HMR timestamp. Importing a different URL
+  would create a second module instance and would not test the app's session.
+- The README lists relevant PostgreSQL suites, opt-ins, fixture/cleanup hazards,
+  exact-schema/host/name prerequisites and the missing actual-schema list/totals
+  coverage. Do not enable DB tests without separate lifecycle approval. Counts,
+  page rows and institution totals remain separate reads, not one snapshot.
+  UI invalidation is not upstream revocation or cancellation of accepted writes.
+- Checkpoint verification under Node 24.21.0 / Python 3.12.10: 166 frontend,
+  179 BFF, 798 Python tests passed (249 deliberate DB/source-contract skips),
+  6 checksum tests, all three typechecks and the production build passed.
+  Browser checks: 10 session-isolation plus 37 existing static-build checks;
+  synthetic transport only. No live auth/DB services, migrations or M1 work.
