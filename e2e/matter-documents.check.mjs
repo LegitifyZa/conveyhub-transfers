@@ -10,7 +10,9 @@ import { chromium } from 'playwright'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
-const BASE = process.env.BASE || 'http://localhost:4173'
+const BASE = process.env.BASE || 'http://127.0.0.1:4173'
+const origin = new URL(BASE).origin
+assert.ok(['localhost', '127.0.0.1'].includes(new URL(BASE).hostname), 'Use a loopback static build')
 const MATTER_ID = '11111111-1111-4111-8111-111111111111'
 const TRANSFER_ID = 'TRF-PW-DOC'
 const PDF_BYTES = Buffer.from('%PDF-1.4 synthetic check file\n%%EOF')
@@ -48,6 +50,12 @@ function makeApi(t = {}) {
 
     if (path === '/api/auth/refresh' && method === 'POST') {
       return r.fulfill(json({ message: 'OK', data: { token: 'pw-access-token', expires: Math.floor(Date.now() / 1000) + 3600 } }))
+    }
+    if (path === '/api/v1/transfers/classifications') {
+      return r.fulfill(json({ message: 'OK', data: { classifications: [{
+        canonicalCode: 'transfer.donation', subtype: 'donation', displayLabel: 'Donation',
+        transferFrom: null, transferFromLabel: null, requiresTransferFrom: false,
+      }] } }))
     }
     if (path === '/api/v1/transfers' && method === 'GET') {
       // The persistence probe's real contract: {message, data:{transfers:[],
@@ -169,8 +177,12 @@ function makeApi(t = {}) {
     if (path === `/api/transfers/${MATTER_ID}/activity` && method === 'GET') {
       return r.fulfill(json({ success: true, data: [] }))
     }
+    const subresource = path.match(new RegExp(`^/api/v1/transfers/${MATTER_ID}/(properties|milestones|activity|parties)$`))
+    if (subresource && method === 'GET') {
+      return r.fulfill(json({ message: 'OK', data: { [subresource[1]]: [] } }))
+    }
     console.log('  unhandled:', method, path)
-    return r.fulfill(json({ message: 'OK', data: {} }))
+    return r.fulfill(json({ error: 'No backend is available in this mocked check' }, 503))
   }
 
   return { route, calls, documents, requirements }
@@ -185,15 +197,22 @@ const check = async (name, fn) => {
   } catch (error) {
     results.push(`FAIL  ${name}: ${error.message}`)
     console.log(`FAIL  ${name}: ${error.message}`)
+  } finally {
+    for (const context of browser.contexts()) await context.close()
   }
 }
 
 const browser = await chromium.launch()
 
 async function newAuthedPage(api) {
-  const context = await browser.newContext()
+  const context = await browser.newContext({ serviceWorkers: 'block' })
+  context.setDefaultTimeout(8000)
   await context.addCookies([{ name: 'deedly_sid', value: 'pw-sid-1', url: BASE }])
-  await context.route('**/api/**', api.route)
+  await context.route('**/*', route => {
+    const url = new URL(route.request().url())
+    if (url.origin !== origin) return route.abort()
+    return url.pathname.startsWith('/api/') ? api.route(route) : route.continue()
+  })
   const page = await context.newPage()
   return { context, page }
 }
@@ -354,18 +373,19 @@ await check('document readback after reload', async () => {
 
 await check('persistence probe accepts the real {message,data:{transfers}} envelope', async () => {
   // Wizard-path check, distinct from the documents envelope: GET
-  // /api/v1/transfers/?limit=1 must satisfy data.transfers as an array for
-  // Save Draft / Submit Transfer to unlock.
+  // /api/v1/transfers?limit=1 must satisfy data.transfers as an array for
+  // Save Details / Save and Continue to unlock.
   const api = makeApi({})
   const { context, page } = await newAuthedPage(api)
   const probeResponse = page.waitForResponse(r => r.url().includes('/api/v1/transfers?limit=1'))
   await page.goto(`${BASE}/transfers/workflow`)
   await probeResponse
-  const save = page.getByRole('button', { name: 'Save Draft' })
+  await page.getByLabel('Transfer classification', { exact: true }).selectOption('transfer.donation')
+  const save = page.getByRole('button', { name: 'Save Details' })
   await save.waitFor()
   await page.waitForFunction(() => {
     const btn = [...document.querySelectorAll('button')]
-      .find(b => b.textContent?.trim() === 'Save Draft')
+      .find(b => b.textContent?.trim() === 'Save Details')
     return btn && !btn.disabled
   }, { timeout: 5000 })
   await context.close()
@@ -377,7 +397,8 @@ await check('persistence probe fails closed on a malformed envelope', async () =
   const probeResponse = page.waitForResponse(r => r.url().includes('/api/v1/transfers?limit=1'))
   await page.goto(`${BASE}/transfers/workflow`)
   await probeResponse
-  const save = page.getByRole('button', { name: 'Save Draft' })
+  await page.getByLabel('Transfer classification', { exact: true }).selectOption('transfer.donation')
+  const save = page.getByRole('button', { name: 'Save Details' })
   await save.waitFor()
   await page.waitForTimeout(500) // let probe state settle
   assert.equal(await save.isDisabled(), true)

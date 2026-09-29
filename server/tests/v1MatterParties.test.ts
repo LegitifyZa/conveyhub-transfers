@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { createServer, IncomingMessage, Server, ServerResponse } from 'node:http'
 import { randomUUID } from 'node:crypto'
-import { after, before, beforeEach, describe, it } from 'node:test'
+import { after, before, beforeEach, describe, it, mock } from 'node:test'
 
 import jwt from 'jsonwebtoken'
 
@@ -13,6 +13,8 @@ const JWT_SECRET = process.env.JWT_SECRET
 
 const { default: app } = await import('../index')
 const { pool } = await import('../db')
+const database = mock.method(pool, 'query', () => { throw new Error('Unexpected BFF database query') })
+mock.method(pool, 'connect', () => { throw new Error('Unexpected BFF database connection') })
 
 interface CapturedRequest {
   method: string
@@ -114,6 +116,78 @@ describe('v1 matter create + party attach BFF proxies', async () => {
   beforeEach(() => {
     captured = []
     upstreamResponse = { status: 201, body: { message: 'Created', data: { id: TRANSFER_ID } } }
+  })
+
+  it('guards staff lists and keeps client lists empty without totals or upstream calls', async () => {
+    for (const [authorization, status] of [
+      [undefined, 401], ['Bearer invalid', 401],
+      [`Bearer ${makeToken(['transfers:write'])}`, 403],
+      [`Bearer ${makeToken(['transfers:read'], 6)}`, 401],
+      [`Bearer ${makeToken(['transfers:read'], 4)}`, 200],
+    ] as const) {
+      const response = await fetch(`${baseUrl}/api/v1/transfers?status=invalid`, {
+        headers: authorization ? { Authorization: authorization } : {},
+      })
+      assert.equal(response.status, status)
+      if (status === 200) assert.deepEqual((await response.json()).data, {
+        transfers: [], pagination: { page: 1, limit: 10, total: 0, totalPages: 0 },
+      })
+    }
+    assert.equal(captured.length, 0)
+    assert.equal(database.mock.callCount(), 0)
+  })
+
+  it('proxies canonical filtering and pagination with the unchanged JWT, never tenant overrides', async () => {
+    for (const role of [1, 2, 3]) {
+      const token = makeToken(['transfers:read'], role)
+      const envelope = { message: 'OK', data: {
+        transfers: [{ id: TRANSFER_ID, status: 'complete' }],
+        pagination: { page: 2, limit: 1, total: 3, totalPages: 3 },
+        statusTotals: { total: 9, inProgress: 6, completed: 3 },
+      } }
+      upstreamResponse = { status: 200, body: envelope }
+      const response = await fetch(`${baseUrl}/api/v1/transfers?status=complete&page=2&limit=1&sortBy=status&sortOrder=asc&accountable_institution_id=7`, {
+        headers: { Authorization: `Bearer ${token}`, 'X-Accountable-Institution-Id': '7' },
+      })
+      assert.equal(response.status, 200)
+      assert.deepEqual(await response.json(), envelope)
+      const sent = captured.at(-1)!
+      assert.equal(sent.url, '/api/v1/transfers/?page=2&limit=1&sortBy=status&sortOrder=asc&status=complete')
+      assert.equal(sent.headers.authorization, `Bearer ${token}`)
+      assert.equal(sent.headers['x-accountable-institution-id'], undefined)
+      assert.equal(sent.method, 'GET')
+      assert.equal(sent.body, '')
+    }
+    assert.equal(database.mock.callCount(), 0)
+  })
+
+  it('relays validation failures without dropping invalid or repeated status values', async () => {
+    upstreamResponse = { status: 422, body: { detail: 'status must be in_progress or complete' } }
+    for (const query of ['status=', 'status=draft', 'status=complete&status=in_progress']) {
+      const response = await fetch(`${baseUrl}/api/v1/transfers/?${query}`, {
+        headers: { Authorization: `Bearer ${makeToken()}` },
+      })
+      assert.equal(response.status, 422)
+      assert.deepEqual(await response.json(), upstreamResponse.body)
+      assert.equal(captured.at(-1)?.url, `/api/v1/transfers/?${query}`)
+    }
+  })
+
+  it('fails list reads closed on missing configuration, transport failure and upstream errors', async () => {
+    const headers = { Authorization: `Bearer ${makeToken()}` }
+    upstreamResponse = { status: 500, body: { error: 'private upstream detail' } }
+    for (const base of [upstreamBaseUrl, undefined, 'http://127.0.0.1:1']) {
+      if (base) process.env.DEEDLY_API_BASE_URL = base
+      else delete process.env.DEEDLY_API_BASE_URL
+      try {
+        const response = await fetch(`${baseUrl}/api/v1/transfers`, { headers })
+        assert.equal(response.status, 503)
+        assert.deepEqual(await response.json(), { success: false, error: 'Matter service temporarily unavailable' })
+      } finally {
+        process.env.DEEDLY_API_BASE_URL = upstreamBaseUrl
+      }
+    }
+    assert.equal(database.mock.callCount(), 0)
   })
 
   it('guards classification discovery before contacting FastAPI', async () => {

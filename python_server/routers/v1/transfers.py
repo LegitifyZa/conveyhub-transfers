@@ -332,31 +332,54 @@ async def list_transfers(
     if not user.has_ability("transfers:read"):
         return JSONResponse(status_code=403, content={"success": False, "error": "Forbidden"})
 
+    statuses = request.query_params.getlist("status")
+    if len(statuses) > 1 or (statuses and statuses[0] not in ("in_progress", "complete")):
+        raise HTTPException(status_code=422, detail="status must be in_progress or complete")
+
     filters = _parse_pagination_params(request)
     offset = (filters["page"] - 1) * filters["limit"]
-
-    count_sql = "SELECT COUNT(*) AS total FROM transfers t WHERE t.accountable_institution_id = $1"
-    count_params = [user.accountable_institution_id]
+    predicate = "WHERE t.accountable_institution_id = $1"
+    count_params: list[Any] = [user.accountable_institution_id]
+    if statuses:
+        predicate += " AND t.status = $2"
+        count_params.append(statuses[0])
+    count_sql = f"SELECT COUNT(*) AS total FROM transfers t {predicate}"
     data_sql = f"""
         SELECT t.id, t.transfer_id, t.property_address, t.purchase_price, t.status,
                t.current_step, t.total_steps, t.progress, t.created_at, t.updated_at
         FROM transfers t
-        WHERE t.accountable_institution_id = $1
-        ORDER BY t.{filters['sort_by']} {filters['sort_order'].upper()}
-        LIMIT $2 OFFSET $3
+        {predicate}
+        ORDER BY t.{filters['sort_by']} {filters['sort_order'].upper()}, t.id ASC
+        LIMIT ${len(count_params) + 1} OFFSET ${len(count_params) + 2}
     """
-    data_params = [user.accountable_institution_id, filters["limit"], offset]
+    data_params = [*count_params, filters["limit"], offset]
 
     count_result = await query(count_sql, count_params)
     total = int(count_result.rows[0]["total"])
 
     data_result = await query(data_sql, data_params)
     transfers = [_map_transfer(row) for row in data_result.rows]
+    totals_result = await query(
+        """
+        SELECT COUNT(*) AS total,
+               COUNT(*) FILTER (WHERE t.status = 'in_progress') AS in_progress,
+               COUNT(*) FILTER (WHERE t.status = 'complete') AS complete
+        FROM transfers t
+        WHERE t.accountable_institution_id = $1
+        """,
+        [user.accountable_institution_id],
+    )
+    totals = totals_result.rows[0]
 
     return {
         "message": "OK",
         "data": {
             "transfers": transfers,
+            "statusTotals": {
+                "total": int(totals["total"]),
+                "inProgress": int(totals["in_progress"]),
+                "completed": int(totals["complete"]),
+            },
             "pagination": {
                 "page": filters["page"],
                 "limit": filters["limit"],

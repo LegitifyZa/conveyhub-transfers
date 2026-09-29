@@ -71,13 +71,18 @@ const getTransferDisplay = (transfer: TransferAggregate) => {
 
 const TransfersDashboard: React.FC = () => {
   const navigate = useNavigate()
-  const { transfers, isLoading, error, fetchTransfers } = useTransfers()
+  const { transfers, statusTotals: stats, pagination, isLoading, error, fetchTransfers } = useTransfers()
   const [searchTerm, setSearchTerm] = useState('')
   const [filterStatus, setFilterStatus] = useState('all')
+  const [page, setPage] = useState(1)
+  const selectStatus = (status: string) => {
+    setFilterStatus(status)
+    setPage(1)
+  }
 
   useEffect(() => {
-    fetchTransfers(filterStatus === 'all' ? {} : { status: filterStatus })
-  }, [fetchTransfers, filterStatus])
+    fetchTransfers({ page, ...(filterStatus === 'all' ? {} : { status: filterStatus }) })
+  }, [fetchTransfers, filterStatus, page])
 
   const filteredTransfers = useMemo(() => {
     const term = searchTerm.toLowerCase().trim()
@@ -91,16 +96,6 @@ const TransfersDashboard: React.FC = () => {
       )
     })
   }, [transfers, searchTerm])
-
-  const stats = useMemo(() => {
-    const counts = {
-      total: transfers.length,
-      completed: transfers.filter(t => t.status === 'completed').length,
-      inProgress: transfers.filter(t => t.status === 'in_progress').length,
-      draft: transfers.filter(t => t.status === 'draft').length
-    }
-    return counts
-  }, [transfers])
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-navy-900">
@@ -126,13 +121,13 @@ const TransfersDashboard: React.FC = () => {
         </div>
 
         {/* Stats Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+        <div aria-label="Institution-wide transfer totals" className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
           <Card>
             <CardContent className="p-6">
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm text-gray-600 dark:text-gray-400">Total Transfers</p>
-                  <p className="text-2xl font-bold text-gray-900 dark:text-gray-100">{error ? '—' : stats.total}</p>
+                  <p className="text-2xl font-bold text-gray-900 dark:text-gray-100">{error || isLoading || !stats ? '—' : stats.total}</p>
                 </div>
                 <div className="w-12 h-12 rounded-full bg-blue-100 dark:bg-blue-900/20 flex items-center justify-center">
                   <FileText className="w-6 h-6 text-blue-600 dark:text-blue-400" />
@@ -146,7 +141,7 @@ const TransfersDashboard: React.FC = () => {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm text-gray-600 dark:text-gray-400">Completed</p>
-                  <p className="text-2xl font-bold text-green-600 dark:text-green-400">{error ? '—' : stats.completed}</p>
+                  <p className="text-2xl font-bold text-green-600 dark:text-green-400">{error || isLoading || !stats ? '—' : stats.completed}</p>
                 </div>
                 <div className="w-12 h-12 rounded-full bg-green-100 dark:bg-green-900/20 flex items-center justify-center">
                   <TrendingUp className="w-6 h-6 text-green-600 dark:text-green-400" />
@@ -160,24 +155,10 @@ const TransfersDashboard: React.FC = () => {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm text-gray-600 dark:text-gray-400">In Progress</p>
-                  <p className="text-2xl font-bold text-blue-600 dark:text-blue-400">{error ? '—' : stats.inProgress}</p>
+                  <p className="text-2xl font-bold text-blue-600 dark:text-blue-400">{error || isLoading || !stats ? '—' : stats.inProgress}</p>
                 </div>
                 <div className="w-12 h-12 rounded-full bg-blue-100 dark:bg-blue-900/20 flex items-center justify-center">
                   <Calendar className="w-6 h-6 text-blue-600 dark:text-blue-400" />
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardContent className="p-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm text-gray-600 dark:text-gray-400">Draft</p>
-                  <p className="text-2xl font-bold text-gray-600 dark:text-gray-400">{error ? '—' : stats.draft}</p>
-                </div>
-                <div className="w-12 h-12 rounded-full bg-gray-100 dark:bg-gray-900/20 flex items-center justify-center">
-                  <FileText className="w-6 h-6 text-gray-600 dark:text-gray-400" />
                 </div>
               </div>
             </CardContent>
@@ -192,7 +173,7 @@ const TransfersDashboard: React.FC = () => {
                 <div className="relative">
                   <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
                   <Input
-                    placeholder="Search transfers..."
+                    placeholder="Search this page..."
                     value={searchTerm}
                     onChange={(e) => setSearchTerm(e.target.value)}
                     className="pl-10"
@@ -202,31 +183,24 @@ const TransfersDashboard: React.FC = () => {
               <div className="flex gap-2">
                 <Button
                   variant={filterStatus === 'all' ? 'primary' : 'secondary'}
-                  onClick={() => setFilterStatus('all')}
+                  onClick={() => selectStatus('all')}
                   size="sm"
                 >
                   All
                 </Button>
                 <Button
                   variant={filterStatus === 'in_progress' ? 'primary' : 'secondary'}
-                  onClick={() => setFilterStatus('in_progress')}
+                  onClick={() => selectStatus('in_progress')}
                   size="sm"
                 >
                   In Progress
                 </Button>
                 <Button
-                  variant={filterStatus === 'completed' ? 'primary' : 'secondary'}
-                  onClick={() => setFilterStatus('completed')}
+                  variant={filterStatus === 'complete' ? 'primary' : 'secondary'}
+                  onClick={() => selectStatus('complete')}
                   size="sm"
                 >
                   Completed
-                </Button>
-                <Button
-                  variant={filterStatus === 'draft' ? 'primary' : 'secondary'}
-                  onClick={() => setFilterStatus('draft')}
-                  size="sm"
-                >
-                  Draft
                 </Button>
               </div>
             </div>
@@ -252,7 +226,7 @@ const TransfersDashboard: React.FC = () => {
         {!isLoading && (
           <Card>
             <CardHeader>
-              <CardTitle>Recent Transfers</CardTitle>
+              <CardTitle>Transfers</CardTitle>
             </CardHeader>
             <CardContent>
               {error ? (
@@ -268,7 +242,7 @@ const TransfersDashboard: React.FC = () => {
                     No transfers found
                   </h3>
                   <p className="text-gray-600 dark:text-gray-400 mb-4">
-                    {searchTerm ? 'Try adjusting your search terms' : 'Get started by creating your first transfer'}
+                    {searchTerm ? 'No matches on this page. Try another page or adjust your search.' : 'No transfers match this page and status filter.'}
                   </p>
                   {!searchTerm && (
                     <Link to="/transfers/new">
@@ -349,6 +323,19 @@ const TransfersDashboard: React.FC = () => {
                       </div>
                     )
                   })}
+                </div>
+              )}
+              {!error && pagination && (
+                <div className="flex items-center justify-between gap-4 mt-6">
+                  <Button variant="secondary" disabled={page <= 1} onClick={() => setPage(current => current - 1)}>
+                    Previous Page
+                  </Button>
+                  <span className="text-sm text-gray-600 dark:text-gray-400">
+                    Page {pagination.page} of {Math.max(1, pagination.totalPages)} · {pagination.total} matching transfers
+                  </span>
+                  <Button variant="secondary" disabled={page >= pagination.totalPages} onClick={() => setPage(current => current + 1)}>
+                    Next Page
+                  </Button>
                 </div>
               )}
             </CardContent>

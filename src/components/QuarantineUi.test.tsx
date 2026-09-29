@@ -130,15 +130,17 @@ describe('TransferNavigation quarantine handling', () => {
     </TransferProvider>
   )
 
-  it('disables Save Draft and Submit Transfer while matter persistence is unavailable', () => {
+  it('disables Save Details and Save and Continue while matter persistence is unavailable', () => {
     const html = renderNav(true)
-    assert.equal(buttonIsDisabled(html, 'Save Draft'), true)
-    assert.equal(buttonIsDisabled(html, 'Submit Transfer'), true)
+    assert.equal(buttonIsDisabled(html, 'Save Details'), true)
+    assert.equal(buttonIsDisabled(html, 'Save and Continue'), true)
   })
 
-  it('keeps Save Draft and Submit Transfer enabled when persistence is available', () => {
+  it('keeps Save Details and Save and Continue enabled when persistence is available', () => {
     const html = renderNav(false)
-    assert.equal(buttonIsDisabled(html, 'Save Draft'), false)
-    assert.equal(buttonIsDisabled(html, 'Submit Transfer'), false)
+    assert.equal(buttonIsDisabled(html, 'Save Details'), false)
+    assert.equal(buttonIsDisabled(html, 'Save and Continue'), false)
+    assert.doesNotMatch(html, /Submit Transfer|% Complete/)
+    assert.match(html, /not transfer completion/)
   })
 })

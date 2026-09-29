@@ -305,10 +305,10 @@ const StepReview: React.FC = () => {
     <div className="space-y-6 animate-in fade-in slide-in-from-right-5 duration-500">
       <div className="space-y-2">
         <h2 className="text-2xl font-bold text-gray-900 dark:text-gray-100">
-          Review & Submit
+          Review & Save
         </h2>
         <p className="text-gray-600 dark:text-gray-400">
-          Review all the information before submitting the transfer
+          Review the captured details before saving and continuing to the overview. This does not submit or complete the transfer.
         </p>
       </div>
 
@@ -317,7 +317,7 @@ const StepReview: React.FC = () => {
           <div className="flex items-center justify-between">
             <div className="flex items-center space-x-2">
               <CheckCircle className="h-5 w-5 text-teal-600 dark:text-teal-400" />
-              <span className="font-medium text-gray-900 dark:text-gray-100">Overall Progress</span>
+              <span className="font-medium text-gray-900 dark:text-gray-100">Form checks — not legal readiness</span>
             </div>
             <span className="font-bold text-teal-600 dark:text-teal-400">{getProgressPercentage(state)}%</span>
           </div>

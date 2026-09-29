@@ -242,6 +242,17 @@ function fromServerAggregate(server: ServerAggregate): TransferAggregate {
 interface V1ListData {
   transfers?: ServerAggregate[]
   pagination?: PaginatedResponse<TransferAggregate>['pagination']
+  statusTotals?: TransferStatusTotals
+}
+
+export interface TransferStatusTotals {
+  total: number
+  inProgress: number
+  completed: number
+}
+
+export interface TransferListResponse extends PaginatedResponse<TransferAggregate> {
+  statusTotals: TransferStatusTotals | null
 }
 
 export class TransferApi {
@@ -257,28 +268,32 @@ export class TransferApi {
     return options
   }
 
-  static async getTransfers(filters: TransferFilters = {}): Promise<PaginatedResponse<TransferAggregate>> {
-    // The v1 list supports page/limit/sort only — status is applied
-    // client-side on the returned page.
+  static async getTransfers(filters: TransferFilters = {}): Promise<TransferListResponse> {
+    // The v1 list owns status filtering, pagination and institution totals;
+    // the browser must not recompute them from a single page.
     const params = new URLSearchParams()
     if (filters.page) params.set('page', String(filters.page))
     if (filters.limit) params.set('limit', String(filters.limit))
     if (filters.sortBy) params.set('sortBy', filters.sortBy)
     if (filters.sortOrder) params.set('sortOrder', filters.sortOrder)
+    if (filters.status !== undefined) params.set('status', filters.status)
     const qs = params.toString()
-    const envelope = await apiRequest<{ message?: string; data?: V1ListData }>(`/api/v1/transfers${qs ? `?${qs}` : ''}`)
-    const rows = envelope.data?.transfers ?? []
-    const mapped = rows.map(fromServerAggregate)
-    const filtered = filters.status ? mapped.filter(t => t.status === filters.status) : mapped
+    const envelope = await apiRequest<{ message?: string; data?: V1ListData }>(`/api/v1/transfers${qs ? `?${qs}` : ''}`, { cache: 'no-store' })
+    const data = envelope.data
+    const pagination = data?.pagination
+    const totals = data?.statusTotals ?? null
+    const isCount = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+    if (!Array.isArray(data?.transfers) || !pagination
+      || ![pagination.page, pagination.limit, pagination.total, pagination.totalPages].every(isCount)
+      || pagination.page < 1 || pagination.limit < 1
+      || (totals !== null && ![totals.total, totals.inProgress, totals.completed].every(isCount))) {
+      throw new Error('Invalid transfer list response')
+    }
     return {
       success: true,
-      data: filtered,
-      pagination: envelope.data?.pagination ?? {
-        page: filters.page ?? 1,
-        limit: filters.limit ?? 10,
-        total: filtered.length,
-        totalPages: 1
-      }
+      data: data.transfers.map(fromServerAggregate),
+      pagination,
+      statusTotals: totals,
     }
   }
 

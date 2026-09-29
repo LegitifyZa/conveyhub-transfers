@@ -323,7 +323,7 @@ const TransferWorkflow: React.FC = () => {
     const result = await persistAggregate()
     // Never claim success or navigate while any party or the property failed.
     if (!result || result.failedPartyIds.length > 0 || result.propertyFailed) {
-      setSaveError(current => current ?? 'The transfer could not be submitted. Your entries remain on this page.')
+      setSaveError(current => current ?? 'The details could not be saved. Your entries remain on this page.')
       return
     }
     navigate(`/transfers/${result.matterId}/milestones`)
@@ -354,7 +354,7 @@ const TransferWorkflow: React.FC = () => {
             Property Transfer
           </h1>
           <p className="text-gray-600 dark:text-gray-400">
-            Complete the transfer process step by step
+            Capture transfer details step by step. Saving does not submit or complete the transfer.
           </p>
         </div>
 
@@ -439,7 +439,7 @@ const TransferWorkflow: React.FC = () => {
                 <div className="space-y-4">
                   <div>
                     <div className="text-sm text-gray-600 dark:text-gray-400">
-                      Progress
+                      Form checks — not legal readiness
                     </div>
                     <div className="text-2xl font-bold text-teal-600 dark:text-teal-400">
                       {getProgressPercentage(state)}%
@@ -455,7 +455,7 @@ const TransferWorkflow: React.FC = () => {
                       {currentStep === 2 && 'Parties Information'}
                       {currentStep === 3 && 'Financial Information'}
                       {currentStep === 4 && 'Documents'}
-                      {currentStep === 5 && 'Review & Submit'}
+                      {currentStep === 5 && 'Review & Save'}
                     </div>
                   </div>
 
