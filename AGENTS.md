@@ -819,3 +819,18 @@ classification review does not waive them or authorize deployment.
   reclassification design, complete multi-property wizard editing/readback,
   measured indexing, live authentication, legal-rule or pilot-release gates.
   SEC-BUILD-02, SEC-RUNTIME-03, TOOL-LINT-01 and TOOL-NODE-01 remain separate.
+
+## M2 review follow-up (offline)
+
+- Wizard document URLs require the persisted transfer UUID (`state.id`), never
+  the human `TRF-*` reference. The property harness now rejects the latter;
+  allowing both had hidden an existing application defect.
+- BFF list query parsing must preserve literal question marks in values and
+  subsequent parameters; FastAPI, not truncation, validates status values.
+- Post-fix checks: 159 frontend/component, 178 BFF, 798 Python, 6 checksum,
+  37 mocked browser checks, three typechecks and the production build passed.
+- The 249 Python skips comprise 248 database-gated cases and one unconfigured
+  landed Entities source-contract module. Particularly relevant: 85 v1 transfer,
+  5 migration-016, 8 property-workflow and 25 core-edit/property DB cases.
+  Eight status-authority skips exercise legacy handlers, not the v1 list.
+  No live database, provider or authentication certification is implied.

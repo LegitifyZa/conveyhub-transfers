@@ -26,7 +26,7 @@ const json = (body, status = 200) => ({
 // Server-side store simulated by the mocks. attachBodies records every
 // POST .../properties body so tests can assert identical-key retries.
 function makeApi(t) {
-  const calls = { createMatter: [], attachProperty: [], attachParty: [] }
+  const calls = { createMatter: [], attachProperty: [], attachParty: [], documentReads: [] }
   let links = []
   let attachBehaviour = t.attachBehaviour || 'success' // 'success' | 'fail-once' | 'drop-once'
   let attachAttempts = 0
@@ -130,7 +130,8 @@ function makeApi(t) {
         },
       }))
     }
-    if ([`/api/v1/transfers/${MATTER_ID}/documents`, `/api/v1/transfers/${TRANSFER_ID}/documents`].includes(path) && method === 'GET') {
+    if (path.endsWith('/documents') && method === 'GET') calls.documentReads.push(path)
+    if (path === `/api/v1/transfers/${MATTER_ID}/documents` && method === 'GET') {
       return r.fulfill(json({ message: 'OK', data: {
         documents: [{ id: 'doc-synthetic', transferId: MATTER_ID, name: 'Synthetic property harness document',
           status: 'uploaded', scanStatus: 'clean', requirementKey: null }],
@@ -202,11 +203,13 @@ async function completeWizardFromStep2(page) {
   await page.getByRole('button', { name: 'Next Step' }).click()
 }
 
-async function saveAndContinue(page) {
+async function saveAndContinue(page, api) {
   // Documents require a saved matter: persist the draft first.
   await page.getByRole('button', { name: 'Save Details' }).click()
   await page.getByText('Matter, property and all parties saved.').waitFor()
   await page.getByText('Synthetic property harness document', { exact: true }).waitFor()
+  assert.ok(api.calls.documentReads.length > 0)
+  assert.ok(api.calls.documentReads.every(path => path === `/api/v1/transfers/${MATTER_ID}/documents`), 'Document reads must use the transfer UUID, never its display reference')
   await page.getByRole('button', { name: 'Next Step' }).click()
   assert.equal(await page.getByRole('button', { name: 'Submit Transfer' }).count(), 0)
   await page.getByRole('button', { name: 'Save and Continue' }).click()
@@ -243,7 +246,7 @@ await check('manual capture + wizard completion', async () => {
   await page.locator('select').filter({ has: page.locator('option[value="Freehold"]') }).selectOption('Freehold')
   await page.getByRole('button', { name: 'Next Step' }).click()
   await completeWizardFromStep2(page)
-  await saveAndContinue(page)
+  await saveAndContinue(page, api)
   await page.waitForURL(`**/transfers/${MATTER_ID}/milestones`)
   await page.getByText('14 Jacaranda Avenue').waitFor()
   await page.getByText('Manually captured — unverified').waitFor()
@@ -271,7 +274,7 @@ await check('select existing property, change it, multiple links on milestones',
   // With the linked flag honoured, Next is enabled without manual fields.
   await page.getByRole('button', { name: 'Next Step' }).click()
   await completeWizardFromStep2(page)
-  await saveAndContinue(page)
+  await saveAndContinue(page, api)
   await page.waitForURL(`**/transfers/${MATTER_ID}/milestones`)
   assert.equal(api.calls.attachProperty.length, 1)
   assert.equal(api.calls.attachProperty[0].property_id, 'prop-existing-2')
@@ -318,7 +321,7 @@ await check('failed attach preserves entries and the created matter', async () =
   await page.getByRole('button', { name: 'Next Step' }).click()
   await page.getByRole('button', { name: 'Next Step' }).click()
   await page.getByRole('button', { name: 'Next Step' }).click()
-  await saveAndContinue(page)
+  await saveAndContinue(page, api)
   await page.waitForURL(`**/transfers/${MATTER_ID}/milestones`)
   assert.equal(api.calls.createMatter.length, 1, 'matter must not be recreated')
   assert.equal(api.calls.attachProperty.length, 2)

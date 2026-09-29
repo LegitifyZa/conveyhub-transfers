@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { UnavailableNotice } from './ui'
 import { TransferNavigation } from './transfers/TransferNavigation'
 import { TransferProvider } from './transfers/TransferForm'
+import { StepDocuments } from './transfers/StepDocuments'
 import { ApiRequestError } from '../lib/api/http'
 import { TransferApi } from '../lib/api/transferApi'
 import {
@@ -94,6 +95,15 @@ describe('matter save failure contract', () => {
     financials: { purchasePrice: '100', depositAmount: '', loanAmount: '', interestRate: '', loanTerm: '', transferDuty: '', conveyancingFees: '', deedsOfficeFees: '', vat: '', postPetty: '', clearanceCertificate: '', ratesClearance: '' },
     documents: []
   }
+
+  it('does not use a human transfer reference as a persisted UUID for documents', () => {
+    const html = renderToStaticMarkup(
+      <TransferProvider initialValue={{ ...draft, transfer_id: 'TRF-SYNTHETIC-001' }}>
+        <StepDocuments />
+      </TransferProvider>
+    )
+    assert.match(html, /Save the transfer first/)
+  })
 
   it('create throws on a quarantined endpoint so persistAggregate surfaces failure', async () => {
     respond({ success: false, error: 'Legacy endpoint unavailable' }, 503)

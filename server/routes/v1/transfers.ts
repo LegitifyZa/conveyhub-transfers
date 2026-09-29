@@ -286,7 +286,7 @@ router.get(
     }
 
     // Same-institution isolation applies to every caller — no privileged-role exception.
-    const incoming = new URLSearchParams(req.originalUrl.split('?')[1] ?? '')
+    const incoming = new URL(req.originalUrl, 'http://localhost').searchParams
     const params = new URLSearchParams()
     for (const key of ['page', 'limit', 'sortBy', 'sortOrder', 'status']) {
       for (const value of incoming.getAll(key)) params.append(key, value)

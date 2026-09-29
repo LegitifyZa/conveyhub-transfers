@@ -173,6 +173,23 @@ describe('v1 matter create + party attach BFF proxies', async () => {
     }
   })
 
+  it('preserves literal question marks and following parameters for FastAPI validation', async () => {
+    upstreamResponse = { status: 422, body: { detail: 'Invalid status' } }
+    for (const query of [
+      'status=complete?legacy&limit=2',
+      'status=complete%3Flegacy&limit=2',
+      'status=complete?legacy&limit=2&status=in_progress',
+    ]) {
+      const response = await fetch(`${baseUrl}/api/v1/transfers?${query}`, {
+        headers: { Authorization: `Bearer ${makeToken()}` },
+      })
+      assert.equal(response.status, 422)
+      const forwarded = new URL(captured.at(-1)!.url, upstreamBaseUrl).searchParams
+      assert.deepEqual(forwarded.getAll('status'), new URLSearchParams(query).getAll('status'))
+      assert.equal(forwarded.get('limit'), '2')
+    }
+  })
+
   it('fails list reads closed on missing configuration, transport failure and upstream errors', async () => {
     const headers = { Authorization: `Bearer ${makeToken()}` }
     upstreamResponse = { status: 500, body: { error: 'private upstream detail' } }

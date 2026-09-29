@@ -234,6 +234,7 @@ class InstitutionBoundaryRouteTests(unittest.IsolatedAsyncioTestCase):
     async def test_staff_list_rejects_invalid_and_repeated_status_before_queries(self):
         for query in ("status=", "status=draft", "status=completed", "status=cancelled",
                       "status=all", "status=COMPLETE", "status=complete%27%20OR%201=1",
+                      "status=complete?legacy", "status=complete%3Flegacy",
                       "status=complete&status=in_progress"):
             with self.subTest(query=query):
                 response = await self.client.get(f"/api/v1/transfers/?{query}", headers=headers())

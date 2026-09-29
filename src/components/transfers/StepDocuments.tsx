@@ -43,7 +43,7 @@ function toLocalDocument(doc: MatterDocument): Document {
 
 const StepDocuments: React.FC = () => {
   const { state, dispatch } = useTransfer()
-  const transferId = state.transfer_id || state.id
+  const transferId = state.id
 
   const syncDocuments = useCallback(
     (documents: MatterDocument[]) => {
