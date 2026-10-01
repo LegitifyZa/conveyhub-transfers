@@ -1,11 +1,13 @@
-import { createContext, useContext, useState, useCallback, useEffect, ReactNode } from 'react'
+import { createContext, useContext, useState, useCallback, useEffect, useSyncExternalStore, ReactNode } from 'react'
 import { apiRequest } from '@/lib/api/http'
 import {
   authEnvironmentSupported,
   enqueueAuthOp,
   getLogoutEpoch,
   getSession,
-  getSessionUser,
+  getSessionGeneration,
+  isPrincipalKey,
+  startSessionSync,
   logoutSession,
   noteLandedSid,
   onSessionChange,
@@ -39,6 +41,7 @@ export interface OtpChallenge {
 interface AuthContextValue {
   isAuthenticated: boolean
   isRestoring: boolean
+  sessionGeneration: number
   user: Record<string, unknown> | null
   initiateLogin: (input: {
     idNumber?: string
@@ -72,14 +75,13 @@ function asAccountOption(value: unknown): AccountOption | null {
 }
 
 export const AuthProvider = ({ children }: { children: ReactNode }) => {
-  const [isAuthenticated, setIsAuthenticated] = useState(() => getSession() !== null)
+  const currentSession = useSyncExternalStore(onSessionChange, getSession, () => null)
+  const isAuthenticated = currentSession !== null
+  const user = currentSession?.user ?? null
+  const sessionGeneration = getSessionGeneration()
   const [isRestoring, setIsRestoring] = useState(true)
-  const [user, setUser] = useState<Record<string, unknown> | null>(getSessionUser())
 
-  useEffect(() => onSessionChange((next) => {
-    setIsAuthenticated(next !== null)
-    setUser(next?.user ?? null)
-  }), [])
+  useEffect(startSessionSync, [])
 
   // Silent session restore: the HttpOnly refresh cookie is the only durable
   // credential, so on load we ask the BFF to exchange it for an access token.
@@ -137,7 +139,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     // Queued with refresh/logout so a login response is never in flight while
     // another auth operation is applying cookies.
     await enqueueAuthOp(async () => {
-      const sidAtStart = getSession()?.sid ?? null
+      const generationAtStart = getSessionGeneration()
       const response = await apiRequest<UpstreamEnvelope>('/api/auth/login', {
         method: 'POST',
         body: { user_id: userId, otp },
@@ -147,7 +149,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       const data = response?.data
       if (typeof data?.token !== 'string' || !data.token
         || typeof data.expires !== 'number' || !Number.isFinite(data.expires)
-        || typeof data.sid !== 'string' || !data.sid) {
+        || typeof data.sid !== 'string' || !data.sid || !isPrincipalKey(data.principalKey)) {
         throw new Error('Unexpected authentication response')
       }
       // A logout was requested since this login began, or a session appeared
@@ -155,7 +157,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       // than resurrecting or displacing state. The response's Set-Cookie has
       // still landed in the jar, so record the sid: the serialized logout
       // that follows must be able to clear it instead of leaving an orphan.
-      if (getLogoutEpoch() !== logoutEpochAtCall || (getSession()?.sid ?? null) !== sidAtStart) {
+      if (getLogoutEpoch() !== logoutEpochAtCall || getSessionGeneration() !== generationAtStart) {
         noteLandedSid(data.sid)
         return
       }
@@ -164,6 +166,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         expires: data.expires,
         user: (typeof data.user === 'object' && data.user !== null ? data.user : null) as Record<string, unknown> | null,
         sid: data.sid,
+        principalKey: data.principalKey,
       })
     })
   }, [])
@@ -176,6 +179,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     <AuthContext.Provider value={{
       isAuthenticated,
       isRestoring,
+      sessionGeneration,
       user,
       initiateLogin,
       requestOtp,

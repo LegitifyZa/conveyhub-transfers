@@ -1,12 +1,19 @@
-// Playwright check for authenticated matter–property linking on commit
-// 58b6d0c (+ the validatePropertyDetails linked-flag fix). Every /api/**
-// request is intercepted and answered by this script — no BFF, FastAPI,
-// database or upstream is contacted. Run: `node e2e/matter-properties.check.mjs`
-// with `vite preview` serving the built bundle (BASE env var overrides).
+// Playwright check for authenticated matter–property linking with synthetic
+// classification/document fixtures. Every /api/** request is intercepted;
+// external requests are blocked — no BFF, FastAPI, database, scanner or
+// upstream is contacted. Run: `node e2e/matter-properties.check.mjs`
+// with a loopback static build server (BASE env var overrides).
 import { chromium } from 'playwright'
 import assert from 'node:assert/strict'
 
-const BASE = process.env.BASE || 'http://localhost:4173'
+const BASE = process.env.BASE || 'http://127.0.0.1:4173'
+const origin = new URL(BASE).origin
+assert.ok(['localhost', '127.0.0.1'].includes(new URL(BASE).hostname), 'Use a loopback static build')
+const classification = {
+  canonicalCode: 'transfer.donation', subtype: 'donation', displayLabel: 'Donation',
+  transferFrom: null, transferFromLabel: null, requiresTransferFrom: false,
+}
+const pageErrors = []
 const MATTER_ID = '11111111-1111-4111-8111-111111111111'
 const TRANSFER_ID = 'TRF-PW-001'
 
@@ -19,7 +26,7 @@ const json = (body, status = 200) => ({
 // Server-side store simulated by the mocks. attachBodies records every
 // POST .../properties body so tests can assert identical-key retries.
 function makeApi(t) {
-  const calls = { createMatter: [], attachProperty: [], attachParty: [] }
+  const calls = { createMatter: [], attachProperty: [], attachParty: [], documentReads: [] }
   let links = []
   let attachBehaviour = t.attachBehaviour || 'success' // 'success' | 'fail-once' | 'drop-once'
   let attachAttempts = 0
@@ -60,16 +67,19 @@ function makeApi(t) {
     const method = r.request().method()
 
     if (path === '/api/auth/refresh' && method === 'POST') {
-      return r.fulfill(json({ message: 'OK', data: { token: 'pw-access-token', expires: Math.floor(Date.now() / 1000) + 3600 } }))
+      return r.fulfill(json({ message: 'OK', data: { principalKey: 'a'.repeat(64), token: 'pw-access-token', expires: Math.floor(Date.now() / 1000) + 3600 } }))
     }
-    if (path === '/api/v1/transfers/' && method === 'GET') {
+    if (path === '/api/v1/transfers/classifications') {
+      return r.fulfill(json({ message: 'OK', data: { classifications: [classification] } }))
+    }
+    if (path === '/api/v1/transfers' && method === 'GET') {
       // Matches the real v1 list contract exactly: { message, data } with
       // no `success` flag. An earlier mock invented success:true, which
       // masked the probeMatterPersistence envelope defect — earlier pass
       // results depended on that inaccuracy.
       return r.fulfill(json({ message: 'OK', data: { transfers: [], pagination: { page: 1, limit: 1, total: 0, totalPages: 0 } } }))
     }
-    if (path === '/api/v1/transfers/' && method === 'POST') {
+    if (path === '/api/v1/transfers' && method === 'POST') {
       calls.createMatter.push(JSON.parse(r.request().postData() || '{}'))
       createdMatter = { id: MATTER_ID, transferId: TRANSFER_ID }
       return r.fulfill(json({ message: 'Created', data: { ...createdMatter, created: true } }, 201))
@@ -120,6 +130,20 @@ function makeApi(t) {
         },
       }))
     }
+    if (path.endsWith('/documents') && method === 'GET') calls.documentReads.push(path)
+    if (path === `/api/v1/transfers/${MATTER_ID}/documents` && method === 'GET') {
+      return r.fulfill(json({ message: 'OK', data: {
+        documents: [{ id: 'doc-synthetic', transferId: MATTER_ID, name: 'Synthetic property harness document',
+          status: 'uploaded', scanStatus: 'clean', requirementKey: null }],
+        requirements: [], unevaluatedFacts: [], unevaluatedRules: [],
+      } }))
+    }
+    if (path === `/api/v1/transfers/${MATTER_ID}/milestones` && method === 'GET') {
+      return r.fulfill(json({ message: 'OK', data: { milestones: [] } }))
+    }
+    if (path === `/api/v1/transfers/${MATTER_ID}/activity` && method === 'GET') {
+      return r.fulfill(json({ message: 'OK', data: { activity: [] } }))
+    }
     if (path === '/api/catalogue') {
       return r.fulfill(json([{ id: 'cat-1', name: 'FICA Identification', module: 'transfers', status: 'Active' }]))
     }
@@ -146,15 +170,20 @@ function makeApi(t) {
 }
 
 async function newAuthedPage(browser, api) {
-  const context = await browser.newContext()
+  const context = await browser.newContext({ serviceWorkers: 'block' })
+  context.setDefaultTimeout(8000)
   await context.addCookies([{ name: 'deedly_sid', value: 'pw-sid', url: BASE }])
-  await context.route('**/api/**', api.route)
+  await context.route('**/*', route => {
+    const url = new URL(route.request().url())
+    if (url.origin !== origin) return route.abort()
+    return url.pathname.startsWith('/api/') ? api.route(route) : route.continue()
+  })
   const page = await context.newPage()
-  page.on('pageerror', (e) => console.log('  [pageerror]', String(e).slice(0, 300)))
+  page.on('pageerror', error => pageErrors.push(error.message))
   return { context, page }
 }
 
-// Fills steps 2–4 (parties, financials, document) and submits on step 5.
+// Fills steps 2–3 (parties and provisional financials) before saving.
 async function completeWizardFromStep2(page) {
   await page.getByRole('button', { name: 'Add First Buyer' }).click()
   const buyer = page.locator('div').filter({ hasText: /^Buyer/ }).last()
@@ -174,26 +203,31 @@ async function completeWizardFromStep2(page) {
   await page.getByRole('button', { name: 'Next Step' }).click()
 }
 
-async function addDocumentAndSubmit(page) {
+async function saveAndContinue(page, api) {
   // Documents require a saved matter: persist the draft first.
-  await page.getByRole('button', { name: 'Save Draft' }).click()
+  await page.getByRole('button', { name: 'Save Details' }).click()
   await page.getByText('Matter, property and all parties saved.').waitFor()
-  await page.locator('select').last().selectOption('cat-1')
-  await page.getByRole('button', { name: 'Add', exact: true }).click()
-  await page.locator('select').filter({ hasText: 'Pending' }).first().selectOption('not_required')
+  await page.getByText('Synthetic property harness document', { exact: true }).waitFor()
+  assert.ok(api.calls.documentReads.length > 0)
+  assert.ok(api.calls.documentReads.every(path => path === `/api/v1/transfers/${MATTER_ID}/documents`), 'Document reads must use the transfer UUID, never its display reference')
   await page.getByRole('button', { name: 'Next Step' }).click()
-  await page.getByRole('button', { name: 'Submit Transfer' }).click()
+  assert.equal(await page.getByRole('button', { name: 'Submit Transfer' }).count(), 0)
+  await page.getByRole('button', { name: 'Save and Continue' }).click()
 }
 
 const results = []
 const check = async (name, fn) => {
   try {
+    pageErrors.length = 0
     await fn()
+    assert.deepEqual(pageErrors, [])
     results.push(`PASS ${name}`)
     console.log(`PASS ${name}`)
   } catch (err) {
     results.push(`FAIL ${name}: ${String(err).split('\n')[0]}`)
     console.log(`FAIL ${name}:`, String(err).slice(0, 500))
+  } finally {
+    for (const context of browser.contexts()) await context.close()
   }
 }
 
@@ -203,15 +237,16 @@ await check('manual capture + wizard completion', async () => {
   const api = makeApi({})
   const { context, page } = await newAuthedPage(browser, api)
   await page.goto(`${BASE}/transfers/workflow`)
+  await page.getByLabel('Transfer classification', { exact: true }).selectOption(classification.canonicalCode)
   await page.getByRole('heading', { name: 'Property Details' }).waitFor()
   await page.getByPlaceholder('Start typing the address...').fill('14 Jacaranda Avenue')
   await page.getByPlaceholder('Santon').fill('Pretoria')
   await page.getByPlaceholder('Gouteng').fill('Gauteng')
   await page.getByPlaceholder('2196').fill('0181')
-  await page.locator('select').first().selectOption('Freehold')
+  await page.locator('select').filter({ has: page.locator('option[value="Freehold"]') }).selectOption('Freehold')
   await page.getByRole('button', { name: 'Next Step' }).click()
   await completeWizardFromStep2(page)
-  await addDocumentAndSubmit(page)
+  await saveAndContinue(page, api)
   await page.waitForURL(`**/transfers/${MATTER_ID}/milestones`)
   await page.getByText('14 Jacaranda Avenue').waitFor()
   await page.getByText('Manually captured — unverified').waitFor()
@@ -227,6 +262,7 @@ await check('select existing property, change it, multiple links on milestones',
   const api = makeApi({})
   const { context, page } = await newAuthedPage(browser, api)
   await page.goto(`${BASE}/transfers/workflow`)
+  await page.getByLabel('Transfer classification', { exact: true }).selectOption(classification.canonicalCode)
   await page.getByPlaceholder("Search your institution's properties by address, city, erf or reference...").fill('lane')
   await page.getByText('7 Selected Lane').waitFor()
   await page.getByText('7 Selected Lane').click()
@@ -238,7 +274,7 @@ await check('select existing property, change it, multiple links on milestones',
   // With the linked flag honoured, Next is enabled without manual fields.
   await page.getByRole('button', { name: 'Next Step' }).click()
   await completeWizardFromStep2(page)
-  await addDocumentAndSubmit(page)
+  await saveAndContinue(page, api)
   await page.waitForURL(`**/transfers/${MATTER_ID}/milestones`)
   assert.equal(api.calls.attachProperty.length, 1)
   assert.equal(api.calls.attachProperty[0].property_id, 'prop-existing-2')
@@ -265,14 +301,15 @@ await check('failed attach preserves entries and the created matter', async () =
   const api = makeApi({ attachBehaviour: 'fail-once' })
   const { context, page } = await newAuthedPage(browser, api)
   await page.goto(`${BASE}/transfers/workflow`)
+  await page.getByLabel('Transfer classification', { exact: true }).selectOption(classification.canonicalCode)
   await page.getByPlaceholder('Start typing the address...').fill('14 Jacaranda Avenue')
   await page.getByPlaceholder('Santon').fill('Pretoria')
   await page.getByPlaceholder('Gouteng').fill('Gauteng')
   await page.getByPlaceholder('2196').fill('0181')
-  await page.locator('select').first().selectOption('Freehold')
+  await page.locator('select').filter({ has: page.locator('option[value="Freehold"]') }).selectOption('Freehold')
   await page.getByRole('button', { name: 'Next Step' }).click()
   await completeWizardFromStep2(page)
-  await page.getByRole('button', { name: 'Save Draft' }).click()
+  await page.getByRole('button', { name: 'Save Details' }).click()
   await page.getByText('Property:').waitFor()
   // Entered values and the created matter survive the failed attach.
   await page.getByRole('button', { name: 'Previous' }).click()
@@ -284,7 +321,7 @@ await check('failed attach preserves entries and the created matter', async () =
   await page.getByRole('button', { name: 'Next Step' }).click()
   await page.getByRole('button', { name: 'Next Step' }).click()
   await page.getByRole('button', { name: 'Next Step' }).click()
-  await addDocumentAndSubmit(page)
+  await saveAndContinue(page, api)
   await page.waitForURL(`**/transfers/${MATTER_ID}/milestones`)
   assert.equal(api.calls.createMatter.length, 1, 'matter must not be recreated')
   assert.equal(api.calls.attachProperty.length, 2)
@@ -296,17 +333,18 @@ await check('lost-response retry keeps the key and does not duplicate', async ()
   const api = makeApi({ attachBehaviour: 'drop-once' })
   const { context, page } = await newAuthedPage(browser, api)
   await page.goto(`${BASE}/transfers/workflow`)
+  await page.getByLabel('Transfer classification', { exact: true }).selectOption(classification.canonicalCode)
   await page.getByPlaceholder('Start typing the address...').fill('14 Jacaranda Avenue')
   await page.getByPlaceholder('Santon').fill('Pretoria')
   await page.getByPlaceholder('Gouteng').fill('Gauteng')
   await page.getByPlaceholder('2196').fill('0181')
-  await page.locator('select').first().selectOption('Freehold')
+  await page.locator('select').filter({ has: page.locator('option[value="Freehold"]') }).selectOption('Freehold')
   await page.getByRole('button', { name: 'Next Step' }).click()
   await completeWizardFromStep2(page)
-  await page.getByRole('button', { name: 'Save Draft' }).click()
+  await page.getByRole('button', { name: 'Save Details' }).click()
   await page.getByText('Property:').waitFor()
   // The server committed the dropped response; the retry must replay it.
-  await page.getByRole('button', { name: 'Save Draft' }).click()
+  await page.getByRole('button', { name: 'Save Details' }).click()
   await page.getByText('Matter, property and all parties saved.').waitFor()
   assert.equal(api.calls.createMatter.length, 1)
   assert.equal(api.calls.attachProperty.length, 2)

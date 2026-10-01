@@ -34,6 +34,16 @@ mock.method(globalThis, 'fetch', async (...[input, init]: Parameters<typeof http
   const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
   if (baseUrl && url.startsWith(`${baseUrl}/`)) return httpFetch(input, init)
   outbound.push(url)
+  if (url === 'http://127.0.0.1:1/api/v1/transfers/' && init?.method === 'GET') {
+    const forwarded = new Headers(init.headers)
+    assert.equal(forwarded.get('X-Accountable-Institution-Id'), null)
+    const user = verifyJwt(forwarded.get('Authorization')!.replace('Bearer ', ''), SECRET)
+    assert.equal(user.accountable_institution_id, 5)
+    return new Response(JSON.stringify({ message: 'OK', data: {
+      transfers: [{ id: OWN }], pagination: { page: 1, limit: 10, total: 1, totalPages: 1 },
+      statusTotals: { total: 1, inProgress: 1, completed: 0 },
+    } }), { headers: { 'Content-Type': 'application/json' } })
+  }
   throw new Error('Unexpected upstream request')
 })
 const errorLog = mock.method(console, 'error', () => {})

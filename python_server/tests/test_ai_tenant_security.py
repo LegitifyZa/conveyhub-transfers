@@ -100,7 +100,7 @@ class InstitutionBoundaryRouteTests(unittest.IsolatedAsyncioTestCase):
     async def query_fixture(self, text, params=None, **kwargs):
         params = params or []
         if "FROM transfers t" in text:
-            rows = [transfer_row(OWN, 5), transfer_row(FOREIGN, 7)]
+            rows = getattr(self, "list_rows", [transfer_row(OWN, 5), transfer_row(FOREIGN, 7)])
             if "t.id = $1" in text:
                 rows = [row for row in rows if row["id"] == str(params[0])]
             scope = re.search(r"t\.accountable_institution_id\s*=\s*\$(\d+)", text)
@@ -108,8 +108,20 @@ class InstitutionBoundaryRouteTests(unittest.IsolatedAsyncioTestCase):
                 rows = [row for row in rows if row["accountable_institution_id"] == params[int(scope[1]) - 1]]
             if "EXISTS" in text:
                 rows = [row for row in rows if str(params[1]) == GR]
-            if "COUNT(*)" in text:
+            status = re.search(r"t\.status\s*=\s*\$(\d+)", text)
+            if status:
+                rows = [row for row in rows if row["status"] == params[int(status[1]) - 1]]
+            if "FILTER" in text:
+                rows = [{"total": len(rows),
+                         "in_progress": sum(row["status"] == "in_progress" for row in rows),
+                         "complete": sum(row["status"] == "complete" for row in rows)}]
+            elif "COUNT(*)" in text:
                 rows = [{"total": len(rows)}]
+            else:
+                pagination = re.search(r"LIMIT \$(\d+) OFFSET \$(\d+)", text)
+                if pagination:
+                    limit, offset = (params[int(index) - 1] for index in pagination.groups())
+                    rows = rows[offset:offset + limit]
             return db.QueryResult(rows=rows, row_count=len(rows))
         if "FROM transfer_parties" in text:
             if "SELECT 1" in text:
@@ -172,6 +184,95 @@ class InstitutionBoundaryRouteTests(unittest.IsolatedAsyncioTestCase):
             denied = await self.client.get(f"/api/v1/transfers/{identifier}", headers=authentication)
             self.assertEqual(denied.status_code, 404)
             self.assertEqual(denied.json(), {"success": False, "error": "Not found"})
+
+    async def test_staff_list_filters_counts_and_totals_are_tenant_scoped(self):
+        self.list_rows = [
+            {**transfer_row(str(uuid), ai), "status": status}
+            for uuid, ai, status in (
+                (1, 5, "complete"), (2, 5, "in_progress"), (3, 5, "complete"),
+                (4, 7, "complete"), (5, 7, "in_progress"),
+            )
+        ]
+        for role in (1, 2, 3):
+            for status, expected_total, expected_ids in (
+                (None, 3, ["2"]), ("complete", 2, ["3"]), ("in_progress", 1, []),
+            ):
+                with self.subTest(role=role, status=status):
+                    self.query.reset_mock()
+                    params = {"page": 2, "limit": 1, "accountable_institution_id": 7}
+                    if status is not None:
+                        params["status"] = status
+                    response = await self.client.get(
+                        "/api/v1/transfers/", params=params,
+                        headers={**headers(role=role), "X-Accountable-Institution-Id": "7"},
+                    )
+                    self.assertEqual(response.status_code, 200)
+                    data = response.json()["data"]
+                    self.assertEqual([row["id"] for row in data["transfers"]], expected_ids)
+                    self.assertEqual(data["pagination"], {
+                        "page": 2, "limit": 1, "total": expected_total, "totalPages": expected_total,
+                    })
+                    self.assertEqual(data["statusTotals"], {"total": 3, "inProgress": 1, "completed": 2})
+                    count, page, totals = self.query.await_args_list
+                    expected_params = [5] if status is None else [5, status]
+                    self.assertEqual(count.args[1], expected_params)
+                    self.assertEqual(page.args[1], [*expected_params, 1, 1])
+                    self.assertEqual(totals.args[1], [5])
+                    predicate = "WHERE t.accountable_institution_id = $1"
+                    if status is not None:
+                        predicate += " AND t.status = $2"
+                    self.assertIn(predicate, count.args[0])
+                    self.assertIn(predicate, page.args[0])
+                    self.assertIn("t.id ASC", page.args[0])
+                    self.assertNotIn("t.status = $", totals.args[0])
+        response = await self.client.get("/api/v1/transfers/?status=complete", headers=headers(ai=7))
+        data = response.json()["data"]
+        self.assertEqual([row["id"] for row in data["transfers"]], ["4"])
+        self.assertEqual(data["pagination"]["total"], 1)
+        self.assertEqual(data["statusTotals"], {"total": 2, "inProgress": 1, "completed": 1})
+
+    async def test_staff_list_rejects_invalid_and_repeated_status_before_queries(self):
+        for query in ("status=", "status=draft", "status=completed", "status=cancelled",
+                      "status=all", "status=COMPLETE", "status=complete%27%20OR%201=1",
+                      "status=complete?legacy", "status=complete%3Flegacy",
+                      "status=complete&status=in_progress"):
+            with self.subTest(query=query):
+                response = await self.client.get(f"/api/v1/transfers/?{query}", headers=headers())
+                self.assertEqual(response.status_code, 422)
+        self.query.assert_not_awaited()
+
+    async def test_list_auth_and_client_empty_response_do_not_query_or_disclose_totals(self):
+        for authentication, expected in (({}, 401), (headers(abilities=[]), 403),
+                                          (headers(role=5), 401), (headers(role=4), 200)):
+            response = await self.client.get("/api/v1/transfers/?status=invalid", headers=authentication)
+            self.assertEqual(response.status_code, expected)
+            if expected == 200:
+                self.assertEqual(response.json()["data"], {
+                    "transfers": [], "pagination": {"page": 1, "limit": 10, "total": 0, "totalPages": 0},
+                })
+        self.query.assert_not_awaited()
+
+    async def test_empty_institution_and_pagination_sort_validation(self):
+        self.list_rows = []
+        response = await self.client.get(
+            "/api/v1/transfers/?page=-1&limit=999&sortBy=status;DROP&sortOrder=asc", headers=headers(),
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()["data"]
+        self.assertEqual(data["pagination"], {"page": 1, "limit": 100, "total": 0, "totalPages": 1})
+        self.assertEqual(data["statusTotals"], {"total": 0, "inProgress": 0, "completed": 0})
+        self.assertEqual(data["transfers"], [])
+        self.assertIn("ORDER BY t.created_at ASC, t.id ASC", self.query.await_args_list[1].args[0])
+        self.query.reset_mock()
+        response = await self.client.get("/api/v1/transfers/?page=invalid&limit=invalid", headers=headers())
+        self.assertEqual(response.json()["data"]["pagination"]["limit"], 10)
+
+    async def test_list_query_failure_never_reports_empty_success(self):
+        self.query.side_effect = RuntimeError(MARKER)
+        response = await self.client.get("/api/v1/transfers/", headers=headers())
+        self.assertEqual(response.status_code, 500)
+        self.assertNotIn(MARKER, response.text)
+        self.assertNotIn("data", response.json())
 
     async def test_client_membership_does_not_override_institution(self):
         for suffix in ("", "/parties"):

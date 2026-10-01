@@ -1,4 +1,20 @@
-import { apiRequest } from './httpClient'
+import { apiRequest, ApiRequestError, type ApiRequestOptions } from './httpClient'
+
+export type DownloadSession = NonNullable<ApiRequestOptions['sessionScope']>
+
+function assertDownloadSession(sessionScope: DownloadSession): void {
+  if (!sessionScope.assertCurrent) throw new ApiRequestError(409, 'Download session is unavailable')
+  sessionScope.assertCurrent()
+}
+
+export function isDownloadSessionCurrent(sessionScope: DownloadSession): boolean {
+  try {
+    assertDownloadSession(sessionScope)
+    return true
+  } catch {
+    return false
+  }
+}
 
 // Authenticated v1 document lane (BFF -> FastAPI). Envelope: { message, data }.
 // Document readback is metadata-only by design — storage keys, file paths and
@@ -129,11 +145,12 @@ export async function recalculateDocumentRequirements(
 
 export async function issueDocumentDownloadLink(
   transferId: string,
-  documentId: string
+  documentId: string,
+  sessionScope?: DownloadSession
 ): Promise<{ downloadUrl: string; expires: number }> {
   const response = await apiRequest<Envelope<{ downloadUrl: string; expires: number }>>(
     `/api/v1/transfers/${transferId}/documents/${documentId}/download-link`,
-    { method: 'POST', body: {} }
+    { method: 'POST', body: {}, sessionScope }
   )
   return response.data
 }
@@ -144,11 +161,35 @@ export async function issueDocumentDownloadLink(
 // filename (Content-Disposition), falling back to the document name.
 export async function downloadMatterDocumentFile(
   downloadUrl: string,
-  fallbackName: string
+  fallbackName: string,
+  sessionScope: DownloadSession = {}
 ): Promise<{ blob: Blob; filename: string }> {
-  const response = await apiRequest<Response>(downloadUrl, { rawResponse: true })
+  const response = await apiRequest<Response>(downloadUrl, { rawResponse: true, sessionScope })
   const disposition = response.headers.get('Content-Disposition') ?? ''
   const match = /filename\*=UTF-8''([^;]+)/.exec(disposition)
   const filename = match ? decodeURIComponent(match[1]) : fallbackName
-  return { blob: await response.blob(), filename }
+  const blob = await response.blob().finally(() => assertDownloadSession(sessionScope))
+  return { blob, filename }
+}
+
+export async function downloadMatterDocument(
+  transferId: string,
+  documentId: string,
+  fallbackName: string,
+  sessionScope: DownloadSession = {}
+): Promise<void> {
+  const link = await issueDocumentDownloadLink(transferId, documentId, sessionScope)
+  assertDownloadSession(sessionScope)
+  const { blob, filename } = await downloadMatterDocumentFile(link.downloadUrl, fallbackName, sessionScope)
+  assertDownloadSession(sessionScope)
+  const url = URL.createObjectURL(blob)
+  try {
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = filename
+    assertDownloadSession(sessionScope)
+    anchor.click()
+  } finally {
+    URL.revokeObjectURL(url)
+  }
 }

@@ -10,7 +10,9 @@ import { chromium } from 'playwright'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
-const BASE = process.env.BASE || 'http://localhost:4173'
+const BASE = process.env.BASE || 'http://127.0.0.1:4173'
+const origin = new URL(BASE).origin
+assert.ok(['localhost', '127.0.0.1'].includes(new URL(BASE).hostname), 'Use a loopback static build')
 const MATTER_ID = '11111111-1111-4111-8111-111111111111'
 const TRANSFER_ID = 'TRF-PW-DOC'
 const PDF_BYTES = Buffer.from('%PDF-1.4 synthetic check file\n%%EOF')
@@ -47,7 +49,15 @@ function makeApi(t = {}) {
     const method = r.request().method()
 
     if (path === '/api/auth/refresh' && method === 'POST') {
-      return r.fulfill(json({ message: 'OK', data: { token: 'pw-access-token', expires: Math.floor(Date.now() / 1000) + 3600 } }))
+      const actor = r.request().headers()['x-deedly-session'] === 'pw-sid-B' ? 'b' : 'a'
+      return r.fulfill(json({ message: 'OK', data: { principalKey: actor.repeat(64), token: `pw-access-token-${actor}`, expires: Math.floor(Date.now() / 1000) + 3600 } }))
+    }
+    if (path === '/api/auth/logout') return r.fulfill(json({ success: true }))
+    if (path === '/api/v1/transfers/classifications') {
+      return r.fulfill(json({ message: 'OK', data: { classifications: [{
+        canonicalCode: 'transfer.donation', subtype: 'donation', displayLabel: 'Donation',
+        transferFrom: null, transferFromLabel: null, requiresTransferFrom: false,
+      }] } }))
     }
     if (path === '/api/v1/transfers' && method === 'GET') {
       // The persistence probe's real contract: {message, data:{transfers:[],
@@ -169,8 +179,12 @@ function makeApi(t = {}) {
     if (path === `/api/transfers/${MATTER_ID}/activity` && method === 'GET') {
       return r.fulfill(json({ success: true, data: [] }))
     }
+    const subresource = path.match(new RegExp(`^/api/v1/transfers/${MATTER_ID}/(properties|milestones|activity|parties)$`))
+    if (subresource && method === 'GET') {
+      return r.fulfill(json({ message: 'OK', data: { [subresource[1]]: [] } }))
+    }
     console.log('  unhandled:', method, path)
-    return r.fulfill(json({ message: 'OK', data: {} }))
+    return r.fulfill(json({ error: 'No backend is available in this mocked check' }, 503))
   }
 
   return { route, calls, documents, requirements }
@@ -185,15 +199,22 @@ const check = async (name, fn) => {
   } catch (error) {
     results.push(`FAIL  ${name}: ${error.message}`)
     console.log(`FAIL  ${name}: ${error.message}`)
+  } finally {
+    for (const context of browser.contexts()) await context.close()
   }
 }
 
 const browser = await chromium.launch()
 
 async function newAuthedPage(api) {
-  const context = await browser.newContext()
+  const context = await browser.newContext({ serviceWorkers: 'block' })
+  context.setDefaultTimeout(8000)
   await context.addCookies([{ name: 'deedly_sid', value: 'pw-sid-1', url: BASE }])
-  await context.route('**/api/**', api.route)
+  await context.route('**/*', route => {
+    const url = new URL(route.request().url())
+    if (url.origin !== origin) return route.abort()
+    return url.pathname.startsWith('/api/') ? api.route(route) : route.continue()
+  })
   const page = await context.newPage()
   return { context, page }
 }
@@ -257,6 +278,54 @@ await check('requirement upload -> clean scan -> satisfied -> download link', as
   assert.equal(denied, 403)
   await context.close()
 })
+
+for (const transition of ['new session', 'logout']) {
+  await check(`delayed binary body cannot download after ${transition}`, async () => {
+    const api = makeApi({ documents: [{
+      id: 'doc-9', transferId: MATTER_ID, name: 'Synthetic A-only document',
+      status: 'uploaded', scanStatus: 'clean', requirementKey: null,
+      originalFileName: 'synthetic-A.pdf', fileType: 'application/pdf', fileSize: PDF_BYTES.length,
+    }] })
+    const { context, page } = await newAuthedPage(api)
+    await openDocumentsTab(page)
+    await page.getByText('Synthetic A-only document', { exact: true }).waitFor()
+    const downloads = []
+    page.on('download', download => downloads.push(download.suggestedFilename()))
+    await page.evaluate(() => {
+      const read = Response.prototype.blob
+      const create = URL.createObjectURL
+      const revoke = URL.revokeObjectURL
+      window.downloadProbe = { created: 0, revoked: 0, released: false, release: null }
+      URL.createObjectURL = function(blob) { window.downloadProbe.created++; return create.call(this, blob) }
+      URL.revokeObjectURL = function(url) { window.downloadProbe.revoked++; return revoke.call(this, url) }
+      Response.prototype.blob = function() {
+        if (!this.headers.get('content-type')?.includes('application/pdf')) return read.call(this)
+        return new Promise((resolve, reject) => {
+          window.downloadProbe.release = () => read.call(this).then(resolve, reject)
+        }).finally(() => { window.downloadProbe.released = true })
+      }
+    })
+    await page.getByRole('button', { name: 'Download', exact: true }).click()
+    await page.waitForFunction(() => typeof window.downloadProbe?.release === 'function')
+    if (transition === 'new session') {
+      await context.addCookies([{ name: 'deedly_sid', value: 'pw-sid-B', url: BASE }])
+      const other = await context.newPage()
+      await openDocumentsTab(other)
+      await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+    } else {
+      await page.getByRole('link', { name: 'Settings', exact: true }).click()
+      await page.getByRole('button', { name: 'Personal Profile', exact: true }).click()
+      await page.getByRole('button', { name: 'Sign Out', exact: true }).click()
+    }
+    await page.getByRole('heading', { name: 'DEEDLY', exact: true }).waitFor()
+    await page.evaluate(() => window.downloadProbe.release())
+    await page.waitForFunction(() => window.downloadProbe.released)
+    await page.waitForTimeout(100)
+    assert.deepEqual(downloads, [])
+    assert.deepEqual(await page.evaluate(() => [window.downloadProbe.created, window.downloadProbe.revoked]), [0, 0])
+    assert.equal(api.calls.downloadLink.length, 1)
+  })
+}
 
 await check('failed upload shows the error and no fake uploaded state', async () => {
   const api = makeApi({ uploadBehaviour: 'fail-once' })
@@ -354,18 +423,19 @@ await check('document readback after reload', async () => {
 
 await check('persistence probe accepts the real {message,data:{transfers}} envelope', async () => {
   // Wizard-path check, distinct from the documents envelope: GET
-  // /api/v1/transfers/?limit=1 must satisfy data.transfers as an array for
-  // Save Draft / Submit Transfer to unlock.
+  // /api/v1/transfers?limit=1 must satisfy data.transfers as an array for
+  // Save Details / Save and Continue to unlock.
   const api = makeApi({})
   const { context, page } = await newAuthedPage(api)
   const probeResponse = page.waitForResponse(r => r.url().includes('/api/v1/transfers?limit=1'))
   await page.goto(`${BASE}/transfers/workflow`)
   await probeResponse
-  const save = page.getByRole('button', { name: 'Save Draft' })
+  await page.getByLabel('Transfer classification', { exact: true }).selectOption('transfer.donation')
+  const save = page.getByRole('button', { name: 'Save Details' })
   await save.waitFor()
   await page.waitForFunction(() => {
     const btn = [...document.querySelectorAll('button')]
-      .find(b => b.textContent?.trim() === 'Save Draft')
+      .find(b => b.textContent?.trim() === 'Save Details')
     return btn && !btn.disabled
   }, { timeout: 5000 })
   await context.close()
@@ -377,7 +447,8 @@ await check('persistence probe fails closed on a malformed envelope', async () =
   const probeResponse = page.waitForResponse(r => r.url().includes('/api/v1/transfers?limit=1'))
   await page.goto(`${BASE}/transfers/workflow`)
   await probeResponse
-  const save = page.getByRole('button', { name: 'Save Draft' })
+  await page.getByLabel('Transfer classification', { exact: true }).selectOption('transfer.donation')
+  const save = page.getByRole('button', { name: 'Save Details' })
   await save.waitFor()
   await page.waitForTimeout(500) // let probe state settle
   assert.equal(await save.isDisabled(), true)

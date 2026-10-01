@@ -2,12 +2,14 @@ import assert from 'node:assert/strict'
 import { afterEach, beforeEach, describe, it, mock } from 'node:test'
 
 import { apiRequest, ApiRequestError } from './httpClient'
+import { bindNavigationState, readNavigationState } from '../navigationState'
 import {
   authEnvironmentSupported,
   clearSession,
   enqueueAuthOp,
   getAccessToken,
   getSession,
+  getSessionGeneration,
   logoutSession,
   onSessionChange,
   refreshSession,
@@ -112,8 +114,11 @@ afterEach(() => {
   else delete (globalThis as { navigator?: unknown }).navigator
 })
 
-function makeSession(token = 'access-token-1', sid = 'sid-1') {
-  setSession({ accessToken: token, expires: 9999999999, user: { id: 42 }, sid })
+const SCOPE_A = 'a'.repeat(64)
+const SCOPE_B = 'b'.repeat(64)
+
+function makeSession(token = 'access-token-1', sid = 'sid-1', principalKey = SCOPE_A) {
+  setSession({ accessToken: token, expires: 9999999999, user: { id: 42 }, sid, principalKey })
 }
 
 describe('credential attachment', () => {
@@ -173,7 +178,7 @@ describe('expired-session refresh and retry', () => {
     const authHeaders: (string | null)[] = []
     handler = (url, init) => {
       if (url === '/api/auth/refresh') {
-        return Promise.resolve(jsonResponse({ message: 'Token refreshed', data: { token: 'fresh-token', expires: 1 } }))
+        return Promise.resolve(jsonResponse({ message: 'Token refreshed', data: { principalKey: SCOPE_A, token: 'fresh-token', expires: 1 } }))
       }
       authHeaders.push(new Headers(init?.headers).get('Authorization'))
       return Promise.resolve(
@@ -206,7 +211,7 @@ describe('expired-session refresh and retry', () => {
     makeSession('expired-token')
     handler = (url) =>
       url === '/api/auth/refresh'
-        ? Promise.resolve(jsonResponse({ data: { token: 'fresh', expires: 1 } }))
+        ? Promise.resolve(jsonResponse({ data: { principalKey: SCOPE_A, token: 'fresh', expires: 1 } }))
         : Promise.resolve(jsonResponse({ error: 'denied' }, 401))
     await assert.rejects(() => apiRequest('/api/v1/transfers/'), ApiRequestError)
     assert.equal(callsTo('/api/v1/transfers/').length, 2)
@@ -231,7 +236,7 @@ describe('refreshSession', () => {
       assert.equal(init?.credentials, 'same-origin')
       assert.equal(init?.method, 'POST')
       assert.equal(new Headers(init?.headers).get('X-Deedly-Session'), 'sid-9')
-      return Promise.resolve(jsonResponse({ data: { token: 'new-access', expires: 42 } }))
+      return Promise.resolve(jsonResponse({ data: { principalKey: SCOPE_A, token: 'new-access', expires: 42 } }))
     }
     assert.equal(await refreshSession(), true)
     assert.equal(getAccessToken(), 'new-access')
@@ -245,7 +250,7 @@ describe('refreshSession', () => {
     fakeDocument.jar.set('deedly_sid', 'sid-reload')
     handler = (_url, init) => {
       assert.equal(new Headers(init?.headers).get('X-Deedly-Session'), 'sid-reload')
-      return Promise.resolve(jsonResponse({ data: { token: 'restored', expires: 7 } }))
+      return Promise.resolve(jsonResponse({ data: { principalKey: SCOPE_A, token: 'restored', expires: 7 } }))
     }
     assert.equal(await refreshSession(), true)
     assert.equal(getAccessToken(), 'restored')
@@ -263,7 +268,7 @@ describe('refreshSession', () => {
 
   it('fails and clears the session on a malformed refresh body', async () => {
     makeSession('old')
-    handler = () => Promise.resolve(jsonResponse({ data: { token: 123 } }))
+    handler = () => Promise.resolve(jsonResponse({ data: { principalKey: SCOPE_A, token: 123 } }))
     assert.equal(await refreshSession(), false)
     assert.equal(getSession(), null)
   })
@@ -276,7 +281,7 @@ describe('refreshSession', () => {
   })
 
   it('shares one upstream exchange across concurrent refreshes', async () => {
-    handler = () => Promise.resolve(jsonResponse({ data: { token: 't', expires: 1 } }))
+    handler = () => Promise.resolve(jsonResponse({ data: { principalKey: SCOPE_A, token: 't', expires: 1 } }))
     const [a, b] = await Promise.all([refreshSession(), refreshSession()])
     assert.equal(a, true)
     assert.equal(b, true)
@@ -286,6 +291,87 @@ describe('refreshSession', () => {
 
 describe('stale-response invalidation', () => {
   const tick = () => new Promise<void>((resolve) => setImmediate(resolve))
+
+  it('does not expose an old-session network error after switching accounts', async () => {
+    makeSession('token-A', 'sid-A')
+    let reject: (error: Error) => void = () => {}
+    handler = () => new Promise<Response>((_resolve, fail) => { reject = fail })
+    const pending = apiRequest('/api/v1/transfers')
+    makeSession('token-B', 'sid-B')
+    reject(new Error('private-A transport detail'))
+    await assert.rejects(pending, /session changed/i)
+  })
+
+  it('accepts intake history only within its originating session, not after logout or switching', () => {
+    makeSession('token-A', 'sid-A')
+    const history = structuredClone(bindNavigationState({ matterDetails: { fileReference: 'private-A' } }))
+    assert.deepEqual(readNavigationState(history), history)
+    makeSession('refreshed-A', 'sid-A')
+    assert.deepEqual(readNavigationState(history), history)
+    makeSession('token-B', 'sid-A', SCOPE_B)
+    assert.equal(readNavigationState(history), null)
+    const next = bindNavigationState({ matterDetails: { fileReference: 'private-B' } })
+    assert.equal(readNavigationState(history), null)
+    assert.deepEqual(readNavigationState(next), next)
+    clearSession()
+    assert.equal(readNavigationState(next), null)
+    assert.equal(readNavigationState({ matterDetails: { fileReference: 'unowned' } }), null)
+  })
+
+  it('changes generation only at a session or verified-principal boundary', () => {
+    makeSession('token-A', 'sid-A')
+    const generation = getSessionGeneration()
+    makeSession('token-A-refreshed', 'sid-A')
+    assert.equal(getSessionGeneration(), generation)
+    makeSession('token-B', 'sid-A', SCOPE_B)
+    assert.equal(getSessionGeneration(), generation + 1)
+    clearSession()
+    makeSession('token-A', 'sid-A')
+    assert.equal(getSessionGeneration(), generation + 3)
+  })
+
+  it('does not replay a write after refresh changes institution under the same sid', async () => {
+    makeSession('expired', 'sid-A')
+    handler = url => Promise.resolve(url === '/api/auth/refresh'
+      ? jsonResponse({ data: { principalKey: SCOPE_B, token: 'new-institution-token', expires: 9999999999 } })
+      : jsonResponse({ error: 'Expired' }, 401))
+    await assert.rejects(apiRequest('/api/v1/transfers', { method: 'POST', body: { client_request_id: 'synthetic' } }), /session changed/i)
+    assert.equal(callsTo('/api/v1/transfers').length, 1)
+    assert.equal(getSession()?.principalKey, SCOPE_B)
+    assert.equal(getSession()?.user, null)
+  })
+
+  it('fails closed if refresh omits or malforms its verified principal key', async () => {
+    for (const principalKey of [undefined, '', 'profile-id', 42]) {
+      makeSession()
+      handler = async () => jsonResponse({ data: { token: 'new-token', expires: 9999999999, principalKey } })
+      assert.equal(await refreshSession(), false)
+      assert.equal(getSession(), null)
+    }
+  })
+
+  it('discards a successful old-session response after a new login', async () => {
+    makeSession('token-A', 'sid-A')
+    let release: (response: Response) => void = () => {}
+    handler = () => new Promise<Response>(resolve => { release = resolve })
+    const pending = apiRequest('/api/v1/transfers')
+    makeSession('token-B', 'sid-B')
+    release(jsonResponse({ data: { transfers: ['private-A'] } }))
+    await assert.rejects(pending, /session changed/i)
+  })
+
+  it('discards a body that finishes parsing after the session changes', async () => {
+    makeSession('token-A', 'sid-A')
+    let release: (body: unknown) => void = () => {}
+    const response = jsonResponse({})
+    response.json = () => new Promise(resolve => { release = resolve })
+    handler = async () => response
+    const pending = apiRequest('/api/v1/transfers')
+    await tick()
+    makeSession('token-B', 'sid-B')
+    release({ data: { transfers: ['private-A'] } })
+    await assert.rejects(pending, /session changed/i)
+  })
 
   it('a logout issued during an in-flight refresh still ends the session', async () => {
     makeSession('old-token', 'sid-A')
@@ -299,7 +385,7 @@ describe('stale-response invalidation', () => {
     // Logout queues behind the refresh: the refresh result lands first, then
     // logout runs and clears it — the session cannot survive the logout.
     const logout = logoutSession()
-    resolveRefresh(jsonResponse({ data: { token: 'stale-token', expires: 1 } }))
+    resolveRefresh(jsonResponse({ data: { principalKey: SCOPE_A, token: 'stale-token', expires: 1 } }))
     await logout
     await assert.rejects(request, ApiRequestError)
     assert.equal(getSession(), null)
@@ -314,8 +400,8 @@ describe('stale-response invalidation', () => {
         : Promise.resolve(jsonResponse({ success: true }))
     const pending = refreshSession()
     await tick()
-    setSession({ accessToken: 'new-login-token', expires: 2, user: { id: 7 }, sid: 'sid-B' })
-    resolveRefresh(jsonResponse({ data: { token: 'old-refresh-token', expires: 1 } }))
+    setSession({ principalKey: SCOPE_B, accessToken: 'new-login-token', expires: 2, user: { id: 7 }, sid: 'sid-B' })
+    resolveRefresh(jsonResponse({ data: { principalKey: SCOPE_A, token: 'old-refresh-token', expires: 1 } }))
     assert.equal(await pending, false)
     assert.equal(getAccessToken(), 'new-login-token')
     assert.equal(getSession()?.sid, 'sid-B')
@@ -330,7 +416,7 @@ describe('stale-response invalidation', () => {
         : Promise.resolve(jsonResponse({ success: true }))
     const pending = refreshSession()
     await tick()
-    setSession({ accessToken: 'new-login-token', expires: 2, user: { id: 7 }, sid: 'sid-B' })
+    setSession({ principalKey: SCOPE_B, accessToken: 'new-login-token', expires: 2, user: { id: 7 }, sid: 'sid-B' })
     resolveRefresh(jsonResponse({ message: 'Invalid refresh token' }, 401))
     assert.equal(await pending, false)
     assert.equal(getAccessToken(), 'new-login-token')
@@ -342,13 +428,13 @@ describe('stale-response invalidation', () => {
     handler = (url) =>
       url === '/api/v1/transfers/'
         ? new Promise<Response>((resolve) => { resolveData = resolve })
-        : Promise.resolve(jsonResponse({ data: { token: 'fresh', expires: 1 } }))
+        : Promise.resolve(jsonResponse({ data: { principalKey: SCOPE_A, token: 'fresh', expires: 1 } }))
     const request = apiRequest('/api/v1/transfers/', {
       method: 'POST', body: { client_request_id: 'b6f0c0f0-1111-4222-8333-444455556666' },
     })
     await tick() // the write is in flight under session A
     // A different login replaces the session while the request is pending.
-    setSession({ accessToken: 'user-B-token', expires: 2, user: { id: 9 }, sid: 'sid-B' })
+    setSession({ principalKey: SCOPE_B, accessToken: 'user-B-token', expires: 2, user: { id: 9 }, sid: 'sid-B' })
     resolveData(jsonResponse({ error: 'expired' }, 401))
     await assert.rejects(request, ApiRequestError)
     // No retry under session B and no refresh consumed for a stale session.
@@ -375,7 +461,7 @@ describe('stale-response invalidation', () => {
     // The refresh is genuinely in flight before logout is requested.
     assert.deepEqual(order, ['/api/auth/refresh'])
     const logout = logoutSession()
-    resolveRefresh(jsonResponse({ data: { token: 'new', expires: 1 } }))
+    resolveRefresh(jsonResponse({ data: { principalKey: SCOPE_A, token: 'new', expires: 1 } }))
     await Promise.all([refresh, logout])
     // The in-flight refresh result is discarded by the logout tombstone, then
     // the serialized logout request runs.
@@ -409,7 +495,7 @@ describe('stale-response invalidation', () => {
     await tick()
     assert.deepEqual(order, ['/api/auth/refresh'])
     const logout = logoutSession()
-    resolveRefresh(jsonResponse({ data: { token: 'new', expires: 1 } }))
+    resolveRefresh(jsonResponse({ data: { principalKey: SCOPE_A, token: 'new', expires: 1 } }))
     await Promise.all([refresh, logout])
     assert.deepEqual(order, ['/api/auth/refresh', '/api/auth/logout'])
     assert.deepEqual(lockRecords, ['deedly-auth', 'deedly-auth'])
@@ -466,7 +552,7 @@ describe('stale-response invalidation', () => {
     const bodies: string[] = []
     handler = (url, init) => {
       if (url === '/api/auth/refresh') {
-        return Promise.resolve(jsonResponse({ data: { token: 'fresh', expires: 1 } }))
+        return Promise.resolve(jsonResponse({ data: { principalKey: SCOPE_A, token: 'fresh', expires: 1 } }))
       }
       bodies.push(String(init?.body))
       return Promise.resolve(

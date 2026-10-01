@@ -7,9 +7,10 @@ import {
   MatterDocument,
   UnevaluatedRule,
   createMatterDocument,
-  downloadMatterDocumentFile,
+  downloadMatterDocument,
   fetchMatterDocuments,
-  issueDocumentDownloadLink,
+  isDownloadSessionCurrent,
+  type DownloadSession,
   recalculateDocumentRequirements,
   rescanMatterDocumentFile,
   uploadMatterDocumentFile,
@@ -177,26 +178,19 @@ export const MatterDocumentsSection: React.FC<Props> = ({ transferId, onDocument
 
   const handleDownload = async (doc: MatterDocument) => {
     const key = `dl:${doc.id}`
+    const sessionScope: DownloadSession = {}
     setBusyKey(key)
     setRowError(key, '')
     try {
-      const link = await issueDocumentDownloadLink(transferId, doc.id)
       // Retrieval re-authorizes the caller, so the file must be fetched with
       // the Bearer header — window.open cannot send it.
-      const { blob, filename } = await downloadMatterDocumentFile(
-        link.downloadUrl,
-        doc.originalFileName ?? 'document'
-      )
-      const url = URL.createObjectURL(blob)
-      const anchor = document.createElement('a')
-      anchor.href = url
-      anchor.download = filename
-      anchor.click()
-      URL.revokeObjectURL(url)
+      await downloadMatterDocument(transferId, doc.id, doc.originalFileName ?? 'document', sessionScope)
     } catch (err) {
-      setRowError(key, err instanceof Error ? err.message : 'Could not download the file')
+      if (isDownloadSessionCurrent(sessionScope)) {
+        setRowError(key, err instanceof Error ? err.message : 'Could not download the file')
+      }
     } finally {
-      setBusyKey(null)
+      if (isDownloadSessionCurrent(sessionScope)) setBusyKey(null)
     }
   }
 

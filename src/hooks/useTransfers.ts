@@ -1,11 +1,13 @@
-import { useState, useCallback } from 'react'
-import { TransferApi, TransferAggregate, Milestone, AuditEntry } from '../lib/api/transferApi'
+import { useState, useCallback, useRef, useEffect } from 'react'
+import { TransferApi, TransferAggregate, TransferListResponse, TransferStatusTotals, Milestone, AuditEntry } from '../lib/api/transferApi'
 import { TransferFilters } from '../lib/types'
 
 export type { TransferAggregate, Milestone, AuditEntry }
 
 export interface TransfersState {
   transfers: TransferAggregate[]
+  statusTotals: TransferStatusTotals | null
+  pagination: TransferListResponse['pagination'] | null
   currentTransfer: TransferAggregate | null
   currentMilestones: Milestone[]
   activity: AuditEntry[]
@@ -14,8 +16,12 @@ export interface TransfersState {
 }
 
 export const useTransfers = () => {
+  const listRequest = useRef(0)
+  useEffect(() => () => { listRequest.current += 1 }, [])
   const [state, setState] = useState<TransfersState>({
     transfers: [],
+    statusTotals: null,
+    pagination: null,
     currentTransfer: null,
     currentMilestones: [],
     activity: [],
@@ -33,13 +39,17 @@ export const useTransfers = () => {
 
   // Fetch list of transfers
   const fetchTransfers = useCallback(async (filters: TransferFilters = {}) => {
-    setLoading(true)
+    const request = ++listRequest.current
+    setState(prev => ({ ...prev, transfers: [], pagination: null, statusTotals: null, isLoading: true, error: null }))
     try {
       const response = await TransferApi.getTransfers(filters)
+      if (request !== listRequest.current) return
       if (response.success && response.data) {
         setState(prev => ({
           ...prev,
           transfers: response.data!,
+          pagination: response.pagination,
+          statusTotals: response.statusTotals,
           isLoading: false,
           error: null
         }))
@@ -47,9 +57,11 @@ export const useTransfers = () => {
         setError(response.error || 'Failed to fetch transfers')
       }
     } catch (error) {
-      setError(error instanceof Error ? error.message : 'An unexpected error occurred')
+      if (request === listRequest.current) {
+        setError(error instanceof Error ? error.message : 'An unexpected error occurred')
+      }
     }
-  }, [setLoading, setError])
+  }, [setError])
 
   // Fetch a single transfer aggregate
   const fetchTransfer = useCallback(async (id: string) => {

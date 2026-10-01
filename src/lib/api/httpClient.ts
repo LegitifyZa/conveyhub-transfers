@@ -1,4 +1,4 @@
-import { getAccessToken, getSession, refreshSession } from './session'
+import { getAccessToken, getSessionGeneration, refreshSession, synchronizeSessionCookie } from './session'
 
 const API_BASE = ((import.meta as unknown as { env?: Record<string, string> }).env?.VITE_API_BASE_URL as string | undefined) ?? ''
 
@@ -18,6 +18,7 @@ export interface ApiRequestOptions {
   // Return the raw Response instead of parsing JSON — for binary downloads
   // and other non-envelope endpoints. Refresh-and-retry still applies.
   rawResponse?: boolean
+  sessionScope?: { assertCurrent?: () => void }
 }
 
 export class ApiRequestError extends Error {
@@ -41,7 +42,20 @@ function isAuthPath(path: string): boolean {
 }
 
 export async function apiRequest<T>(path: string, options: ApiRequestOptions = {}, allowRefreshRetry = true): Promise<T> {
-  const startSid = getSession()?.sid ?? null
+  const protectedRequest = !isAuthPath(path)
+  const generation = getSessionGeneration()
+  if (protectedRequest) synchronizeSessionCookie()
+  const assertRequestSession = () => {
+    if (!protectedRequest) return
+    synchronizeSessionCookie()
+    if (getSessionGeneration() !== generation) throw new ApiRequestError(409, 'Session changed; stale response discarded')
+  }
+  if (protectedRequest && options.sessionScope) options.sessionScope.assertCurrent ??= assertRequestSession
+  const assertCurrentSession = () => {
+    assertRequestSession()
+    if (protectedRequest) options.sessionScope?.assertCurrent?.()
+  }
+  assertCurrentSession()
   const headers: Record<string, string> = {}
 
   const body = options.body
@@ -72,7 +86,11 @@ export async function apiRequest<T>(path: string, options: ApiRequestOptions = {
     cache: options.cache
   }
 
-  const response = await fetch(buildUrl(path), init)
+  const response = await fetch(buildUrl(path), init).catch(error => {
+    assertCurrentSession()
+    throw error
+  })
+  assertCurrentSession()
 
   // One refresh-and-retry pass on an expired session. A failed refresh clears
   // the session (see session.ts), so the 401 surfaces and the app returns to
@@ -85,27 +103,27 @@ export async function apiRequest<T>(path: string, options: ApiRequestOptions = {
   // idempotency keys on matter/party creates are preserved and a replay is
   // deduplicated upstream rather than duplicating a row.
   //
-  // The retry is additionally refused when the session's sid changed while
+  // The retry is additionally refused when the session generation changed while
   // the request was in flight: a session that logged out or was replaced by a
   // different login must never have its in-flight write replayed under the
   // new user/institution (client_request_id keys are institution-scoped and
   // would not catch that).
-  if (response.status === 401 && allowRefreshRetry && !isAuthPath(path)) {
-    const sameSession = () => (getSession()?.sid ?? null) === startSid
-    if ((startSid === null || sameSession())
-      && await refreshSession()
-      && (startSid === null || sameSession())) {
+  if (response.status === 401 && allowRefreshRetry && protectedRequest) {
+    if (await refreshSession()) {
+      assertCurrentSession()
       return apiRequest<T>(path, options, false)
     }
+    throw new ApiRequestError(401, 'Authentication required')
   }
 
   if (!response.ok) {
     const text = await response.text().catch(() => 'Request failed')
+    assertCurrentSession()
     throw new ApiRequestError(response.status, `${response.status} ${response.statusText}: ${text}`)
   }
 
   if (options.rawResponse) {
     return response as unknown as T
   }
-  return response.json() as Promise<T>
+  return await response.json().finally(assertCurrentSession) as T
 }

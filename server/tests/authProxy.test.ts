@@ -301,6 +301,29 @@ describe('BFF auth proxy: login', () => {
     assert.deepEqual(JSON.parse(captured[0].body), { user_id: 42, otp: 123456 })
   })
 
+  it('derives a stable principal key from verified claims, not upstream profile metadata', async () => {
+    const claims = jwt.decode(makeAccessToken()) as Record<string, unknown>
+    const issue = (overrides: Record<string, unknown> = {}) => jwt.sign({ ...claims, ...overrides }, JWT_SECRET, { algorithm: 'HS256' })
+    respond = () => ({ status: 200, body: { ...loginResponse, data: {
+      ...loginResponse.data, token: issue(), principalKey: 'untrusted', user: { id: 999, accountable_institution_id: 999 },
+    } } })
+    const login = await post('/api/auth/login', { user_id: 42, otp: 123456 })
+    const key = login.body.data.principalKey
+    assert.match(key, /^[0-9a-f]{64}$/)
+    respond = () => ({ status: 200, body: { message: 'Refreshed', data: {
+      token: issue({ exp: Number(claims.exp) + 3600, abilities: ['transfers:read', 'api'] }), expires: 999999,
+    } } })
+    const refreshed = await post('/api/auth/refresh', {}, authHeaders())
+    assert.equal(refreshed.body.data.principalKey, key)
+    assert.equal(refreshed.cookies.length, 0)
+    for (const change of [{ user_id: 43 }, { accountable_institution_id: 3 }, { user_roles_id: 2 }, { abilities: ['api'] }]) {
+      respond = () => ({ status: 200, body: { message: 'Refreshed', data: { token: issue(change), expires: 999999 } } })
+      const changed = await post('/api/auth/refresh', {}, authHeaders())
+      assert.equal(changed.status, 200)
+      assert.notEqual(changed.body.data.principalKey, key)
+    }
+  })
+
   it('fails closed when the issued token fails local verification, and sets no cookie', async () => {
     const retiredRoleToken = makeAccessToken(5)
     respond = () => ({ status: 200, body: { ...loginResponse, data: { ...loginResponse.data, token: retiredRoleToken } } })

@@ -8,8 +8,6 @@ import { mapProperty } from './properties'
 
 const router = Router()
 
-const DEFAULT_SORT_COLUMNS = ['created_at', 'updated_at', 'property_address', 'status', 'purchase_price']
-
 const DEEDLY_UNAVAILABLE = { success: false, error: 'Matter service temporarily unavailable' }
 
 // Auth-forwarding proxy for write routes owned by the FastAPI DEEDLY service
@@ -46,21 +44,6 @@ async function proxyDeedly(req: Request, res: Response, path: string, method: 'G
   } catch {
     res.status(503).json(DEEDLY_UNAVAILABLE)
   }
-}
-
-interface TransferFilters {
-  page: number
-  limit: number
-  sortBy: string
-  sortOrder: 'asc' | 'desc'
-}
-
-function parseFilters(req: Request): TransferFilters {
-  const page = Math.max(1, parseInt(String(req.query.page || '1'), 10) || 1)
-  const limit = Math.min(100, Math.max(1, parseInt(String(req.query.limit || '10'), 10) || 10))
-  const sortBy = DEFAULT_SORT_COLUMNS.includes(String(req.query.sortBy)) ? String(req.query.sortBy) : 'created_at'
-  const sortOrder = String(req.query.sortOrder).toLowerCase() === 'asc' ? 'asc' : 'desc'
-  return { page, limit, sortBy, sortOrder }
 }
 
 function mapTransferRow(row: any) {
@@ -302,43 +285,14 @@ router.get(
       return
     }
 
-    const filters = parseFilters(req)
-    const sortColumn = DEFAULT_SORT_COLUMNS.includes(filters.sortBy) ? filters.sortBy : 'created_at'
-    const offset = (filters.page - 1) * filters.limit
-
     // Same-institution isolation applies to every caller — no privileged-role exception.
-    const tenantPredicate = 'WHERE t.accountable_institution_id = $1'
-    const tenantParams = [user.accountable_institution_id]
-
-    const countQuery = `SELECT COUNT(*) FROM transfers t ${tenantPredicate}`
-    const countResult = await query<{ count: string }>(countQuery, tenantParams)
-    const total = parseInt(countResult.rows[0].count, 10)
-
-    const pageParams = [user.accountable_institution_id, filters.limit, offset]
-
-    const dataQuery = `
-      SELECT t.id, t.transfer_id, t.property_address, t.purchase_price, t.status,
-             t.current_step, t.total_steps, t.progress, t.created_at, t.updated_at
-      FROM transfers t
-      ${tenantPredicate}
-      ORDER BY t.${sortColumn} ${filters.sortOrder.toUpperCase()}
-      LIMIT $2 OFFSET $3
-    `
-
-    const dataResult = await query(dataQuery, pageParams)
-
-    res.json({
-      message: 'OK',
-      data: {
-        transfers: dataResult.rows.map(mapTransferRow),
-        pagination: {
-          page: filters.page,
-          limit: filters.limit,
-          total,
-          totalPages: Math.ceil(total / filters.limit) || 1,
-        },
-      },
-    })
+    const incoming = new URL(req.originalUrl, 'http://localhost').searchParams
+    const params = new URLSearchParams()
+    for (const key of ['page', 'limit', 'sortBy', 'sortOrder', 'status']) {
+      for (const value of incoming.getAll(key)) params.append(key, value)
+    }
+    const search = params.toString()
+    await proxyDeedly(req, res, `/${search ? `?${search}` : ''}`, 'GET')
   })
 )
 

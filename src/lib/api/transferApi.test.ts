@@ -108,6 +108,48 @@ describe('canonical transfer classifications', () => {
   })
 })
 
+describe('staff list API boundary', () => {
+  const pagination = { page: 2, limit: 1, total: 7, totalPages: 7 }
+  const statusTotals = { total: 20, inProgress: 13, completed: 7 }
+
+  it('sends the canonical filter and preserves server pagination and institution totals', async () => {
+    const fetchMock = respond({ message: 'OK', data: {
+      transfers: [{ ...DETAIL, status: 'complete' }], pagination, statusTotals,
+    } })
+    const response = await TransferApi.getTransfers({ status: 'complete', page: 2, limit: 1 })
+    assert.equal(fetchMock.mock.calls[0].arguments[0], '/api/v1/transfers?page=2&limit=1&status=complete')
+    assert.equal(response.data?.length, 1)
+    assert.equal(response.data?.[0].status, 'completed')
+    assert.deepEqual(response.pagination, pagination)
+    assert.deepEqual(response.statusTotals, statusTotals)
+  })
+
+  it('does not apply a second page-local status filter', async () => {
+    respond({ message: 'OK', data: { transfers: [DETAIL], pagination, statusTotals } })
+    const response = await TransferApi.getTransfers({ status: 'complete' })
+    assert.equal(response.data?.length, 1)
+  })
+
+  it('preserves empty pages without resetting totals, and never fabricates missing totals', async () => {
+    respond({ message: 'OK', data: { transfers: [], pagination, statusTotals } })
+    assert.deepEqual((await TransferApi.getTransfers()).statusTotals, statusTotals)
+    mock.restoreAll()
+    respond({ message: 'OK', data: { transfers: [], pagination: { page: 1, limit: 10, total: 0, totalPages: 0 } } })
+    assert.equal((await TransferApi.getTransfers()).statusTotals, null)
+  })
+
+  it('fails on missing list metadata, malformed counts and service errors rather than inventing page counts', async () => {
+    for (const data of [{}, { transfers: [] }, { transfers: [], pagination, statusTotals: { total: -1 } }]) {
+      mock.restoreAll()
+      respond({ message: 'OK', data })
+      await assert.rejects(TransferApi.getTransfers(), /Invalid transfer list response/)
+    }
+    mock.restoreAll()
+    respond({ error: 'Unavailable' }, 503)
+    await assert.rejects(TransferApi.getTransfers(), ApiRequestError)
+  })
+})
+
 describe('matter core API boundary', () => {
   it('getMatterCore reads the v1 detail route', async () => {
     const fetchMock = respond({ message: 'OK', data: DETAIL })

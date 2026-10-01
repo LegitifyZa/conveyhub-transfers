@@ -38,6 +38,8 @@
 // The module keeps the legacy prototype flag (`legitify_auth`) removed on every
 // session transition so no stale "logged in" marker can outlive a session.
 
+import { resetNavigationScope } from '../navigationState'
+
 const LEGACY_AUTH_KEY = 'legitify_auth'
 const SID_COOKIE = 'deedly_sid'
 const SID_HEADER = 'X-Deedly-Session'
@@ -47,12 +49,51 @@ export interface AuthSession {
   expires: number
   user: Record<string, unknown> | null
   sid: string
+  principalKey: string
 }
 
 export type SessionListener = (session: AuthSession | null) => void
 
 let session: AuthSession | null = null
+let sessionGeneration = 0
+let sessionChannel: BroadcastChannel | null = null
 let refreshInFlight: Promise<boolean> | null = null
+
+export function getSessionGeneration(): number {
+  return sessionGeneration
+}
+
+export function isPrincipalKey(value: unknown): value is string {
+  return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value)
+}
+
+export function synchronizeSessionCookie(): void {
+  if (typeof window !== 'undefined' && session && readSidCookie() !== session.sid) clearSession()
+}
+
+export function startSessionSync(): () => void {
+  let channel: BroadcastChannel | null = null
+  try {
+    if (typeof BroadcastChannel === 'function') channel = new BroadcastChannel('deedly-session-boundary')
+  } catch {
+    channel = null
+  }
+  sessionChannel = channel
+  if (channel) channel.onmessage = ({ data }) => {
+    if (!session || !data || typeof data.sid !== 'string') return
+    if (data.kind === 'logout' && session.sid === data.sid) clearSession()
+    if (data.kind === 'login' && data.sid === readSidCookie() && isPrincipalKey(data.principalKey)
+      && (session?.sid !== data.sid || session?.principalKey !== data.principalKey)) clearSession()
+  }
+  window.addEventListener('focus', synchronizeSessionCookie)
+  document.addEventListener('visibilitychange', synchronizeSessionCookie)
+  return () => {
+    window.removeEventListener('focus', synchronizeSessionCookie)
+    document.removeEventListener('visibilitychange', synchronizeSessionCookie)
+    channel?.close()
+    if (sessionChannel === channel) sessionChannel = null
+  }
+}
 // Bumped by every logoutSession call: a tombstone that lets ops enqueued
 // before the logout discard themselves even though their request runs after.
 let logoutEpoch = 0
@@ -175,10 +216,16 @@ export function getSessionUser(): Record<string, unknown> | null {
 }
 
 export function setSession(next: AuthSession): void {
+  const changed = session === null || session.sid !== next.sid || session.principalKey !== next.principalKey
+  if (changed) {
+    sessionGeneration++
+    resetNavigationScope()
+  }
   session = next
   if (next.sid) tabSessionSids.add(next.sid)
   dropLegacyFlag()
   notify()
+  if (changed) sessionChannel?.postMessage({ kind: 'login', sid: next.sid, principalKey: next.principalKey })
 }
 
 // Records that a Set-Cookie for this sid landed in this tab even though the
@@ -195,7 +242,11 @@ export function clearSession(): void {
   session = null
   tabSessionSids.clear()
   dropLegacyFlag()
-  if (hadSession) notify()
+  if (hadSession) {
+    sessionGeneration++
+    resetNavigationScope()
+    notify()
+  }
 }
 
 // Single-flight refresh on top of the serialized queue: concurrent 401s share
@@ -227,9 +278,9 @@ async function doRefresh(callLogoutEpoch: number): Promise<boolean> {
   // A logout was requested while this op sat in the queue — discard without
   // firing the request.
   if (logoutEpoch !== callLogoutEpoch) return false
-  const startSid = session?.sid ?? null
+  const startGeneration = sessionGeneration
   const sid = getSessionSid()
-  let envelope: { data?: { token?: unknown; expires?: unknown } }
+  let envelope: { data?: { token?: unknown; expires?: unknown; principalKey?: unknown } }
   try {
     const response = await fetch('/api/auth/refresh', {
       method: 'POST',
@@ -243,19 +294,21 @@ async function doRefresh(callLogoutEpoch: number): Promise<boolean> {
     })
     envelope = response.ok ? await response.json() : {}
   } catch {
-    if (logoutEpoch === callLogoutEpoch && (session?.sid ?? null) === startSid) clearSession()
+    if (logoutEpoch === callLogoutEpoch && sessionGeneration === startGeneration) clearSession()
     return false
   }
   // The session was cleared, logged out or replaced while the exchange was in
   // flight — this response is stale and must not touch it.
-  if (logoutEpoch !== callLogoutEpoch || (session?.sid ?? null) !== startSid) return false
+  if (logoutEpoch !== callLogoutEpoch || sessionGeneration !== startGeneration) return false
   const token = envelope.data?.token
   const expires = envelope.data?.expires
-  if (typeof token !== 'string' || !token || typeof expires !== 'number' || !Number.isFinite(expires)) {
+  const principalKey = envelope.data?.principalKey
+  if (typeof token !== 'string' || !token || typeof expires !== 'number' || !Number.isFinite(expires) || !isPrincipalKey(principalKey)) {
     clearSession()
     return false
   }
-  setSession({ accessToken: token, expires, user: session?.user ?? null, sid: sid ?? '' })
+  const user = session?.principalKey === principalKey ? session.user : null
+  setSession({ accessToken: token, expires, user, sid: sid ?? '', principalKey })
   return true
 }
 
@@ -275,6 +328,7 @@ export function logoutSession(): Promise<void> {
   const sidAtCall = getSessionSid()
   clearSession()
   logoutEpoch++
+  sessionChannel?.postMessage({ kind: 'logout', sid: sidAtCall })
   deleteSidCookieIfOurs(sidAtCall)
   if (!authEnvironmentSupported()) {
     // Local teardown only; the HttpOnly pair stays for upstream expiry — no

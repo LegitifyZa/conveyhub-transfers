@@ -759,3 +759,113 @@ Authenticated staff document lane (`python_server/routers/v1/transfers.py` +
 The detailed package/version/advisory triage and demonstration evidence are
 recorded in the existing MVP0 plan checkpoint. These follow-ups are open; the
 classification review does not waive them or authorize deployment.
+
+## M2 staff list and pilot navigation checkpoint (2026-09-28)
+
+- Migration 016, not migration 001, defines the current transfer lifecycle:
+  `in_progress|complete`. The staff list accepts only those exact `status`
+  values; omission means all. Empty, legacy, unknown and repeated values
+  return 422 before queries. No lifecycle transition is introduced here.
+- The BFF list verifies JWT/`transfers:read` and proxies the approved query
+  parameters to FastAPI with the unchanged Bearer token. Client-role lists
+  remain empty without DB/upstream calls or institution totals. Staff lists
+  now require `DEEDLY_API_BASE_URL` and the FastAPI service to be available;
+  missing configuration/transport/5xx failures return generic 503, not an
+  empty success or a direct-DB fallback.
+- FastAPI uses the same tenant/status predicate for rows and pagination count.
+  `data.statusTotals = {total, inProgress, completed}` is institution-wide,
+  independent of page and status selection. All roles remain scoped to the
+  verified institution. Sorting includes an ID tie-breaker. These are ordinary
+  read queries, not a shared transactional snapshot or a performance-certified
+  query plan; representative PostgreSQL measurement remains deferred.
+- The dashboard displays server totals and pagination, resets to page 1 on
+  filter changes, rejects stale list responses and never invents totals from
+  the loaded page. Text search is explicitly labelled as page-local. The
+  legacy Draft chip/filter is removed. Wizard Save Details / Save and Continue
+  labels and form-check indicators do not claim submission, legal readiness
+  or completion. Financial persistence remains outside this slice.
+- Pilot sidebar links are Transfers and Settings only. Hidden routes and
+  backend quarantine remain unchanged. This is not role-aware client-shell
+  certification; the M3 principal/session work remains separate.
+- Property browser fixtures use the unslashed browser list/create paths and
+  current classification/document contracts. The property and document
+  harnesses block external requests and intercept all API requests; browser
+  authentication, scanning and persistence are synthetic. They must not be
+  used as live provider/database certification.
+- Verification under Node 24.21.0 / Python 3.12.10: frontend, server and
+  server-test typechecks passed; production build passed (existing stale
+  Browserslist-data warning); 158 frontend/API/component tests, 177 Node BFF
+  tests and 6 offline checksum tests passed. Static-build browser checks:
+  property 5/5, staff list/navigation 4/4, classification 18/18, documents
+  10/10. Offline Python discovery: 797 passed, 249 skipped; database suites
+  and the unconfigured landed Entities source contract were not certified.
+- Vitest is neither declared nor installed/configured. TypeScript suites use
+  `node --import tsx --test "src/**/*.test.ts" "src/**/*.test.tsx"` and
+  `node --import tsx --test "server/tests/*.test.ts"`, not Vitest. Do not let
+  `npx vitest` download a new framework to disguise this missing check.
+- Safe verification requires process-only empty `TEST_DATABASE_URL` and
+  `TEST_MIGRATION_DATABASE_URL`, every DB opt-in disabled, and no ambient
+  application/provider credentials. Python supports `PYTHON_DOTENV_DISABLED=1`.
+  The offline Python run additionally blocked socket connections except the
+  Windows asyncio `_fallback_socketpair` internal loopback call; it recorded
+  zero other socket attempts. Blocking that internal call prevents async tests
+  from starting and is a runner error, not a product failure. Node's explicit
+  `dotenv.config()` ignores `DOTENV_CONFIG_PATH`; the full BFF run preloaded a
+  test-only no-op for dotenv and a throwing `pg.Client.prototype.connect`
+  guard before application imports. Existing route tests provide mock pools
+  and loopback HTTP doubles. No DB suite was opted in, migrated or seeded.
+- This completes the approved filtering/totals, labels, navigation and harness
+  scope with offline evidence only. It does not close the full megaplan's
+  reclassification design, complete multi-property wizard editing/readback,
+  measured indexing, live authentication, legal-rule or pilot-release gates.
+  SEC-BUILD-02, SEC-RUNTIME-03, TOOL-LINT-01 and TOOL-NODE-01 remain separate.
+
+## M2 review follow-up (offline)
+
+- Wizard document URLs require the persisted transfer UUID (`state.id`), never
+  the human `TRF-*` reference. The property harness now rejects the latter;
+  allowing both had hidden an existing application defect.
+- BFF list query parsing must preserve literal question marks in values and
+  subsequent parameters; FastAPI, not truncation, validates status values.
+- Post-fix checks: 159 frontend/component, 178 BFF, 798 Python, 6 checksum,
+  37 mocked browser checks, three typechecks and the production build passed.
+- The 249 Python skips comprise 248 database-gated cases and one unconfigured
+  landed Entities source-contract module. Particularly relevant: 85 v1 transfer,
+  5 migration-016, 8 property-workflow and 25 core-edit/property DB cases.
+  Eight status-authority skips exercise legacy handlers, not the v1 list.
+  No live database, provider or authentication certification is implied.
+
+## Startup and session-isolation review checkpoint
+
+- `README.md` now documents the actual three-process startup: Vite 5173,
+  Node BFF 3000, FastAPI 3100. Vite's proxy config reads `VITE_API_PORT` from
+  process.env before dotenv loading, so export it explicitly; `.env` alone
+  does not configure that proxy port. `npm run dev` does not start Python.
+  Startup instructions are for an already approved environment, not permission
+  to connect to shared services or apply migrations. M1 remains on hold.
+- Login/refresh now carry a BFF-derived `principalKey` fingerprint of verified
+  JWT identity/institution/role/ability claims. It is only a UI invalidation
+  marker, never an authorization credential. Deploy compatible BFF/SPA versions;
+  missing/malformed metadata fails closed. Existing JWT, tenant, cookie, CSRF
+  and Web Locks checks remain authoritative and unchanged.
+- Session generations invalidate outstanding protected responses, JSON bodies
+  and replay attempts, and key protected React subtrees. Normal same-principal
+  refresh preserves state. Cross-tab boundary messages and cookie checks on
+  focus/visibility/request boundaries clear local state without adopting tokens.
+  Intake history/prefill has a resettable per-session scope, preventing old
+  navigation data from rehydrating another session's forms.
+- `node e2e/session-isolation.check.mjs` requires a loopback Vite dev server
+  on 4292 (override `SESSION_TEST_BASE`). It intercepts all API/auth traffic,
+  blocks external HTTP requests, and drives the actual session module through
+  its loaded URL, including any Vite HMR timestamp. Importing a different URL
+  would create a second module instance and would not test the app's session.
+- The README lists relevant PostgreSQL suites, opt-ins, fixture/cleanup hazards,
+  exact-schema/host/name prerequisites and the missing actual-schema list/totals
+  coverage. Do not enable DB tests without separate lifecycle approval. Counts,
+  page rows and institution totals remain separate reads, not one snapshot.
+  UI invalidation is not upstream revocation or cancellation of accepted writes.
+- Checkpoint verification under Node 24.21.0 / Python 3.12.10: 166 frontend,
+  179 BFF, 798 Python tests passed (249 deliberate DB/source-contract skips),
+  6 checksum tests, all three typechecks and the production build passed.
+  Browser checks: 10 session-isolation plus 37 existing static-build checks;
+  synthetic transport only. No live auth/DB services, migrations or M1 work.

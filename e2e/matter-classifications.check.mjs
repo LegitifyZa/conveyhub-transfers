@@ -77,7 +77,7 @@ async function scenario(run, { savedCode, status = 200, options = classification
     if (!path.startsWith('/api/')) return route.continue()
     if (!path.startsWith('/api/auth/') && !['GET', 'HEAD'].includes(method)) writes.push({ method, path })
     if (path === '/api/auth/refresh') {
-      return route.fulfill(json({ message: 'OK', data: { token: 'mock-classification-browser-token', expires: Math.floor(Date.now() / 1000) + 3600 } }))
+      return route.fulfill(json({ message: 'OK', data: { principalKey: 'a'.repeat(64), token: 'mock-classification-browser-token', expires: Math.floor(Date.now() / 1000) + 3600 } }))
     }
     if (path === '/api/v1/transfers/classifications') {
       return route.fulfill(state.status === 200
@@ -151,7 +151,7 @@ try {
       await page.getByPlaceholder('Gouteng').fill('Gauteng')
       await page.getByPlaceholder('2196').fill('0001')
       await page.locator('select').filter({ has: page.locator('option[value="Freehold"]') }).selectOption('Freehold')
-      await page.getByRole('button', { name: 'Save Draft', exact: true }).click()
+      await page.getByRole('button', { name: 'Save Details', exact: true }).click()
       await page.getByText('Matter, property and all parties saved.', { exact: true }).waitFor()
       assert.equal(requests.length, 1)
       assert.equal(requests[0].classification_code, option.canonicalCode)
@@ -189,9 +189,9 @@ try {
     await page.waitForFunction(() => document.querySelector('#transfer-classification')?.options.length === 15)
     assert.equal(await page.getByLabel('Transfer classification', { exact: true }).inputValue(), '')
     await page.getByLabel('Transfer classification', { exact: true }).selectOption(classifications[0].canonicalCode)
-    await page.waitForFunction(() => [...document.querySelectorAll('button')].some(button => button.textContent.trim() === 'Save Draft' && !button.disabled))
+    await page.waitForFunction(() => [...document.querySelectorAll('button')].some(button => button.textContent.trim() === 'Save Details' && !button.disabled))
     await page.getByLabel('Transfer classification', { exact: true }).selectOption('')
-    assert.equal(await page.getByRole('button', { name: 'Save Draft', exact: true }).isDisabled(), true)
+    assert.equal(await page.getByRole('button', { name: 'Save Details', exact: true }).isDisabled(), true)
     assert.equal(requests.length, 0)
   }))
 

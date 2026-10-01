@@ -206,6 +206,19 @@ class RouteTestBase(unittest.IsolatedAsyncioTestCase):
 
 
 class DocumentRouteAuthTests(RouteTestBase):
+    async def test_reads_require_transfer_uuid_not_display_reference(self):
+        invalid = await self.client.get(
+            "/api/v1/transfers/TRF-2026-TEST/documents", headers=self._headers(),
+        )
+        self.assertEqual(invalid.status_code, 404)
+        self.query.assert_not_awaited()
+        with patch.object(transfers, "list_requirements", AsyncMock(return_value={"requirements": []})), \
+             patch.object(transfers, "evaluation_flags", AsyncMock(return_value={"unevaluatedFacts": [], "unevaluatedRules": []})):
+            valid = await self.client.get(f"/api/v1/transfers/{OWN}/documents", headers=self._headers())
+        self.assertEqual(valid.status_code, 200)
+        self.assertEqual(valid.json()["data"]["documents"], [])
+        self.assertEqual(self.query.await_args_list[0].args[1], [OWN, 5])
+
     async def test_create_requires_authentication(self):
         response = await self.client.post(
             f"/api/v1/transfers/{OWN}/documents", json={"name": "X"}

@@ -142,7 +142,7 @@ const TransferNavigation: React.FC<TransferNavigationProps> = ({
               className="transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <Save className="h-4 w-4 mr-2" />
-              {isSaving ? 'Saving...' : 'Save Draft'}
+              {isSaving ? 'Saving...' : 'Save Details'}
             </Button>
           )}
 
@@ -153,7 +153,7 @@ const TransferNavigation: React.FC<TransferNavigationProps> = ({
               disabled={!canProceed || isSaving || persistenceDisabled}
               className="transition-all duration-200 hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              Submit Transfer
+              {isSaving ? 'Saving...' : 'Save and Continue'}
               <ChevronRight className="h-4 w-4 ml-2" />
             </Button>
           ) : (
@@ -173,7 +173,7 @@ const TransferNavigation: React.FC<TransferNavigationProps> = ({
       {/* Progress Indicator */}
       <div className="flex items-center justify-between text-sm text-gray-600 dark:text-gray-400">
         <span>Step {currentStep} of {totalSteps}</span>
-        <span>{Math.round((currentStep / totalSteps) * 100)}% Complete</span>
+        <span>Wizard position: {Math.round((currentStep / totalSteps) * 100)}% — not transfer completion</span>
       </div>
     </div>
   )

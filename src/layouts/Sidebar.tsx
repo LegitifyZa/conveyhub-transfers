@@ -1,19 +1,6 @@
 import React from 'react'
 import { Link, useLocation } from 'react-router-dom'
-import { 
-  Home, 
-  FileText, 
-  FolderOpen,
-  BookOpen,
-  Braces,
-  Code2,
-  Library,
-  Wand2,
-  Settings,
-  Moon,
-  Sun,
-  Calculator
-} from 'lucide-react'
+import { FileText, Settings, Moon, Sun } from 'lucide-react'
 import { cn } from '@/utils/cn'
 
 interface SidebarItemProps {
@@ -48,18 +35,9 @@ interface SidebarProps {
 
 const primaryNavigation = [
   { name: 'Transfers', href: '/transfers', icon: FileText },
-  { name: 'Accounts & Calculator', href: '/accounts', icon: Calculator },
 ]
 
 const otherNavigation = [
-  { name: 'Dashboard', href: '/dashboard', icon: Home },
-  { name: 'Cases', href: '/cases', icon: FileText },
-  { name: 'Documents', href: '/documents', icon: FolderOpen },
-  { name: 'Document Catalogue', href: '/document-catalogue', icon: BookOpen },
-  { name: 'Data Dictionary', href: '/data-dictionary', icon: Braces },
-  { name: 'Template Engine', href: '/template-engine', icon: Code2 },
-  { name: 'Clause Library', href: '/clause-library', icon: Library },
-  { name: 'Document Generator', href: '/document-generator', icon: Wand2 },
   { name: 'Settings', href: '/settings', icon: Settings },
 ]
 

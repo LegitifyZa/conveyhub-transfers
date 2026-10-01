@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { UnavailableNotice } from './ui'
 import { TransferNavigation } from './transfers/TransferNavigation'
 import { TransferProvider } from './transfers/TransferForm'
+import { StepDocuments } from './transfers/StepDocuments'
 import { ApiRequestError } from '../lib/api/http'
 import { TransferApi } from '../lib/api/transferApi'
 import {
@@ -95,6 +96,15 @@ describe('matter save failure contract', () => {
     documents: []
   }
 
+  it('does not use a human transfer reference as a persisted UUID for documents', () => {
+    const html = renderToStaticMarkup(
+      <TransferProvider initialValue={{ ...draft, transfer_id: 'TRF-SYNTHETIC-001' }}>
+        <StepDocuments />
+      </TransferProvider>
+    )
+    assert.match(html, /Save the transfer first/)
+  })
+
   it('create throws on a quarantined endpoint so persistAggregate surfaces failure', async () => {
     respond({ success: false, error: 'Legacy endpoint unavailable' }, 503)
     await assert.rejects(
@@ -130,15 +140,17 @@ describe('TransferNavigation quarantine handling', () => {
     </TransferProvider>
   )
 
-  it('disables Save Draft and Submit Transfer while matter persistence is unavailable', () => {
+  it('disables Save Details and Save and Continue while matter persistence is unavailable', () => {
     const html = renderNav(true)
-    assert.equal(buttonIsDisabled(html, 'Save Draft'), true)
-    assert.equal(buttonIsDisabled(html, 'Submit Transfer'), true)
+    assert.equal(buttonIsDisabled(html, 'Save Details'), true)
+    assert.equal(buttonIsDisabled(html, 'Save and Continue'), true)
   })
 
-  it('keeps Save Draft and Submit Transfer enabled when persistence is available', () => {
+  it('keeps Save Details and Save and Continue enabled when persistence is available', () => {
     const html = renderNav(false)
-    assert.equal(buttonIsDisabled(html, 'Save Draft'), false)
-    assert.equal(buttonIsDisabled(html, 'Submit Transfer'), false)
+    assert.equal(buttonIsDisabled(html, 'Save Details'), false)
+    assert.equal(buttonIsDisabled(html, 'Save and Continue'), false)
+    assert.doesNotMatch(html, /Submit Transfer|% Complete/)
+    assert.match(html, /not transfer completion/)
   })
 })

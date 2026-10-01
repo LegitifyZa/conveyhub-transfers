@@ -1,5 +1,6 @@
 import React, { useEffect } from 'react'
 import { useLocation } from 'react-router-dom'
+import { readNavigationState } from '@/lib/navigationState'
 import { Users, Plus, Trash2, User, Star, Phone, Mail, AlertTriangle, ShieldCheck } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui'
 import { Input } from '@/components/ui'
@@ -313,8 +314,8 @@ const StepParties: React.FC = () => {
   const { state, dispatch } = useTransfer()
   const { parties } = state
   const location = useLocation()
-  const goldenRecord = location.state?.goldenRecord as GoldenRecord | undefined
-  const goldenRecordSearch = location.state?.goldenRecordSearch as { entityType: GoldenRecordEntityType; query: string } | undefined
+  const goldenRecord = readNavigationState(location.state)?.goldenRecord as GoldenRecord | undefined
+  const goldenRecordSearch = readNavigationState(location.state)?.goldenRecordSearch as { entityType: GoldenRecordEntityType; query: string } | undefined
 
   // Auto-populate buyer from golden record if available
   useEffect(() => {
