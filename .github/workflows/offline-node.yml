@@ -1,0 +1,61 @@
+name: Offline Node checks
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  offline-node:
+    name: Offline tests, types and build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      CI: 'true'
+      TEST_DATABASE_URL: ''
+      TEST_MIGRATION_DATABASE_URL: ''
+      SPECIALIST_TEST_DATABASE_URL: ''
+      RUN_SPECIALIST_DB_TESTS: '0'
+      RUN_MIGRATION_CHAIN_TESTS: '0'
+      DATABASE_URL: ''
+      POSTGRES_URL: ''
+      POSTGRES_URL_NON_POOLING: ''
+      ConveyHub_Transfers_POSTGRES_URL: ''
+      ConveyHub_Transfers_POSTGRES_URL_NON_POOLING: ''
+      DB_HOST: '127.0.0.1'
+      DB_PORT: '1'
+      DB_USER: 'offline_test'
+      DB_PASSWORD: 'synthetic-not-a-real-credential'
+      DB_NAME: 'offline_test'
+      JWT_SECRET: 'offline-ci-synthetic-test-secret'
+      LEGITIFY_API_BASE_URL: 'http://127.0.0.1:1'
+      DEEDLY_API_BASE_URL: 'http://127.0.0.1:1'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          set-safe-directory: false
+      - name: Node 24.21.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '24.21.0'
+          package-manager-cache: false
+      - name: Install locked dependencies
+        run: npm ci --no-fund
+      - name: Offline frontend and BFF tests
+        run: node --import ./scripts/offline-test-guard.mjs --import tsx --test "src/**/*.test.ts" "src/**/*.test.tsx" "server/tests/*.test.ts"
+      - name: Frontend typecheck
+        run: node node_modules/typescript/bin/tsc --noEmit
+      - name: BFF typecheck
+        run: npm run typecheck:server
+      - name: BFF test typecheck
+        run: npm run typecheck:server-tests
+      - name: Build
+        run: npm run build
+      - name: Offline migration checksum tests
+        run: node --test scripts/migrate.test.mjs

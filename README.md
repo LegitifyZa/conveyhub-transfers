@@ -234,6 +234,32 @@ the app. Never run full discovery with an ambient DSN. Vitest is not installed;
 TypeScript suites use Node's test runner through `tsx`. ESLint scripts exist,
 but the missing reviewed ESLint configuration remains an open tooling gap.
 
+The minimal `Offline Node checks` workflow runs on pull requests to `main`
+(including drafts) and pushes to `main`. It uses Node 24.21.0, `npm ci` with the
+existing lockfile, SHA-pinned checkout/setup actions, read-only `contents`
+permission, no persisted checkout credentials and no application secrets.
+Its only credential-like values are public synthetic test fixtures. It runs:
+
+```sh
+node --import ./scripts/offline-test-guard.mjs --import tsx --test "src/**/*.test.ts" "src/**/*.test.tsx" "server/tests/*.test.ts"
+node node_modules/typescript/bin/tsc --noEmit
+npm run typecheck:server
+npm run typecheck:server-tests
+npm run build
+node --test scripts/migrate.test.mjs
+```
+
+Before using the guarded test command locally, empty all application/test DSNs
+and disable DB opt-ins process-locally. The preload refuses supplied DSNs or DB
+opt-ins, disables dotenv loading, blocks PostgreSQL connections, and permits
+only loopback TCP sockets for synthetic HTTP doubles (no external/IPC sockets).
+Dependency/tool installation uses package registries; the tests use no external
+application services. The checksum suite uses its existing isolated fake ledger,
+not a live database or a migration run. This minimal job does not run Python,
+Playwright browser checks, PostgreSQL integration, live auth, deployment or lint.
+Their separately reported evidence and outstanding gates must not be conflated
+with a green Node CI check. M1 and independent review remain separate.
+
 The session browser regression (`node e2e/session-isolation.check.mjs`) uses a
 loopback Vite development server on port 4292 (`SESSION_TEST_BASE` overrides),
 intercepts all API/auth requests and blocks external HTTP requests. It imports
