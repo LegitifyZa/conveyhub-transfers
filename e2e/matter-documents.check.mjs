@@ -49,8 +49,10 @@ function makeApi(t = {}) {
     const method = r.request().method()
 
     if (path === '/api/auth/refresh' && method === 'POST') {
-      return r.fulfill(json({ message: 'OK', data: { principalKey: 'a'.repeat(64), token: 'pw-access-token', expires: Math.floor(Date.now() / 1000) + 3600 } }))
+      const actor = r.request().headers()['x-deedly-session'] === 'pw-sid-B' ? 'b' : 'a'
+      return r.fulfill(json({ message: 'OK', data: { principalKey: actor.repeat(64), token: `pw-access-token-${actor}`, expires: Math.floor(Date.now() / 1000) + 3600 } }))
     }
+    if (path === '/api/auth/logout') return r.fulfill(json({ success: true }))
     if (path === '/api/v1/transfers/classifications') {
       return r.fulfill(json({ message: 'OK', data: { classifications: [{
         canonicalCode: 'transfer.donation', subtype: 'donation', displayLabel: 'Donation',
@@ -276,6 +278,54 @@ await check('requirement upload -> clean scan -> satisfied -> download link', as
   assert.equal(denied, 403)
   await context.close()
 })
+
+for (const transition of ['new session', 'logout']) {
+  await check(`delayed binary body cannot download after ${transition}`, async () => {
+    const api = makeApi({ documents: [{
+      id: 'doc-9', transferId: MATTER_ID, name: 'Synthetic A-only document',
+      status: 'uploaded', scanStatus: 'clean', requirementKey: null,
+      originalFileName: 'synthetic-A.pdf', fileType: 'application/pdf', fileSize: PDF_BYTES.length,
+    }] })
+    const { context, page } = await newAuthedPage(api)
+    await openDocumentsTab(page)
+    await page.getByText('Synthetic A-only document', { exact: true }).waitFor()
+    const downloads = []
+    page.on('download', download => downloads.push(download.suggestedFilename()))
+    await page.evaluate(() => {
+      const read = Response.prototype.blob
+      const create = URL.createObjectURL
+      const revoke = URL.revokeObjectURL
+      window.downloadProbe = { created: 0, revoked: 0, released: false, release: null }
+      URL.createObjectURL = function(blob) { window.downloadProbe.created++; return create.call(this, blob) }
+      URL.revokeObjectURL = function(url) { window.downloadProbe.revoked++; return revoke.call(this, url) }
+      Response.prototype.blob = function() {
+        if (!this.headers.get('content-type')?.includes('application/pdf')) return read.call(this)
+        return new Promise((resolve, reject) => {
+          window.downloadProbe.release = () => read.call(this).then(resolve, reject)
+        }).finally(() => { window.downloadProbe.released = true })
+      }
+    })
+    await page.getByRole('button', { name: 'Download', exact: true }).click()
+    await page.waitForFunction(() => typeof window.downloadProbe?.release === 'function')
+    if (transition === 'new session') {
+      await context.addCookies([{ name: 'deedly_sid', value: 'pw-sid-B', url: BASE }])
+      const other = await context.newPage()
+      await openDocumentsTab(other)
+      await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+    } else {
+      await page.getByRole('link', { name: 'Settings', exact: true }).click()
+      await page.getByRole('button', { name: 'Personal Profile', exact: true }).click()
+      await page.getByRole('button', { name: 'Sign Out', exact: true }).click()
+    }
+    await page.getByRole('heading', { name: 'DEEDLY', exact: true }).waitFor()
+    await page.evaluate(() => window.downloadProbe.release())
+    await page.waitForFunction(() => window.downloadProbe.released)
+    await page.waitForTimeout(100)
+    assert.deepEqual(downloads, [])
+    assert.deepEqual(await page.evaluate(() => [window.downloadProbe.created, window.downloadProbe.revoked]), [0, 0])
+    assert.equal(api.calls.downloadLink.length, 1)
+  })
+}
 
 await check('failed upload shows the error and no fake uploaded state', async () => {
   const api = makeApi({ uploadBehaviour: 'fail-once' })

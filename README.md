@@ -191,9 +191,36 @@ it does **not** provision FastAPI, PostgreSQL, credentials or provider contracts
 A deployment needs a separately hosted/reachable FastAPI URL in the BFF's
 `DEEDLY_API_BASE_URL`, shared verification keys, the approved database/schema,
 and the same-origin HTTPS `/api` routing required by auth cookies. Ship compatible
-BFF and SPA versions: login/refresh now require the BFF-derived `principalKey`
-metadata for session isolation; absent metadata fails closed. It is an invalidation
-marker derived from verified JWT claims, never an authorization credential.
+**frontend, Node BFF and FastAPI versions**, not just a compatible login endpoint.
+Login/refresh require the BFF-derived `principalKey` metadata; absent metadata
+fails closed. It is an invalidation marker derived from verified JWT claims,
+never an authorization credential. The separately deployed FastAPI must also
+implement canonical status filtering, pagination and institution-wide totals.
+An older FastAPI can return an otherwise valid list envelope while silently
+ignoring the status filter and omitting totals; successful authentication alone
+is insufficient to approve the rollout.
+
+Before any separately approved rollout is accepted, record all three deployed
+versions and verify against approved synthetic fixtures:
+
+- `GET /api/v1/transfers?status=complete&page=1&limit=1` returns only complete
+  rows and a pagination total for that status; repeat with `in_progress`.
+- Advancing pages does not change `data.statusTotals`; changing the status
+  filter also leaves those institution-wide totals unchanged. Compare them
+  to the known fixture counts, not to the number of rows on the current page.
+- For authorised staff, invalid/repeated statuses fail with 422; another institution's fixtures are
+  absent from rows, pagination counts and totals. Client lists remain empty
+  without institution totals and staff without read permission are denied.
+- Missing FastAPI, an older incompatible list contract, or missing
+  `principalKey` is a rollout failure, not a reason to restore client-side
+  filtering, fabricate totals or weaken authentication.
+- Verify coordinated SPA/BFF/FastAPI promotion and rollback, including old
+  browser bundles. The BFF metadata is additive for old clients, but they lack
+  the new isolation protections; replacing only the backend does not upgrade
+  an already open SPA. Refresh/reload requirements must be part of the plan.
+
+These are future verification requirements, not tests performed against a live
+environment in this checkpoint.
 Production DB TLS/CA verification remains an unresolved M1 prerequisite; the
 current clients still relax certificate verification. These are rollout
 prerequisites, not authorization to deploy or begin M1. See the auth certification
@@ -222,8 +249,14 @@ claims. The browser advances its session generation on logout, a new login or
 changed verified claims, not on an ordinary same-principal token refresh.
 Protected pages remount at that boundary; old API responses (including delayed
 JSON bodies) are discarded, and expired writes cannot be retried under a new
-institution. Session-bound intake navigation data cannot repopulate another
-session's form through history/Back; persisted matters still reload by UUID.
+institution. A document download shares one originating-generation guard from
+link issuance through file retrieval, blob completion and the browser click.
+Stale operations return no usable blob, trigger no download, and do not update
+row state. Any allocated object URL is revoked in a finally block, including
+when the final session check or browser click fails. Same-session refresh does
+not invalidate the download. Session-bound intake navigation data cannot
+repopulate another session's form through history/Back; persisted matters
+still reload by UUID.
 
 Cooperating tabs invalidate one another through BroadcastChannel. Cookie checks
 on focus, visibility changes and protected request/response boundaries also

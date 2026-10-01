@@ -18,6 +18,7 @@ export interface ApiRequestOptions {
   // Return the raw Response instead of parsing JSON — for binary downloads
   // and other non-envelope endpoints. Refresh-and-retry still applies.
   rawResponse?: boolean
+  sessionScope?: { assertCurrent?: () => void }
 }
 
 export class ApiRequestError extends Error {
@@ -42,13 +43,19 @@ function isAuthPath(path: string): boolean {
 
 export async function apiRequest<T>(path: string, options: ApiRequestOptions = {}, allowRefreshRetry = true): Promise<T> {
   const protectedRequest = !isAuthPath(path)
-  if (protectedRequest) synchronizeSessionCookie()
   const generation = getSessionGeneration()
-  const assertCurrentSession = () => {
+  if (protectedRequest) synchronizeSessionCookie()
+  const assertRequestSession = () => {
     if (!protectedRequest) return
     synchronizeSessionCookie()
     if (getSessionGeneration() !== generation) throw new ApiRequestError(409, 'Session changed; stale response discarded')
   }
+  if (protectedRequest && options.sessionScope) options.sessionScope.assertCurrent ??= assertRequestSession
+  const assertCurrentSession = () => {
+    assertRequestSession()
+    if (protectedRequest) options.sessionScope?.assertCurrent?.()
+  }
+  assertCurrentSession()
   const headers: Record<string, string> = {}
 
   const body = options.body
