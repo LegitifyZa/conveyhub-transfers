@@ -1,0 +1,171 @@
+{
+  "artifact": "transfers-migrations",
+  "algorithm": "sha256-over-raw-file-bytes",
+  "canonicalEol": "lf",
+  "note": "sha256 is over the file bytes exactly as the runner applies them. A CRLF checkout produces different digests — that is a byte-different artifact, not a cosmetic difference.",
+  "fileCount": 27,
+  "files": [
+    {
+      "file": "001_initial_schema.sql",
+      "sha256": "45ba8c3cdb61b119a697c4040ad3023b1bdb3580842eb1fd635bc5852c486fb1",
+      "eol": "crlf",
+      "bytes": 11969
+    },
+    {
+      "file": "002_add_properties_table.sql",
+      "sha256": "46d0a26934fc54848ea8fb2b4655fed5e5907377377985872627b47989cf91bb",
+      "eol": "crlf",
+      "bytes": 7137
+    },
+    {
+      "file": "003_complete_conveyhub_schema.sql",
+      "sha256": "fde486c7cbeefc277c8b6d84aa2df890ad1026fee2fb1fa34350765dfb1197a7",
+      "eol": "crlf",
+      "bytes": 34886
+    },
+    {
+      "file": "004_seed_reference_data.sql",
+      "sha256": "6d7a956f61c3be19fb2c4073ef1f9fa927868804f5091cfcfb259223127c98f6",
+      "eol": "crlf",
+      "bytes": 10847
+    },
+    {
+      "file": "005_transfer_documents.sql",
+      "sha256": "af55e04aa8ba21a75a8622952a28937eef81aa75a96658ff32cb62c25cfa8b32",
+      "eol": "crlf",
+      "bytes": 1495
+    },
+    {
+      "file": "006_update_property_types.sql",
+      "sha256": "f66c23a0781acf51a4288e0f32be4e4c944601a0cd3726ca27b9f79105c55445",
+      "eol": "crlf",
+      "bytes": 945
+    },
+    {
+      "file": "007_add_identification_document.sql",
+      "sha256": "ce654f0c77b7fc0c18a4960b2d81146fa2ae8d58fe31bdc11af2b721069f14fe",
+      "eol": "crlf",
+      "bytes": 347
+    },
+    {
+      "file": "008_create_transfer_parties.sql",
+      "sha256": "69e293f545212373a9c75b07d3dfdd8f21138a9cd87d5de8708d9c57dffd2bc9",
+      "eol": "crlf",
+      "bytes": 1850
+    },
+    {
+      "file": "009_add_accountable_institution_id_to_matters_and_transfers.sql",
+      "sha256": "be9e695a049308083e6912f0ee8b52020db60de57dc6450831d31c1879e6b94a",
+      "eol": "crlf",
+      "bytes": 886
+    },
+    {
+      "file": "010_move_transfer_owned_tables_to_transfers_schema.sql",
+      "sha256": "6f298a74668fda03c9ae53523e25e19fc693ff3d25046913184569ac07099e43",
+      "eol": "crlf",
+      "bytes": 2190
+    },
+    {
+      "file": "011_add_property_created_for_transfer_id.sql",
+      "sha256": "ddcb57e35b60fe0b60b6dde22175ac470303a89551601f8e391dca7808b6d3bd",
+      "eol": "crlf",
+      "bytes": 704
+    },
+    {
+      "file": "012_backfill_qa_tenant_and_enforce_ownership.sql",
+      "sha256": "5c8b9d59818b632a7de419dec9ecb74b80a3df7ddc5fe4aba84940b206e33e58",
+      "eol": "crlf",
+      "bytes": 4353
+    },
+    {
+      "file": "013_add_platform_user_actor_columns.sql",
+      "sha256": "9a6b6c9e3a9fa811529b96c7e276349a3677616b6e8b85c59dc8ab51516d05c1",
+      "eol": "crlf",
+      "bytes": 1299
+    },
+    {
+      "file": "014_rename_transfers_submitted_by_user_id_to_created_by_user_id.sql",
+      "sha256": "064e08125651435dced81a587bc2ee8a9f72cb085c9db68f125f02154587dc1c",
+      "eol": "crlf",
+      "bytes": 1996
+    },
+    {
+      "file": "015_deedly_classification_taxonomy.sql",
+      "sha256": "a46c1967528eba62cb78336ba779fe476e74b657751f470018b64c4b1fe1b05a",
+      "eol": "crlf",
+      "bytes": 8973
+    },
+    {
+      "file": "016_deedly_status_lifecycle.sql",
+      "sha256": "4e3b1e23a76815be66193079b6c005f5419f67444df6630875d9b0e8b067d382",
+      "eol": "crlf",
+      "bytes": 4288
+    },
+    {
+      "file": "017_create_accounts_billing_config.sql",
+      "sha256": "a9a08db96190e7ca5a7b5917b602ad878c64afc71113874bde4e5e9dc4b6b193",
+      "eol": "crlf",
+      "bytes": 3577
+    },
+    {
+      "file": "018_deedly_party_property_contract_foundation.sql",
+      "sha256": "f132b3eb9d370c7bc2bab43d16333ed51d1fcc86764ff09316cd63ec9c1fcd17",
+      "eol": "crlf",
+      "bytes": 13950
+    },
+    {
+      "file": "019_deedly_property_tenant_isolation.sql",
+      "sha256": "83a57238cbd939c455b165b57286fe916d96eed263343cef8c098cb2a10af99d",
+      "eol": "crlf",
+      "bytes": 12787
+    },
+    {
+      "file": "020_deedly_taxonomy_approved_classifications.sql",
+      "sha256": "336cb5884e62e0a30a164a5972824f842b1ff4fd5cfb859d43ccd184ddb307a8",
+      "eol": "crlf",
+      "bytes": 1270
+    },
+    {
+      "file": "021_deedly_specialist_role_capacity_persistence.sql",
+      "sha256": "e9fea0f9d3f0a2f148432a172aebd0df4a3db54d7a6db221f00eed735e858b40",
+      "eol": "crlf",
+      "bytes": 12759
+    },
+    {
+      "file": "023_deedly_manual_party_sources.sql",
+      "sha256": "d30b969cadbc2f7b4805e359794910cdcff93b5d9d31678ac5858e019097b80a",
+      "eol": "crlf",
+      "bytes": 4872
+    },
+    {
+      "file": "024_deedly_property_link_idempotency.sql",
+      "sha256": "fa3f3f59e6fac55420b9e7ea8ffa66f9d8fd1ebbcbb6a80d32cced9afbd47fb5",
+      "eol": "crlf",
+      "bytes": 2221
+    },
+    {
+      "file": "025_deedly_matter_documents.sql",
+      "sha256": "ee32c1229d58e137e0c5f8d9ebd3cf34f8e7dee88483f3ca969502eb75a74c63",
+      "eol": "crlf",
+      "bytes": 12113
+    },
+    {
+      "file": "026_deedly_generate_property_id_ambiguity_fix.sql",
+      "sha256": "fbceba554476396550d16b3a1ff6dbf5378319aeb9f8a560ea34d6b278026ce5",
+      "eol": "crlf",
+      "bytes": 2720
+    },
+    {
+      "file": "028_deedly_document_scan_attempt_ownership.sql",
+      "sha256": "5438baf8e30f407691455ea919ae3c063600f74cfc02f3f39dc3c230838f6386",
+      "eol": "crlf",
+      "bytes": 1507
+    },
+    {
+      "file": "029_deedly_generate_transfer_id_ambiguity_fix.sql",
+      "sha256": "1216db2a31a063673d65b420126fd24bd613c62e05bffded68b4b5226b982c16",
+      "eol": "crlf",
+      "bytes": 966
+    }
+  ]
+}
