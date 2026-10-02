@@ -153,6 +153,18 @@ re-run of the preflight there now reports `checksum-mismatch` on all 27
 entries until the ledger rows are reconciled to canonical digests or the
 database is recreated. Neither remediation is in scope for this PR.
 
+**Correction to earlier reports:** the post-apply preflight "PASS,
+checksums verified" was against the CRLF-derived manifest, not
+canonical bytes. The applied SQL was content-identical (see audit
+below), but the ledger digests are not the canonical LF digests.
+
+**Audit (27/27 files):** for every migration, the old manifest digest
+equals `sha256(CRLF bytes)` and the new equals `sha256(LF bytes)`, and
+the live ledger rows in `deedly_m1_verify` all match the CRLF digests.
+Every old-to-new difference is solely CRLF↔LF — no SQL-content changes.
+The CRLF ledger is preserved as evidence; a canonical-digest ledger
+requires a fresh apply (see `deedly_m1_verify_lf` proposal).
+
 ## 5. Backup/restore prerequisites
 
 Before any apply on a target containing data:
