@@ -25,6 +25,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
+import { resolveDbTls } from './db-tls.mjs'
 
 // pg and dotenv are loaded lazily inside main() so the analysis functions
 // above can be imported and tested without the driver installed — and so a
@@ -73,6 +74,7 @@ export function parseExpectations(argv) {
 // expectations; the password is never surfaced.
 export function resolveTarget(env) {
   const postgresUrl = env.ConveyHub_Transfers_POSTGRES_URL || env.POSTGRES_URL || env.DATABASE_URL
+  const tls = resolveDbTls(postgresUrl || null, env)
   if (postgresUrl) {
     const url = new URL(postgresUrl)
     return {
@@ -80,8 +82,9 @@ export function resolveTarget(env) {
       port: parseInt(url.port || '5432', 10),
       database: decodeURIComponent(url.pathname.replace(/^\//, '')),
       user: decodeURIComponent(url.username),
-      connectionString: postgresUrl,
-      ssl: { rejectUnauthorized: false },
+      connectionString: tls.connectionString,
+      ssl: tls.ssl,
+      tlsWarnings: tls.warnings,
     }
   }
   return {
@@ -90,7 +93,8 @@ export function resolveTarget(env) {
     database: env.DB_NAME || 'goldenrecordstemp',
     user: env.DB_USER || 'postgres',
     password: env.DB_PASSWORD,
-    ssl: env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false,
+    ssl: tls.ssl,
+    tlsWarnings: tls.warnings,
   }
 }
 
@@ -211,9 +215,10 @@ async function main() {
   const { config } = await import('dotenv')
   config() // .env resolution identical to migrate.mjs — target must be explicit
   const target = resolveTarget(process.env)
-  const { connectionString, ssl, ...safeTarget } = target
-  void safeTarget
-  const pool = new Pool(connectionString ? { connectionString, ssl } : target)
+  for (const warning of target.tlsWarnings || []) console.warn(`WARNING: ${warning}`)
+  const { connectionString, ssl, tlsWarnings, ...rest } = target
+  void tlsWarnings
+  const pool = new Pool(connectionString ? { connectionString, ssl } : { ...rest, ssl })
   const client = await pool.connect()
   try {
     await client.query('SET default_transaction_read_only = on')

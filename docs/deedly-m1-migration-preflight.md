@@ -217,13 +217,14 @@ approved. Nothing in this slice connects to a database.
 
 ## 7. Remaining M1 work outside this slice
 
+- ~~DB TLS/CA verification in migration tooling and FastAPI's pool~~ —
+  addressed on `m1/tls-hardening` (and ported to this tool via
+  `scripts/db-tls.mjs`): verification is the default, trusted CA via
+  `sslrootcert`/`PGSSLROOTCERT`/`DB_SSL_CA_FILE`, `no-verify` is an
+  explicit warned opt-out. BFF-side DB TLS config remains open if/when the
+  BFF takes a direct pool.
 - Immutable-artifact build + validation run on a disposable DB (needs the
   §6 approval).
-- DB TLS/CA verification in BFF, FastAPI and migration tooling
-  (platform-approved CA config; `rejectUnauthorized:false` in the current
-  DSN path is a known gap).
 - Migrator serialization mechanism (deploy-lock integration) and the
   reconciled-runbook sign-off.
 - Secrets delivery, environment health/readiness fail-closed startup.
-- Legitimate cleanup of `ssl: { rejectUnauthorized: false }` paths once a
-  verified CA configuration exists — flagged, not changed here.
