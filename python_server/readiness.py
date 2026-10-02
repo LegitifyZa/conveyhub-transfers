@@ -1,9 +1,13 @@
-"""Readiness checks (M1). Read-only and bounded: two SELECTs on the pool
-with a 5s statement cap. No writes, no migrations, no database creation.
+"""Readiness checks (M1). Read-only and bounded: two SELECTs on the pool,
+each under a 5s operation timeout. No writes, no migrations, no database
+creation.
 
-The schema prerequisite is the migration ledger: the applied-row count must
-equal the approved manifest's fileCount — pending or partial schema means
-not ready. Deeper ledger integrity is migrate-preflight's job.
+The schema prerequisite is the approved migration manifest: every file in
+it must be recorded in public.transfers_schema_migrations with the
+manifest's sha256. A ledger row not listed in the manifest is schema-drift
+— for the controlled pilot the deployed schema must equal the approved
+artifact exactly, so extras fail closed too. Deeper ledger integrity
+(ordering, EOL canonicalisation) remains migrate-preflight's job.
 
 Check labels are fixed strings — never connection details, hostnames or
 driver error payloads that could carry credentials.
@@ -22,33 +26,51 @@ _MANIFEST_PATH = os.path.join(
     "manifest.json",
 )
 
-_expected_count: Optional[int] = None
-_expected_loaded = False
+_manifest_cache: Optional[dict] = None
+_manifest_loaded = False
+
+
+def _manifest_path(override: Optional[str] = None) -> str:
+    return override or os.getenv("MIGRATIONS_MANIFEST") or _MANIFEST_PATH
+
+
+def load_manifest(path: Optional[str] = None) -> Optional[dict]:
+    """Return {filename: sha256-lowercase} from the approved manifest, or
+    None when unreadable/malformed. Cached only for the default path."""
+    global _manifest_cache, _manifest_loaded
+    if path is None and _manifest_loaded:
+        return _manifest_cache
+    result: Optional[dict] = None
+    try:
+        with open(_manifest_path(path), "r", encoding="utf-8") as f:
+            files = json.load(f).get("files")
+        if isinstance(files, list):
+            result = {
+                e["file"]: str(e["sha256"]).lower()
+                for e in files
+                if isinstance(e.get("file"), str) and "sha256" in e
+            }
+    except (OSError, ValueError, AttributeError):
+        result = None
+    if path is None:
+        _manifest_cache, _manifest_loaded = result, True
+    return result
 
 
 def expected_migration_count() -> Optional[int]:
-    global _expected_count, _expected_loaded
-    if _expected_loaded:
-        return _expected_count
-    path = os.getenv("MIGRATIONS_MANIFEST") or _MANIFEST_PATH
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            count = json.load(f).get("fileCount")
-        _expected_count = count if isinstance(count, int) else None
-    except (OSError, ValueError):
-        _expected_count = None
-    _expected_loaded = True
-    return _expected_count
+    m = load_manifest()
+    return len(m) if m is not None else None
 
 
 def reset_readiness_cache() -> None:
-    global _expected_loaded
-    _expected_loaded = False
+    global _manifest_loaded
+    _manifest_loaded = False
 
 
-async def check_readiness(pool, *, config_valid: bool = True) -> dict:
-    """pool: minimal object with fetchval(sql, timeout=...) — injectable so
-    tests drive this without a database."""
+async def check_readiness(pool, *, config_valid: bool = True,
+                          manifest_path: Optional[str] = None) -> dict:
+    """pool: minimal object with fetch/fetchval — injectable so tests drive
+    this without a database."""
     checks = {"config": "ok" if config_valid else "invalid-configuration",
               "database": "unavailable", "schema": "unknown"}
 
@@ -58,17 +80,33 @@ async def check_readiness(pool, *, config_valid: bool = True) -> dict:
     except Exception:
         return {"ready": False, "checks": checks}
 
-    expected = expected_migration_count()
-    if expected is None:
+    manifest = load_manifest(manifest_path)
+    if manifest is None:
         checks["schema"] = "manifest-unavailable"
-        return {"ready": False, "checks": checks}
-    try:
-        applied = await pool.fetchval(
-            "SELECT count(*) FROM public.transfers_schema_migrations", timeout=5
-        )
-        checks["schema"] = "ok" if applied == expected else "schema-incomplete"
-    except Exception:
-        checks["schema"] = "ledger-missing"
+    else:
+        try:
+            rows = await pool.fetch(
+                "SELECT filename, checksum FROM public.transfers_schema_migrations",
+                timeout=5,
+            )
+            ledger = {
+                r["filename"]: str(r["checksum"]).lower()
+                for r in rows
+                if isinstance(r["filename"], str)
+            }
+            for file, sha in manifest.items():
+                actual = ledger.get(file)
+                if actual is None:
+                    checks["schema"] = "schema-missing-migrations"
+                    break
+                if actual != sha:
+                    checks["schema"] = "schema-checksum-mismatch"
+                    break
+            else:
+                extras = set(ledger) - set(manifest)
+                checks["schema"] = "schema-drift" if extras else "ok"
+        except Exception:
+            checks["schema"] = "ledger-missing"
 
     ready = checks["config"] == "ok" and checks["schema"] == "ok"
     return {"ready": ready, "checks": checks}

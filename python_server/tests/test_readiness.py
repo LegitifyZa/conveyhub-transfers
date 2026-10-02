@@ -1,15 +1,17 @@
+import asyncio
 import json
 import os
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
-from readiness import check_readiness, expected_migration_count, reset_readiness_cache
+from readiness import check_readiness, load_manifest, expected_migration_count, reset_readiness_cache
 
 SECRET = "s3cr3t-pr0d-pw"
 MANIFEST = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
     "..", "..", "src", "lib", "migrations", "manifest.json",
 )
+MANIFEST_ENTRIES = load_manifest(MANIFEST)
 
 
 def prod_env(**overrides):
@@ -25,19 +27,27 @@ def prod_env(**overrides):
 
 
 class FakePool:
-    def __init__(self, ledger_rows=27, db_fails=False, ledger_fails=False):
-        self.ledger_rows, self.db_fails, self.ledger_fails = ledger_rows, db_fails, ledger_fails
+    def __init__(self, ledger=None, db_fails=False, ledger_fails=False):
+        self.ledger = (
+            [{"filename": f, "checksum": s} for f, s in MANIFEST_ENTRIES.items()]
+            if ledger is None else ledger
+        )
+        self.db_fails, self.ledger_fails = db_fails, ledger_fails
         self.calls = []
 
     async def fetchval(self, sql, timeout=None):
         self.calls.append(sql)
         if self.db_fails:
             raise RuntimeError("connection refused — host detail must not leak")
-        if "transfers_schema_migrations" in sql:
-            if self.ledger_fails:
-                raise RuntimeError("relation does not exist")
-            return self.ledger_rows
         return 1
+
+    async def fetch(self, sql, timeout=None):
+        self.calls.append(sql)
+        if self.db_fails:
+            raise RuntimeError("connection refused")
+        if self.ledger_fails:
+            raise RuntimeError("relation does not exist")
+        return self.ledger
 
 
 class ProductionConfigValidationTests(unittest.TestCase):
@@ -70,7 +80,10 @@ class ProductionConfigValidationTests(unittest.TestCase):
         for overrides in (
             {"DATABASE_URL": f"postgresql://svc:{SECRET}@h/db?sslmode=disable"},
             {"DATABASE_URL": "not-a-url"},
-            {"LEGITIFY_API_BASE_URL": "http://localhost:8000"},
+            # plain-http upstream is refused in production — the internal-lane
+            # contract is undecided, so it fails closed on https
+            {"LEGITIFY_API_BASE_URL": "http://legitify.internal:8000"},
+            {"LEGITIFY_API_BASE_URL": "https://localhost"},
             {"LEGACY_ACCOUNTABLE_INSTITUTION_ID": "42"},
         ):
             with patch.dict(os.environ, prod_env(**overrides), clear=True):
@@ -105,10 +118,33 @@ class ReadinessTests(unittest.IsolatedAsyncioTestCase):
         self.env.stop()
         reset_readiness_cache()
 
-    async def test_ready_when_dependencies_and_schema_ok(self):
+    async def test_ready_when_every_manifest_file_and_checksum_matches(self):
         r = await check_readiness(FakePool())
         self.assertTrue(r["ready"])
         self.assertEqual(r["checks"], {"config": "ok", "database": "ok", "schema": "ok"})
+
+    async def test_equal_count_but_wrong_name_is_not_ready(self):
+        ledger = [{"filename": f, "checksum": s} for f, s in MANIFEST_ENTRIES.items()]
+        ledger[0] = {"filename": "999_not_in_manifest.sql",
+                     "checksum": next(iter(MANIFEST_ENTRIES.values()))}
+        r = await check_readiness(FakePool(ledger=ledger))
+        self.assertEqual(r["checks"]["schema"], "schema-missing-migrations")
+        self.assertFalse(r["ready"])
+
+    async def test_equal_count_but_wrong_checksum_is_not_ready(self):
+        entries = list(MANIFEST_ENTRIES.items())
+        ledger = [{"filename": f, "checksum": s} for f, s in entries]
+        ledger[1] = {"filename": entries[1][0], "checksum": "f" * 64}
+        r = await check_readiness(FakePool(ledger=ledger))
+        self.assertEqual(r["checks"]["schema"], "schema-checksum-mismatch")
+        self.assertFalse(r["ready"])
+
+    async def test_extra_ledger_row_beyond_manifest_is_schema_drift(self):
+        ledger = [{"filename": f, "checksum": s} for f, s in MANIFEST_ENTRIES.items()]
+        ledger.append({"filename": "028_extra.sql", "checksum": "a" * 64})
+        r = await check_readiness(FakePool(ledger=ledger))
+        self.assertEqual(r["checks"]["schema"], "schema-drift")
+        self.assertFalse(r["ready"])
 
     async def test_unavailable_database_short_circuits_schema_probe(self):
         pool = FakePool(db_fails=True)
@@ -117,15 +153,9 @@ class ReadinessTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(r["checks"]["database"], "unavailable")
         self.assertEqual(len(pool.calls), 1)
 
-    async def test_missing_or_incomplete_schema_is_not_ready(self):
-        self.assertEqual(
-            (await check_readiness(FakePool(ledger_fails=True)))["checks"]["schema"],
-            "ledger-missing",
-        )
-        self.assertEqual(
-            (await check_readiness(FakePool(ledger_rows=20)))["checks"]["schema"],
-            "schema-incomplete",
-        )
+    async def test_missing_ledger_table_is_not_ready(self):
+        r = await check_readiness(FakePool(ledger_fails=True))
+        self.assertEqual(r["checks"]["schema"], "ledger-missing")
 
     async def test_missing_manifest_fails_closed(self):
         with patch.dict(os.environ, {"MIGRATIONS_MANIFEST": "/nonexistent/manifest.json"}):
@@ -139,11 +169,17 @@ class ReadinessTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(r["ready"])
         self.assertEqual(r["checks"]["config"], "invalid-configuration")
 
-    async def test_readiness_recovers_when_dependency_returns(self):
+    async def test_concurrent_probes_are_independent_and_recover(self):
         pool = FakePool(db_fails=True)
-        self.assertFalse((await check_readiness(pool))["ready"])
+        results = await asyncio.gather(*(check_readiness(pool) for _ in range(8)))
+        for r in results:
+            self.assertFalse(r["ready"])
+        self.assertEqual(len(pool.calls), 8)
         pool.db_fails = False
-        self.assertTrue((await check_readiness(pool))["ready"])
+        pool.calls.clear()
+        recovered = await asyncio.gather(*(check_readiness(pool) for _ in range(4)))
+        for r in recovered:
+            self.assertTrue(r["ready"])
 
     async def test_output_contains_only_fixed_labels(self):
         r = await check_readiness(FakePool(db_fails=True))
@@ -151,6 +187,44 @@ class ReadinessTests(unittest.IsolatedAsyncioTestCase):
         for bad in (SECRET, "db.example.internal", "connection refused", "host"):
             self.assertNotIn(bad, body)
         self.assertEqual(expected_migration_count(), 27)
+
+
+class PoolCreationTests(unittest.IsolatedAsyncioTestCase):
+    """Concurrent get_pool calls must share one create_pool — no leaked
+    duplicate pools during outage flapping."""
+
+    def setUp(self):
+        import db
+        self.db = db
+        self.saved_pool, self.saved_settings = db._pool, db._settings
+        db._pool, db._settings = None, None
+
+    def tearDown(self):
+        self.db._pool, self.db._settings = self.saved_pool, self.saved_settings
+
+    async def test_concurrent_get_pool_creates_one_pool(self):
+        created = []
+
+        async def fake_create_pool(**kwargs):
+            await asyncio.sleep(0.01)  # widen the race window
+            p = object()
+            created.append(p)
+            return p
+
+        import types
+        settings = types.SimpleNamespace(
+            database_url=None, db_host="localhost", db_port=5432,
+            db_name="x", db_user="u", db_password="p",
+            db_min_connections=1, db_max_connections=1,
+            db_schema="public", db_ssl=False, db_ssl_ca_file=None,
+            db_ssl_no_verify=False, node_env="development",
+        )
+        with patch.object(self.db.asyncpg, "create_pool", side_effect=fake_create_pool):
+            pools = await asyncio.gather(*(
+                self.db.get_pool(settings) for _ in range(5)
+            ))
+        self.assertEqual(len(created), 1)
+        self.assertTrue(all(p is created[0] for p in pools))
 
 
 if __name__ == "__main__":

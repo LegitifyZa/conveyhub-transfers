@@ -69,4 +69,4 @@ jobs:
         run: pip install 'asyncpg==0.31.0' 'python-dotenv>=1'
       - name: Python DB TLS resolver and fixture tests
         working-directory: python_server
-        run: python -m unittest tests.test_db_ssl_context tests.test_db_tls_fixture tests.test_readiness
+        run: python -m unittest tests.test_db_ssl_context tests.test_db_tls_fixture tests.test_db tests.test_readiness

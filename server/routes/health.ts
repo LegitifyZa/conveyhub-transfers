@@ -36,7 +36,13 @@ router.get(
   '/ready',
   asyncHandler(async (_req: Request, res: Response) => {
     const configValid = validateStartupConfig(process.env).length === 0
-    const result = await checkReadiness({ query, configValid })
+    const result = await checkReadiness({
+      query,
+      configValid,
+      // v1 proxy routes are served by FastAPI — a configured upstream is an
+      // essential dependency for the pilot workflow.
+      upstreamBaseUrl: process.env.DEEDLY_API_BASE_URL?.replace(/\/+$/, ''),
+    })
     res.status(result.ready ? 200 : 503).json({
       status: result.ready ? 'ready' : 'not-ready',
       checks: result.checks,

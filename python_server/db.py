@@ -1,3 +1,4 @@
+import asyncio
 import os
 import re
 import ssl
@@ -32,6 +33,9 @@ class QueryResult:
 
 _pool: Optional[asyncpg.Pool] = None
 _settings: Optional[Settings] = None
+# Serializes pool creation so concurrent probes/requests during an outage
+# cannot race create_pool and leak a duplicate pool.
+_pool_lock = asyncio.Lock()
 
 
 def _dsn_param(dsn: Optional[str], name: str) -> Optional[str]:
@@ -86,6 +90,9 @@ def _build_pool_kwargs(settings: Settings) -> dict:
         "min_size": min_size,
         "max_size": max_size,
         "command_timeout": 30,
+        # Bound connection establishment itself — an unreachable host must
+        # not hang startup or the readiness probe indefinitely.
+        "timeout": 10,
         "server_settings": {"jit": "off"},
     }
 
@@ -139,7 +146,9 @@ async def get_pool(settings: Optional[Settings] = None) -> asyncpg.Pool:
     if _settings is None:
         raise RuntimeError("Database settings have not been configured.")
     if _pool is None:
-        _pool = await asyncpg.create_pool(**_build_pool_kwargs(_settings))
+        async with _pool_lock:
+            if _pool is None:
+                _pool = await asyncpg.create_pool(**_build_pool_kwargs(_settings))
     return _pool
 
 

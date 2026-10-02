@@ -73,19 +73,24 @@ export function validateStartupConfig(env: NodeJS.ProcessEnv): StartupIssue[] {
     }
   }
 
-  const upstream = env.LEGITIFY_API_BASE_URL
-  if (!upstream || !upstream.trim()) {
-    issues.push({ name: 'LEGITIFY_API_BASE_URL', reason: 'missing' })
-  } else {
+  // Upstreams carry bearer tokens and personal data — production requires
+  // https, not merely "a URL". Plain-http internal lanes are a deployment
+  // contract decision that is not yet made, so this fails closed.
+  for (const name of ['LEGITIFY_API_BASE_URL', 'DEEDLY_API_BASE_URL']) {
+    const upstream = env[name]
+    if (!upstream || !upstream.trim()) {
+      issues.push({ name, reason: 'missing' })
+      continue
+    }
     try {
       const u = new URL(upstream)
-      if (!/^https?:$/.test(u.protocol)) {
-        issues.push({ name: 'LEGITIFY_API_BASE_URL', reason: 'must be an http(s) URL' })
+      if (u.protocol !== 'https:') {
+        issues.push({ name, reason: 'must be an https URL in production' })
       } else if (LOOPBACK_HOSTS.has(u.hostname)) {
-        issues.push({ name: 'LEGITIFY_API_BASE_URL', reason: 'loopback is not a valid upstream in production' })
+        issues.push({ name, reason: 'loopback is not a valid upstream in production' })
       }
     } catch {
-      issues.push({ name: 'LEGITIFY_API_BASE_URL', reason: 'is not a valid URL' })
+      issues.push({ name, reason: 'is not a valid URL' })
     }
   }
 

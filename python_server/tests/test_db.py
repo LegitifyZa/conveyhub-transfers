@@ -24,6 +24,8 @@ class DBPoolSettingsTests(unittest.TestCase):
             "db_max_connections": 10,
             "db_schema": "transfers",
             "db_ssl": False,
+            "db_ssl_ca_file": None,
+            "db_ssl_no_verify": False,
             "node_env": "test",
             "secret_key": "test-secret",
             "legitify_api_base_url": "http://localhost:8000",

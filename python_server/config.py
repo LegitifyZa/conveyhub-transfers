@@ -65,8 +65,10 @@ def _production_config_errors(env=os.environ) -> List[str]:
         except ValueError:
             errors.append("LEGITIFY_API_BASE_URL is not a valid URL")
         else:
-            if u.scheme not in ("http", "https"):
-                errors.append("LEGITIFY_API_BASE_URL must be an http(s) URL")
+            # Plain-http upstream lanes are an undecided deployment contract
+            # — fail closed on https; it carries bearer tokens and PII.
+            if u.scheme != "https":
+                errors.append("LEGITIFY_API_BASE_URL must be an https URL in production")
             elif u.hostname in _LOOPBACK_HOSTS:
                 errors.append("LEGITIFY_API_BASE_URL loopback is not a valid upstream in production")
 
