@@ -26,6 +26,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
 import { resolveDbTls } from './db-tls.mjs'
+import { loadVerifiedArtifact } from './migration-recover.mjs'
 
 // pg and dotenv are loaded lazily inside main() so the analysis functions
 // above can be imported and tested without the driver installed — and so a
@@ -52,7 +53,7 @@ export function loadMigrationFiles(dir) {
 export function parseExpectations(argv) {
   const flags = {}
   for (const arg of argv) {
-    const m = arg.match(/^--(expect-host|expect-database|expect-environment)=(.+)$/)
+    const m = arg.match(/^--(expect-host|expect-database|expect-environment|migrations-dir|expect-manifest-sha256)=(.+)$/)
     if (m) flags[m[1]] = m[2]
   }
   const missing = ['expect-host', 'expect-database', 'expect-environment'].filter(k => !flags[k])
@@ -66,7 +67,41 @@ export function parseExpectations(argv) {
       `got '${environment}'. Preflight against production-shaped targets is out of this tool's scope.`
     )
   }
-  return { host: flags['expect-host'], database: flags['expect-database'], environment }
+  // Recovered-artifact input: a recovered dir is only trusted when its
+  // manifest matches an independently recorded approved digest — and the
+  // digest pin is meaningless without an explicit directory.
+  if (flags['expect-manifest-sha256'] && !flags['migrations-dir']) {
+    throw new Error('Refusing to run: --expect-manifest-sha256 requires --migrations-dir=<dir>')
+  }
+  if (flags['migrations-dir'] && !flags['expect-manifest-sha256']) {
+    throw new Error(
+      'Refusing to run: --migrations-dir requires --expect-manifest-sha256=<approved manifest digest>; ' +
+      'internal consistency alone does not prove the artifact is the approved one'
+    )
+  }
+  const out = { host: flags['expect-host'], database: flags['expect-database'], environment }
+  if (flags['migrations-dir']) {
+    out.migrationsDir = flags['migrations-dir']
+    out.expectedManifestSha256 = flags['expect-manifest-sha256']
+  }
+  return out
+}
+
+// Resolve which migration bytes preflight compares against the ledger.
+// With --migrations-dir the directory is fully verified first — every
+// file hashed, the manifest pinned to the expected digest — and the
+// returned checksums come from the same verified bytes. This runs before
+// any pool is created, so an invalid artifact means zero connections.
+export function resolveMigrationSource({ migrationsDir: dir, expectedManifestSha256 } = {}) {
+  if (!dir) {
+    return { files: loadMigrationFiles(migrationsDir()), artifact: null }
+  }
+  const resolved = path.resolve(dir)
+  const a = loadVerifiedArtifact(resolved, expectedManifestSha256)
+  return {
+    files: a.files.map(f => ({ file: f.file, checksum: f.checksum })),
+    artifact: { dir: resolved, manifestSha256: a.manifestSha256 },
+  }
 }
 
 // Mirrors scripts/migrate.mjs connection resolution, minus anything that
@@ -213,6 +248,12 @@ export async function runPreflight({ client, files, expectations, target }) {
 
 async function main() {
   const expectations = parseExpectations(process.argv.slice(2))
+  // Verify the artifact BEFORE importing the driver or creating a pool —
+  // an invalid artifact fails here with zero database connections.
+  const { files, artifact } = resolveMigrationSource(expectations)
+  if (artifact) {
+    console.warn(`Verified migration artifact at ${artifact.dir} (manifest sha256=${artifact.manifestSha256})`)
+  }
   const { Pool } = await import('pg')
   const { config } = await import('dotenv')
   config() // .env resolution identical to migrate.mjs — target must be explicit
@@ -229,7 +270,7 @@ async function main() {
   try {
     await client.query('SET default_transaction_read_only = on')
     await client.query('START TRANSACTION')
-    const report = await runPreflight({ client, files: loadMigrationFiles(migrationsDir()), expectations, target })
+    const report = await runPreflight({ client, files, expectations, target })
     console.log(JSON.stringify(report, null, 2))
     process.exitCode = report.status === 'PASS' ? 0 : 1
   } finally {

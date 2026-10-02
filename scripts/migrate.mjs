@@ -5,6 +5,7 @@ import { config } from 'dotenv'
 import { fileURLToPath } from 'url'
 import { createHash } from 'node:crypto'
 import { resolveDbTls } from './db-tls.mjs'
+import { loadVerifiedArtifact } from './migration-recover.mjs'
 
 config()
 
@@ -123,15 +124,54 @@ function sha256(input) {
 
 function parseArgs() {
   const args = process.argv.slice(2)
-  const baselineIndex = args.indexOf('--baseline-through')
-  if (baselineIndex !== -1) {
-    const value = args[baselineIndex + 1]
-    if (value === undefined || value.startsWith('--')) {
-      throw new Error('--baseline-through requires a filename argument')
+  const out = {}
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]
+    if (a === '--baseline-through') {
+      const value = args[i + 1]
+      if (value === undefined || value.startsWith('--')) {
+        throw new Error('--baseline-through requires a filename argument')
+      }
+      out.baselineThrough = value
+      i++
+      continue
     }
-    return { baselineThrough: value }
+    const m = a.match(/^--(migrations-dir|expect-manifest-sha256)=(.+)$/)
+    if (m) out[m[1] === 'migrations-dir' ? 'migrationsDir' : 'expectManifestSha256'] = m[2]
   }
-  return {}
+  return out
+}
+
+// Recovered-artifact input (M1 exact-artifact execution): when
+// --migrations-dir is given the artifact is fully verified — every file
+// hashed against its manifest, the manifest digest pinned to the
+// independently recorded --expect-manifest-sha256 — BEFORE any pool or
+// database connection is created. The returned sql is the same bytes
+// that were hashed, held in memory: a file changed on disk between
+// verification and execution cannot substitute different SQL.
+function resolveArtifactInput(args) {
+  if (args.expectManifestSha256 && !args.migrationsDir) {
+    throw new Error(
+      '❌ --expect-manifest-sha256 requires --migrations-dir=<dir> — the executed ' +
+      'artifact must be an explicit, verified directory.'
+    )
+  }
+  if (!args.migrationsDir) return null
+  if (!args.expectManifestSha256) {
+    throw new Error(
+      '❌ --migrations-dir requires --expect-manifest-sha256=<digest>: a recovered ' +
+      'artifact is only trusted for execution when its manifest matches an ' +
+      'independently recorded approved digest. Internal consistency alone is ' +
+      'not sufficient. No database connection was made.'
+    )
+  }
+  const dir = path.resolve(args.migrationsDir)
+  const artifact = loadVerifiedArtifact(dir, args.expectManifestSha256)
+  console.log(
+    `📦 Verified migration artifact at ${dir} ` +
+    `(manifest sha256=${artifact.manifestSha256}); executing verified bytes only`
+  )
+  return artifact.files.map(f => ({ file: f.file, sql: f.bytes.toString('utf8'), checksum: f.checksum }))
 }
 
 async function ensureLedger(client) {
@@ -250,6 +290,11 @@ async function runBaseline(client, files, throughFile) {
 
 async function runMigration() {
   console.log('�️ Running database migrations...')
+  // Artifact verification runs before ANY database touch — including the
+  // CREATE DATABASE attempt in createDatabaseIfNeeded. An invalid or
+  // unpinned artifact exits here with zero connections.
+  const args = parseArgs()
+  const artifactFiles = resolveArtifactInput(args)
   assertDirectMigrationTarget() // before any write, including DB creation
   await createDatabaseIfNeeded()
   const pool = new Pool(dbConfig)
@@ -259,8 +304,7 @@ async function runMigration() {
     // the entire run — including across per-migration BEGIN/COMMIT blocks.
     await withMigrationLock(client, async () => {
       await ensureLedger(client)
-      const files = await loadMigrations()
-      const args = parseArgs()
+      const files = artifactFiles ?? (await loadMigrations())
       if (args.baselineThrough) {
         await runBaseline(client, files, args.baselineThrough)
       } else {
