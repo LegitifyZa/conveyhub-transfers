@@ -28,10 +28,20 @@ not a deviation-free certification. Everything below is recorded fact.
   (thumbprint CABD2A79A1076A31F21D253635CB039D4329A5E8) to
   `%APPDATA%\postgresql\root.crt`; verify-full then succeeded.
 - **Credentials:** temp pgpass file `%TEMP%\m1br_pgpass.conf`
-  (host:port:*:user:password), ACL asserted via `Get-Acl` — protected
-  from inheritance, single user Allow. Password never on a command line
-  or printed. File deleted post-run (verified absent). Node scripts used
-  `DB_*` env vars only.
+  (host:port:*:user:password). Password never on a command line or
+  printed. Node scripts used `DB_*` env vars only.
+  - **First creation:** `icacls /inheritance:r /grant:r "$env:USERNAME:R"`
+    applied, `Get-Acl` asserted — protected from inheritance, single
+    user Allow. (That `:R` grant later blocked the `finally` delete —
+    see deviations.)
+  - **Second creation** (recreated mid-run for the residual-count
+    query): the `icacls` command **failed** — `Invalid parameter
+    "/grant:r"` — so that file ran with default inherited TEMP ACLs and
+    its ACL was never re-verified. It was used for queries and then
+    deleted. Verified afterward: file absent (manual `rm`, confirmed);
+    the credential itself was never written to any ACL-broad location
+    and the TEMP directory is the user-private profile dir.
+  - File deleted post-run — verified absent (`Test-Path`/`ls`).
 
 ## Commands (recorded forms)
 
@@ -117,8 +127,12 @@ transfers_status_check.
    CHECK-deparse difference above; execution continued after the
    equivalence review and allowlist.
 3. `PGSSLROOTCERT=system` rejected the chain — PEM fallback used.
-4. pgpass `:R` ACL blocked the `finally` delete — fixed to `:F`; a
-   manual `rm` completed deletion (verified absent).
+4. Credential handling failed twice, honestly recorded: (a) the first
+   pgpass `:R` ACL blocked the `finally` delete — manual `rm` completed
+   it; (b) the second pgpass creation's `icacls` command failed outright
+   (`Invalid parameter "/grant:r"`), so that file's ACL was not the
+   restricted set and was not re-verified — it was deleted after use.
+   Procedure doc corrected to `:F`.
 5. `--exit-on-error` flag spelling corrected from `--exit_on_error`.
 6. A transient connection stall hit psql mid-review (Neon compute
    wake-up); Node `pg` connections were unaffected.
