@@ -498,6 +498,12 @@ approved. Nothing in this slice connects to a database.
   `docs/deedly-m1-artifact-recovery.md` (recover + byte-verify from a
   recorded revision or retained copy). Release-artifact/immutable-blob
   recovery remains open and is M0-operational/M7 scope, not M1.
+- Exact-artifact execution — `--migrations-dir` + pinned
+  `--expect-manifest-sha256` on runner and preflight (verified bytes
+  executed, zero connections on invalid artifacts). The
+  `deedly_m1_artifact_verify` clean-install/repeat-run plan is prepared
+  in `docs/deedly-m1-artifact-execution.md`; awaiting `CREATE DATABASE`
+  approval.
 - ~~Migrator serialization~~ — session-advisory-lock serialization merged
   (PR #11). Still open: broader deployment coordination (deploy-lock
   integration so CI/release never races a migrator) and the

@@ -82,14 +82,16 @@ export function verifyArtifactDir(dir, opts = {}) {
   if (manifest.fileCount !== recorded.length)
     problems.push(`manifest fileCount ${manifest.fileCount} != files[] length ${recorded.length}`)
 
+  const verified = []
   for (const f of recorded) {
     if (entryNameProblem(f.file)) continue
     const p = path.join(dir, f.file)
     if (!fs.existsSync(p)) { problems.push(`missing file ${f.file}`); continue }
     const st = fs.lstatSync(p)
     if (!st.isFile() || st.isSymbolicLink()) { problems.push(`not a regular file: ${f.file}`); continue }
-    const actual = sha256(fs.readFileSync(p))
-    if (actual !== f.sha256) problems.push(`checksum mismatch in ${f.file}`)
+    const bytes = fs.readFileSync(p)
+    if (sha256(bytes) !== f.sha256) problems.push(`checksum mismatch in ${f.file}`)
+    else verified.push({ file: f.file, bytes, checksum: f.sha256 })
   }
   const listed = new Set(names)
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -100,7 +102,18 @@ export function verifyArtifactDir(dir, opts = {}) {
       problems.push(`unlisted file present: ${e.name}`)
   }
   if (problems.length) return fail(problems.join('; '))
-  return { ok: true, fileCount: recorded.length, manifestSha256 }
+  return { ok: true, fileCount: recorded.length, manifestSha256, files: verified }
+}
+
+// Verify an artifact directory and return the exact bytes that were
+// hashed — callers that execute or compare migrations MUST use these
+// buffers so a file changed after verification cannot substitute
+// different SQL (verification-to-execution substitution).
+export function loadVerifiedArtifact(dir, expectedManifestSha256) {
+  const v = verifyArtifactDir(dir, { expectedManifestSha256 })
+  if (!v.ok)
+    throw new Error(`Migration artifact verification failed for ${dir}: ${v.reason}`)
+  return { manifestSha256: v.manifestSha256, files: v.files }
 }
 
 // Extract the artifact at a git revision into an empty output dir.
