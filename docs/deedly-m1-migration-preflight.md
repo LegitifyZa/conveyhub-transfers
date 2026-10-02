@@ -212,12 +212,18 @@ statement below.
 
 **Tool source and verification:**
 
-- Install the **PostgreSQL 17 client tools** matching the server (17.11)
-  — EDB Windows installer for PostgreSQL 17 (client components suffice),
-  or `winget install PostgreSQL.PostgreSQL.17`. Only PG 18 tools are
-  currently present (`C:\Program Files\PostgreSQL\18\bin`) — do not use
-  them; a newer-major `pg_dump` is explicitly unsupported for dumping a
-  17 server in this rehearsal.
+- Install the **PostgreSQL 17 client tools only** matching the server
+  (17.11) — EDB Windows installer with **client tools selected and the
+  server component deselected**, a client-only package
+  (`winget install PostgreSQL.PostgreSQL.17` only if it installs no
+  server service — verify after install), or the standalone
+  binaries-only archive. Do NOT install, initialize, or start a
+  PostgreSQL server/service without separate approval. Only PG 18 tools
+  are currently present (`C:\Program Files\PostgreSQL\18\bin`) — do not
+  use them; a newer-major `pg_dump` is explicitly unsupported for dumping
+  a 17 server in this rehearsal.
+- Post-install check: `Get-Service` confirms no new `postgresql*` service
+  exists/runs.
 - Before step 0, record and assert: `pg_dump --version`,
   `pg_restore --version`, `psql --version` — each must report major
   version **17**; `$LASTEXITCODE` 0.
@@ -231,11 +237,10 @@ $env:PGPORT   = '5432'
 $env:PGUSER   = 'neondb_owner'
 $env:PGSSLMODE = 'verify-full'
 $env:PGPASSFILE = Join-Path $env:TEMP 'm1br_pgpass.conf'
-# PGSSLROOTCERT is NOT exported globally: 'system' is a libpq-only value
-# (PG17+ loads the Windows trusted root store). The Node resolveDbTls
-# treats PGSSLROOTCERT as a file path and would fail closed on it, so the
-# wrapper below scopes it to libpq invocations only. Fallback for libpq:
-# set it to an explicit PEM root path (%APPDATA%\postgresql\root.crt).
+# PGSSLROOTCERT is NOT exported globally — the Node resolveDbTls treats
+# it as a file path and would fail closed on the literal 'system'. The
+# wrapper below scopes it to libpq invocations. Its value is set by the
+# certificate-trust probe in step 0 — do not assume 'system' works.
 
 # Password is typed, never echoed or passed as an argument:
 $pw  = Read-Host -AsSecureString 'Neon password'
@@ -256,8 +261,9 @@ if ($acl.Access | Where-Object {
 
 - libpq tools (`psql`/`pg_dump`/`pg_restore`) authenticate via
   `PGPASSFILE` — no `-W`, no password in `PGPASSWORD`, nothing typed into
-  a visible prompt per-call. Trusted CA: `PGSSLROOTCERT=system` is set
-  per-invocation inside the libpq wrapper below.
+  a visible prompt per-call. Trusted CA for libpq is **verified against
+  the installed build** in step 0 (see `$script:LibpqRootCert`); never
+  `require`, never assumed.
 - Node scripts (`migrate.mjs`, `migrate-preflight.mjs`) receive
   credentials via discrete env vars only — `DB_HOST`, `DB_PORT`,
   `DB_NAME`, `DB_USER`, `DB_PASSWORD` (set from the same secure string;
@@ -272,15 +278,16 @@ Before any mutating operation assert the connected database name:
 
 ```powershell
 function Invoke-Libpq([string]$exe, [string[]]$toolArgs) {
-  # Scopes PGSSLROOTCERT=system to libpq only; never leaks to Node.
-  $prev = $env:PGSSLROOTCERT; $env:PGSSLROOTCERT = 'system'
+  # Scopes PGSSLROOTCERT to libpq only; never leaks to Node.
+  $prev = $env:PGSSLROOTCERT
+  $env:PGSSLROOTCERT = $script:LibpqRootCert
   try { & "$PGBIN\$exe" @toolArgs } finally { $env:PGSSLROOTCERT = $prev }
   if ($LASTEXITCODE -ne 0) { throw "$exe exited $LASTEXITCODE" }
 }
 
 function Invoke-Psql([string]$db, [string]$sql) {
   # Assert connected database before executing.
-  $prev = $env:PGSSLROOTCERT; $env:PGSSLROOTCERT = 'system'
+  $prev = $env:PGSSLROOTCERT; $env:PGSSLROOTCERT = $script:LibpqRootCert
   try {
     $name = & "$PGBIN\psql.exe" -X -v ON_ERROR_STOP=1 -d $db -tAc 'SELECT current_database()'
   } finally { $env:PGSSLROOTCERT = $prev }
@@ -292,13 +299,32 @@ function Invoke-Psql([string]$db, [string]$sql) {
 Any unexpected target state or nonzero exit stops the run — no automatic
 retry, drop, or recreate.
 
-**Sequence:**
+**Sequence** — runs inside `try { … } finally { <cleanup> }` so the
+pgpass file and `DB_*`/PG* env vars are removed even on failure:
 
 ```powershell
 $Src = 'deedly_m1_backup_src'
 $Dst = 'deedly_m1_restore_verify'
+try {
 
-# 0. Probe (read-only) — both must be absent; record SELECT version()
+# 0a. Verify certificate trust against the INSTALLED libpq build — do not
+#     assume 'system' works. Probe each candidate; the first that yields a
+#     verify-full connection becomes $script:LibpqRootCert.
+$script:LibpqRootCert = $null
+foreach ($candidate in @('system', "$env:APPDATA\postgresql\root.crt")) {
+  $env:PGSSLROOTCERT = $candidate
+  & "$PGBIN\psql.exe" -X -d neondb -tAc 'SELECT 1' 2>$null | Out-Null
+  if ($LASTEXITCODE -eq 0) { $script:LibpqRootCert = $candidate; break }
+}
+Remove-Item Env:PGSSLROOTCERT -ErrorAction SilentlyContinue
+if (-not $script:LibpqRootCert) {
+  throw 'no usable CA source — install a PEM bundle for the Neon chain at %APPDATA%\postgresql\root.crt and re-probe'
+}
+#    ('system' = Windows trusted root store on PG 17 libpq; if it fails,
+#    the PEM bundle at %APPDATA%\postgresql\root.crt is used — the file
+#    must exist and contain the Neon chain's CA before re-probing.)
+
+# 0b. Probe (read-only) — both must be absent; record SELECT version()
 Invoke-Psql 'neondb' "SELECT datname FROM pg_database WHERE datname IN ('$Src','$Dst')"
 #    → 0 rows expected; abort if either exists.
 
@@ -356,11 +382,14 @@ $restoreMs = Measure-Command { Invoke-Libpq 'pg_restore' @(
 
 # 8. Verify target against snapshots:
 #    a. Schema diff: Invoke-Libpq 'pg_dump' '--schema-only' on $Src and
-#       $Dst. Preserve both raw outputs in the run dir. Normalize by removing ONLY these known
-#       non-semantic line classes — banner comments (^--\s*(Dumped|pg_dump
-#       version|Started on|Completed on)), \connect/\restrict/\unrestrict
-#       lines, SET statements, SELECT pg_catalog.set_config — then compare
-#       as sorted line sets. Any residual difference is substantive → fail.
+#       $Dst. Preserve both raw outputs in the run dir. Normalize by
+#       removing ONLY banner comments (^--\s*(Dumped|pg_dump version|
+#       Started on|Completed on)) and \connect/\restrict/\unrestrict
+#       lines — then compare as sorted line sets. SET and
+#       SELECT pg_catalog.set_config statements are KEPT and compared:
+#       if one differs, it is reviewed individually and only allowlisted
+#       when confirmed non-semantic in the run log — never stripped by
+#       default. Any other residual difference is substantive → fail.
 #    b. Catalog parity: information_schema tables/columns,
 #       pg_get_constraintdef and pg_get_indexdef output identical.
 #    c. Extension parity: extname+extversion set identical to source.
@@ -373,11 +402,17 @@ $restoreMs = Measure-Command { Invoke-Libpq 'pg_restore' @(
 #    h. FK spot-check: seeded transfer_documents row resolves to its
 #       transfer; artifact file sha256 unchanged.
 
-# 9. Cleanup: marker-scoped DELETE of M1BR- rows from $Src (children
-#    before parents); 0-residual check. Delete $env:PGPASSFILE, clear
-#    $env:DB_PASSWORD. Preserve the raw schema dumps, custom dump, run
-#    log, and BOTH databases as evidence unless drop is separately
-#    approved — they contain only synthetic and migration-seed data.
+# 9. Fixture cleanup: marker-scoped DELETE of M1BR- rows from $Src
+#    (children before parents); 0-residual check. Preserve the raw
+#    schema dumps, custom dump, run log, and BOTH databases as evidence
+#    unless drop is separately approved — they contain only synthetic
+#    and migration-seed data.
+} finally {
+  # Runs on success AND failure — credentials never linger:
+  Remove-Item $env:PGPASSFILE -Force -ErrorAction SilentlyContinue
+  Remove-Item Env:PGPASSFILE,Env:PGSSLROOTCERT,Env:DB_PASSWORD `
+      -ErrorAction SilentlyContinue
+}
 ```
 
 **Separation of concerns:** the artifact file in steps 3/8h is a
