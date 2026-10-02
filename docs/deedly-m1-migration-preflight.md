@@ -250,7 +250,9 @@ try {
     "${env:PGHOST}:5432:*:${env:PGUSER}:$([Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr))")
 } finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr) }
 
-icacls $env:PGPASSFILE /inheritance:r /grant:r "${env:USERNAME}:R" | Out-Null
+# F (not R) — the finally cleanup deletes the file, and Delete needs more
+# than Read under a restrictive ACL:
+icacls $env:PGPASSFILE /inheritance:r /grant:r "${env:USERNAME}:F" | Out-Null
 # Verify the effective ACL: protected from inheritance, only this user:
 $acl = Get-Acl $env:PGPASSFILE
 if (-not $acl.AreAccessRulesProtected) { throw 'pgpass ACL still inherits' }
@@ -323,6 +325,9 @@ if (-not $script:LibpqRootCert) {
 #    ('system' = Windows trusted root store on PG 17 libpq; if it fails,
 #    the PEM bundle at %APPDATA%\postgresql\root.crt is used — the file
 #    must exist and contain the Neon chain's CA before re-probing.)
+#    2026-10-02 run: 'system' FAILED closed (cert verify failed) on this
+#    build; root.crt = ISRG Root X1 exported from Cert:\LocalMachine\Root
+#    (thumbprint CABD2A79A1076A31F21D253635CB039D4329A5E8) worked.
 
 # 0b. Probe (read-only) — both must be absent; record SELECT version()
 Invoke-Psql 'neondb' "SELECT datname FROM pg_database WHERE datname IN ('$Src','$Dst')"
@@ -375,9 +380,9 @@ Invoke-Psql $Dst 'CREATE EXTENSION IF NOT EXISTS "uuid-ossp"'
 
 # 7. Restore (fail-on-error, timed)
 $restoreMs = Measure-Command { Invoke-Libpq 'pg_restore' @(
-    '--no-owner', '--no-acl', '--exit_on_error',
+    '--no-owner', '--no-acl', '--exit-on-error',
     '-d', $Dst, "$env:TEMP\m1br.dump") }
-#    → --exit_on_error aborts on first error; record $restoreMs.TotalSeconds;
+#    → --exit-on-error aborts on first error; record $restoreMs.TotalSeconds;
 #      any error = stop + report, no retry-by-omission.
 
 # 8. Verify target against snapshots:
@@ -390,6 +395,12 @@ $restoreMs = Measure-Command { Invoke-Libpq 'pg_restore' @(
 #       if one differs, it is reviewed individually and only allowlisted
 #       when confirmed non-semantic in the run log — never stripped by
 #       default. Any other residual difference is substantive → fail.
+#       ALLOWLISTED (2026-10-02 run): CHECK-constraint ANY-list deparse —
+#       source renders (ARRAY['x'::character varying,…])::text[] while the
+#       restored target renders ARRAY[('x'::character varying)::text,…].
+#       Verified: all 104 raw-diff lines were CHECK constraints; after
+#       stripping all ::-casts and collapsing parens/space the diffs are
+#       zero — identical literals and structure. Semantically equal.
 #    b. Catalog parity: information_schema tables/columns,
 #       pg_get_constraintdef and pg_get_indexdef output identical.
 #    c. Extension parity: extname+extversion set identical to source.
