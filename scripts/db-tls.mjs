@@ -23,11 +23,12 @@
 // Channel binding: pg's DSN parser passes `channel_binding` through but pg
 // only honours its explicit `enableChannelBinding` option — the DSN param
 // alone is a silent no-op (verified live: the client fell back to plain
-// SCRAM-SHA-256). This resolver therefore maps channel_binding=require|
-// prefer onto `enableChannelBinding`. Caveat: pg treats even 'require' as
-// prefer-PLUS-if-offered; a server that does not advertise
-// SCRAM-SHA-256-PLUS silently degrades to plain SCRAM — strict failure is
-// not enforceable client-side with this driver.
+// SCRAM-SHA-256). Even with the flag, pg treats 'require' as
+// prefer-PLUS-if-offered and silently degrades to plain SCRAM on a server
+// that does not advertise SCRAM-SHA-256-PLUS — strict enforcement is not
+// possible with this driver, so 'require' is REJECTED as unsupported.
+// 'prefer' is supported explicitly: enableChannelBinding is set (PLUS is
+// used when the server offers it) and the weaker guarantee is documented.
 //
 // The ssl-related params are stripped from the returned connectionString so
 // pg-connection-string's parse cannot override the resolved ssl object.
@@ -63,8 +64,12 @@ export function resolveDbTls(dsn, env = {}) {
   }
 
   const channelBinding = url ? url.searchParams.get('channel_binding') : null
-  if (channelBinding === 'require' && (sslmodeParam === 'disable' || env.PGSSLMODE === 'disable')) {
-    throw new Error('channel_binding=require contradicts sslmode=disable — refusing the insecure combination')
+  if (channelBinding === 'require') {
+    throw new Error(
+      'channel_binding=require is not supported: pg cannot strictly enforce ' +
+      'SCRAM-SHA-256-PLUS (it silently degrades). Use channel_binding=prefer ' +
+      'for best-effort binding, or enforce it server-side.',
+    )
   }
 
   let mode = sslmodeParam || env.PGSSLMODE || null
@@ -101,13 +106,14 @@ export function resolveDbTls(dsn, env = {}) {
     ssl.checkServerIdentity = (_name, cert) => tls.checkServerIdentity(expected, cert)
   }
 
-  // channel_binding=require/prefer only has an effect if pg gets its
-  // explicit enableChannelBinding option — map it. 'require' additionally
-  // fails closed when TLS is off.
-  const enableChannelBinding =
-    channelBinding === 'require' || channelBinding === 'prefer' ? true : undefined
+  // channel_binding=prefer only has an effect if pg gets its explicit
+  // enableChannelBinding option — map it. Needs TLS to mean anything.
+  const enableChannelBinding = channelBinding === 'prefer' ? true : undefined
   if (enableChannelBinding && !ssl) {
-    throw new Error('channel_binding=require/prefer needs TLS — ssl resolved off')
+    throw new Error('channel_binding=prefer needs TLS — ssl resolved off')
+  }
+  if (enableChannelBinding) {
+    warnings.push('channel_binding=prefer is best-effort: SCRAM-SHA-256-PLUS is used only when the server offers it')
   }
 
   if (!dsn) return { connectionString: null, ssl, enableChannelBinding, warnings }

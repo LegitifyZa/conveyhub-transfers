@@ -61,14 +61,24 @@ class DbTlsResolutionTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     db._resolve_db_tls(dsn, _settings(**kw))
 
-    def test_channel_binding_dsn_warns_it_is_unenforceable(self):
+    def test_channel_binding_require_fails_closed(self):
         settings = _settings(
             database_url="postgresql://u:p@h/db?sslmode=require&channel_binding=require",
             db_min_connections=1, db_max_connections=2, db_schema="transfers",
             db_host="h", db_port=5432, db_name="db", db_user="u", db_password="p",
         )
-        with mock.patch("builtins.print") as printer:
+        with self.assertRaises(RuntimeError):
             db._build_pool_kwargs(settings)
+
+    def test_channel_binding_prefer_warns_it_is_unenforceable(self):
+        settings = _settings(
+            database_url="postgresql://u:p@h/db?sslmode=require&channel_binding=prefer",
+            db_min_connections=1, db_max_connections=2, db_schema="transfers",
+            db_host="h", db_port=5432, db_name="db", db_user="u", db_password="p",
+        )
+        with mock.patch("builtins.print") as printer:
+            kwargs = db._build_pool_kwargs(settings)
+        self.assertIsInstance(kwargs["ssl"], ssl.SSLContext)
         self.assertTrue(any("channel binding" in str(c) for c in printer.call_args_list))
 
     def test_no_verify_is_explicit_and_warns(self):

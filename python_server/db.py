@@ -89,14 +89,24 @@ def _build_pool_kwargs(settings: Settings) -> dict:
         "server_settings": {"jit": "off"},
     }
 
-    # asyncpg 0.31 has no channel-binding support (scram.pyx pins gs2 "n,,");
-    # a channel_binding requirement in the DSN would be silently ignored —
-    # warn rather than let it look enforced.
-    if dsn and _dsn_param(dsn, "channel_binding") in ("require", "prefer"):
-        print(
-            "WARNING: asyncpg cannot negotiate channel binding; "
-            "channel_binding in the DSN is not enforceable by this driver"
-        )
+    # asyncpg 0.31 has no channel-binding support (scram.pyx pins gs2 "n,,")
+    # — a channel_binding DSN param is silently ignored by the driver.
+    # 'require' is a contract we cannot honour, so it fails closed;
+    # 'prefer' is explicitly documented as unenforceable (warned, allowed).
+    if dsn:
+        channel_binding = _dsn_param(dsn, "channel_binding")
+        if channel_binding == "require":
+            raise RuntimeError(
+                "channel_binding=require is not supported: asyncpg cannot "
+                "negotiate SCRAM-SHA-256-PLUS. Remove the requirement, use "
+                "channel_binding=prefer (best-effort, currently ignored), or "
+                "enforce channel binding server-side."
+            )
+        if channel_binding == "prefer":
+            print(
+                "WARNING: channel_binding=prefer is accepted but asyncpg 0.31 "
+                "cannot negotiate channel binding — the preference is ignored"
+            )
 
     tls = _resolve_db_tls(dsn, settings)
     if tls is not None:

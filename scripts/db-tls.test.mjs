@@ -11,12 +11,11 @@ fs.writeFileSync(caFile, 'TEST-CA-PEM-DATA')
 test.after(() => fs.rmSync(caFile, { force: true }))
 
 test('sslmode=require resolves to full verification and is stripped from the DSN', () => {
-  const r = resolveDbTls(`${DSN}?sslmode=require&channel_binding=require`, {})
+  const r = resolveDbTls(`${DSN}?sslmode=require&channel_binding=prefer`, {})
   assert.equal(r.ssl.rejectUnauthorized, true)
   assert.equal(r.ssl.ca, undefined)
   assert.ok(!r.connectionString.includes('sslmode'))
-  assert.ok(r.connectionString.includes('channel_binding=require')) // kept for pg to honour
-  assert.deepEqual(r.warnings, [])
+  assert.ok(r.connectionString.includes('channel_binding=prefer')) // kept for pg to honour
 })
 
 test('verify-ca and verify-full also resolve to full verification', () => {
@@ -80,19 +79,28 @@ test('a missing CA file fails closed', () => {
   )
 })
 
-test('channel_binding=require|prefer maps to pg enableChannelBinding (DSN param alone is ignored by pg)', () => {
-  assert.equal(resolveDbTls(`${DSN}?channel_binding=require`, {}).enableChannelBinding, true)
-  assert.equal(resolveDbTls(`${DSN}?channel_binding=prefer`, {}).enableChannelBinding, true)
-  assert.equal(resolveDbTls(`${DSN}?channel_binding=disable`, {}).enableChannelBinding, undefined)
-  // the param stays in the DSN (harmless) but the flag is what pg honours
-  assert.ok(resolveDbTls(`${DSN}?channel_binding=require`, {}).connectionString.includes('channel_binding=require'))
+test('channel_binding=prefer maps to pg enableChannelBinding and warns it is best-effort', () => {
+  const r = resolveDbTls(`${DSN}?channel_binding=prefer`, {})
+  assert.equal(r.enableChannelBinding, true)
+  assert.equal(r.warnings.length, 1)
+  assert.match(r.warnings[0], /best-effort/i)
+  assert.ok(r.connectionString.includes('channel_binding=prefer'))
 })
 
-test('channel_binding=require refuses contradictory sslmode=disable', () => {
+test('channel_binding=require is rejected as unenforceable (pg cannot strictly enforce PLUS)', () => {
+  assert.throws(
+    () => resolveDbTls(`${DSN}?channel_binding=require`, {}),
+    /not supported/,
+  )
   assert.throws(
     () => resolveDbTls(`${DSN}?channel_binding=require&sslmode=disable`, {}),
-    /channel_binding/,
+    /not supported/,
   )
+})
+
+test('channel_binding=disable and absent are inert', () => {
+  assert.equal(resolveDbTls(`${DSN}?channel_binding=disable`, {}).enableChannelBinding, undefined)
+  assert.equal(resolveDbTls(DSN, {}).enableChannelBinding, undefined)
 })
 
 test('no-verify is refused under NODE_ENV=production', () => {
