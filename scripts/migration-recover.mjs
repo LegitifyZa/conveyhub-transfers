@@ -163,12 +163,18 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     else {
       const v = verifyArtifactDir(args.output, { expectedManifestSha256: expect })
       if (!v.ok) { console.error(`RECOVERY FAILED: ${v.reason}`); process.exitCode = 1 }
-      else console.log(`Recovered ${v.fileCount} migrations + manifest at ${args.revision} into ${args.output}; all sha256 verified${expect ? ' against expected manifest digest' : ''}. manifest sha256=${v.manifestSha256}`)
+      else if (expect)
+        console.log(`Recovered ${v.fileCount} migrations + manifest at ${args.revision} into ${args.output}; all sha256 verified and manifest matches the expected digest. manifest sha256=${v.manifestSha256}`)
+      else
+        console.log(`Recovered ${v.fileCount} migrations + manifest at ${args.revision} into ${args.output}. INTERNAL CONSISTENCY ONLY — no --expect-manifest-sha256 given; run again with the approved digest before release use. manifest sha256=${v.manifestSha256}`)
     }
   } else if (args.verify) {
     const v = verifyArtifactDir(path.resolve(args.verify), { expectedManifestSha256: expect })
     if (!v.ok) { console.error(`VERIFY FAILED: ${v.reason}`); process.exitCode = 1 }
-    else console.log(`Verified ${v.fileCount} migrations + manifest in ${args.verify}; all sha256 match${expect ? ' and manifest matches the expected digest' : ''}. manifest sha256=${v.manifestSha256}`)
+    else if (expect)
+      console.log(`Verified ${v.fileCount} migrations + manifest in ${args.verify}; all sha256 match and manifest matches the expected digest. manifest sha256=${v.manifestSha256}`)
+    else
+      console.log(`Verified ${v.fileCount} migrations + manifest in ${args.verify}. INTERNAL CONSISTENCY ONLY — the copy verifies against its own manifest; this does NOT prove it is the approved artifact. Re-run with --expect-manifest-sha256=<approved digest>. manifest sha256=${v.manifestSha256}`)
   } else {
     console.error('Usage: --revision=<sha> --output=<dir> | --verify=<dir> [--repo=<path>] [--expect-manifest-sha256=<hex>]')
     process.exitCode = 2

@@ -42,10 +42,14 @@ node scripts/migration-recover.mjs --verify=<dir> `
 ```
 
 `--expect-manifest-sha256` pins the manifest itself to an **independent
-trust reference** — required for retained-copy verification and strongly
-recommended for revision recovery. Without it a copy carrying a *rewritten*
-manifest (digests recomputed over tampered files) verifies against itself
-and reports OK. Obtain the approved digest from the recorded revision:
+trust reference** — **required** for the release-recovery path (retained
+copy or revision). Without it the tool verifies only *internal
+consistency* — a copy carrying a *rewritten* manifest (digests recomputed
+over tampered files) verifies against itself — and the CLI output says so
+explicitly. The approved release procedure therefore records **both** the
+approved revision SHA **and** its manifest sha256 digest at approval time,
+independently of the artifact copy. Obtain the digest from the recorded
+revision:
 
 ```powershell
 git show <approved-sha>:src/lib/migrations/manifest.json | sha256sum
@@ -101,18 +105,23 @@ never reconciles a mismatch by changing bytes.
 
 ## Does the earlier disposable-DB validation cover the recovered bytes?
 
-Partially, and precisely: `deedly_m1_verify_lf` was built by applying the
-canonical LF artifact at its recorded revision, and its ledger digests
-matched the manifest (27/27). Recovery from that same recorded revision
-produces **byte-identical** files (proven by the rehearsal's
-`git show`-equality check and the manifest digests), so that validation
-transfers to the recovered copy of *that* revision. A separate
-artifact-based apply is required when: (a) recovering a different
-revision than the validated one, or (b) acceptance requires applying
-from the recovered directory itself rather than the working tree — the
-runner currently reads `src/lib/migrations`, so applying a recovered copy
-would need an explicit reviewed step. No new DB rehearsal was run for
-this slice.
+Byte-identical SQL preserves the earlier SQL validation evidence:
+`deedly_m1_verify_lf` was built by applying the canonical LF artifact at
+its recorded revision with ledger digests matching the manifest (27/27),
+and recovery from that same revision produces byte-identical files
+(rehearsal-proven). That evidence covers **what the bytes do when
+applied** — schema correctness, ledger recording, repeat-run no-ops.
+
+It does **not** cover **packaging and execution from a recovered
+artifact**: nothing has yet demonstrated extracting to a directory and
+running `migrate.mjs` against that directory, since the runner reads
+`src/lib/migrations` from the working tree. The exact megaplan criterion
+still open is the **"exact-artifact clean install and repeat-run tests"**
+leg of the M1 exit — i.e., an apply driven *by the recovered artifact*
+(the packaged path a release would use), not just replay of already-
+validated source bytes. That needs a reviewed runner-input step (e.g. a
+`--migrations-dir` option or a checkout-time swap) plus a disposable-DB
+run — a separate slice, not executed here.
 
 ## Verification performed (offline rehearsal)
 
