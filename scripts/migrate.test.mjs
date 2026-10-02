@@ -24,7 +24,8 @@ function sandbox(sql) {
     config: () => {},
     fs: { readdirSync: () => [filename], readFileSync: () => sql },
     process: { env: {}, argv: [] },
-    console: { log: () => {}, error: () => {} },
+    console: { log: () => {}, warn: () => {}, error: () => {} },
+    resolveDbTls: () => ({ connectionString: null, ssl: false, warnings: [], enableChannelBinding: false }),
     Pool: class {
       constructor() { throw new Error('Checksum tests must not open database connections') }
     },

@@ -59,3 +59,14 @@ jobs:
         run: npm run build
       - name: Offline migration checksum tests
         run: node --test scripts/migrate.test.mjs
+      - name: DB TLS resolver and fixture tests
+        run: node --test scripts/db-tls.test.mjs scripts/db-tls-fixture.test.mjs
+      - name: Python 3.12
+        uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5.6.0
+        with:
+          python-version: '3.12'
+      - name: Python DB TLS dependencies
+        run: pip install 'asyncpg==0.31.0' 'python-dotenv>=1'
+      - name: Python DB TLS resolver and fixture tests
+        working-directory: python_server
+        run: python -m unittest tests.test_db_ssl_context tests.test_db_tls_fixture

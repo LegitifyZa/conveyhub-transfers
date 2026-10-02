@@ -1,6 +1,8 @@
+import os
 import re
 import ssl
 import time
+import urllib.parse
 import uuid
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, List, Optional, TypeVar
@@ -32,6 +34,48 @@ _pool: Optional[asyncpg.Pool] = None
 _settings: Optional[Settings] = None
 
 
+def _dsn_param(dsn: Optional[str], name: str) -> Optional[str]:
+    if not dsn:
+        return None
+    try:
+        values = urllib.parse.parse_qs(urllib.parse.urlparse(dsn).query)
+    except ValueError:
+        return None
+    return values.get(name, [None])[0]
+
+
+def _resolve_db_tls(dsn: Optional[str], settings: Settings) -> Optional[ssl.SSLContext]:
+    """Resolve the pool's TLS context.
+
+    Certificate and hostname verification are the default whenever TLS is
+    used (create_default_context: CERT_REQUIRED + check_hostname). A trusted
+    CA can be supplied via the DSN sslrootcert param or DB_SSL_CA_FILE /
+    PGSSLROOTCERT. Downgrading is explicit-only: sslmode=no-verify or
+    DB_SSL_NO_VERIFY=true, always with a warning — never silent.
+    """
+    sslmode = _dsn_param(dsn, "sslmode") or os.getenv("PGSSLMODE")
+    ca_file = _dsn_param(dsn, "sslrootcert") or settings.db_ssl_ca_file
+    no_verify = sslmode == "no-verify" or settings.db_ssl_no_verify
+    if sslmode is not None:
+        use_tls = sslmode != "disable"  # an explicit DSN/env mode governs
+    else:
+        use_tls = settings.db_ssl or bool(ca_file) or settings.db_ssl_no_verify
+    if not use_tls:
+        return None
+    if no_verify:
+        if settings.node_env == "production":
+            raise RuntimeError("database no-verify TLS is refused in production")
+        print("WARNING: database TLS verification disabled by explicit no-verify configuration")
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        return ctx
+    ctx = ssl.create_default_context()
+    if ca_file:
+        ctx.load_verify_locations(cafile=ca_file)
+    return ctx
+
+
 def _build_pool_kwargs(settings: Settings) -> dict:
     dsn = settings.database_url
     min_size = settings.db_min_connections
@@ -45,15 +89,28 @@ def _build_pool_kwargs(settings: Settings) -> dict:
         "server_settings": {"jit": "off"},
     }
 
-    needs_ssl = (
-        (dsn and "sslmode=require" in dsn)
-        or settings.db_ssl
-    )
-    if needs_ssl:
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        kwargs["ssl"] = ctx
+    # asyncpg 0.31 has no channel-binding support (scram.pyx pins gs2 "n,,")
+    # — a channel_binding DSN param is silently ignored by the driver.
+    # 'require' is a contract we cannot honour, so it fails closed;
+    # 'prefer' is explicitly documented as unenforceable (warned, allowed).
+    if dsn:
+        channel_binding = _dsn_param(dsn, "channel_binding")
+        if channel_binding == "require":
+            raise RuntimeError(
+                "channel_binding=require is not supported: asyncpg cannot "
+                "negotiate SCRAM-SHA-256-PLUS. Remove the requirement, use "
+                "channel_binding=prefer (best-effort, currently ignored), or "
+                "enforce channel binding server-side."
+            )
+        if channel_binding == "prefer":
+            print(
+                "WARNING: channel_binding=prefer is accepted but asyncpg 0.31 "
+                "cannot negotiate channel binding — the preference is ignored"
+            )
+
+    tls = _resolve_db_tls(dsn, settings)
+    if tls is not None:
+        kwargs["ssl"] = tls
 
     if dsn:
         kwargs["dsn"] = dsn
