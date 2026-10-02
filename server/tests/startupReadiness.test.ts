@@ -8,8 +8,9 @@ import {
   expectedMigrationCount,
   loadManifest,
   resetReadinessCache,
+  singleFlight,
 } from '../readiness'
-import { makeProbeQuery } from '../db'
+import { makeProbeQuery, probeClientConfig, PROBE_STATEMENT_TIMEOUT_MS } from '../db'
 import { validateStartupConfig } from '../startupConfig'
 
 const MANIFEST = path.join(
@@ -329,6 +330,49 @@ test('probe timeout tears down the session; late-settling work is swallowed', as
   assert.deepEqual(events, ['connect', 'end'])
   lateResolve?.() // abandoned promise settles silently — no unhandled rejection
   await new Promise(r => setTimeout(r, 10))
+})
+
+test('probe sessions carry a server-side statement_timeout', () => {
+  const cfg = probeClientConfig() as any
+  assert.equal(cfg.options, `-c statement_timeout=${PROBE_STATEMENT_TIMEOUT_MS}`)
+})
+
+// Single-flight: a burst of overlapping requests must not multiply probe
+// connections — they share one in-flight check.
+test('overlapping requests share one in-flight probe — no extra clients', async () => {
+  resetReadinessCache()
+  let clientsCreated = 0
+  const query = makeProbeQuery(() => {
+    clientsCreated++
+    return {
+      connect: async () => { await new Promise(r => setTimeout(r, 20)) },
+      query: async (t: string) =>
+        t.includes('migrations') ? { rows: ledgerRows() } : { rows: [{}] },
+      end: async () => {},
+    }
+  }, 2000)
+  const probe = singleFlight(() => checkReadiness({ query, manifestPath: MANIFEST }))
+  const results = await Promise.all(Array.from({ length: 8 }, () => probe()))
+  for (const r of results) assert.equal(r.ready, true)
+  // One shared check = two probe clients (SELECT 1 + ledger), not 8x2.
+  assert.equal(clientsCreated, 2)
+  // Nothing cached: a later request runs a fresh probe — prompt recovery.
+  await probe()
+  assert.equal(clientsCreated, 4)
+})
+
+test('single-flight waiters return within the probe deadline on outage', async () => {
+  resetReadinessCache()
+  const start = Date.now()
+  const query = makeProbeQuery(() => ({
+    connect: async () => {},
+    query: () => new Promise<any>(() => {}), // never resolves
+    end: async () => {},
+  }), 30)
+  const probe = singleFlight(() => checkReadiness({ query, manifestPath: MANIFEST }))
+  const results = await Promise.all(Array.from({ length: 6 }, () => probe()))
+  for (const r of results) assert.equal(r.ready, false)
+  assert.ok(Date.now() - start < 2000)
 })
 
 test('invalid config keeps a reachable service not-ready', async () => {

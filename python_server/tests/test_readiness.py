@@ -199,6 +199,24 @@ class ReadinessTests(unittest.IsolatedAsyncioTestCase):
         recovered = await asyncio.gather(*(check_readiness(pool) for _ in range(4)))
         self.assertTrue(all(r["ready"] for r in recovered))
 
+    async def test_overlapping_requests_share_one_inflight_probe(self):
+        calls = []
+
+        async def getter():
+            calls.append(1)
+            await asyncio.sleep(0.02)  # widen the overlap window
+            return FakePool()
+
+        results = await asyncio.gather(
+            *(collect_readiness(getter) for _ in range(8)))
+        # One shared probe — get_pool called once, not eight times.
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(all(r["ready"] for r in results))
+        # Nothing cached: the next request starts a fresh probe — prompt
+        # recovery after an outage.
+        await collect_readiness(getter)
+        self.assertEqual(len(calls), 2)
+
     async def test_output_contains_only_fixed_labels(self):
         r = await check_readiness(FakePool(db_fails=True))
         body = json.dumps(r)

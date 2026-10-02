@@ -157,10 +157,13 @@ async def get_pool(settings: Optional[Settings] = None) -> asyncpg.Pool:
     if _settings is None:
         raise RuntimeError("Database settings have not been configured.")
     # An asyncpg pool is bound to the loop that created it — never hand a
-    # foreign/closed loop's pool to this loop (a stale test loop must not
-    # poison a fresh one). The reference is dropped, not closed: calling
-    # pool.close() from the wrong loop is itself unsafe. Proportional to
-    # the app's single-loop lifecycle.
+    # foreign/closed loop's pool to this loop. LIMITATION: dropping the
+    # reference is not resource cleanup — the orphaned pool's connections
+    # persist until the owning loop closes them or the process exits. The
+    # supported lifecycle is one loop that owns the pool and calls
+    # close_pool() on that loop during shutdown (as lifespan does); the
+    # discard here only prevents a stale test loop from poisoning a fresh
+    # one, and callers must not rely on it to free sockets.
     if _pool is not None:
         bound = getattr(_pool, "_loop", None)
         if bound is not None and bound is not asyncio.get_running_loop():

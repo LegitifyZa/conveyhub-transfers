@@ -113,12 +113,19 @@ async def check_readiness(pool, *, config_valid: bool = True,
     return {"ready": ready, "checks": checks}
 
 
+# Per-loop in-flight probes: overlapping /ready requests share one bounded
+# probe — a burst never creates N x probe work. Nothing is cached; once the
+# task settles the next request starts a fresh check, so recovery is prompt.
+_inflight: dict = {}
+
+
 async def collect_readiness(get_pool, *, budget: float = 8.0) -> dict:
     """Bounded end-to-end readiness: pool creation/acquisition (which may
     wait on the creation lock behind a slow connect) plus the probes, all
     inside one deadline. wait_for cancels the inner task on expiry, so a
     stuck acquire/lock-wait cannot pin the endpoint — and the lock itself
-    is released for the next probe."""
+    is released for the next probe. Callers shield() the shared task so a
+    cancelled request cannot abort the probe for others."""
     not_ready = {"ready": False, "checks": {
         "config": "ok", "database": "unavailable", "schema": "unknown"}}
 
@@ -129,7 +136,23 @@ async def collect_readiness(get_pool, *, budget: float = 8.0) -> dict:
             return not_ready
         return await check_readiness(pool)
 
+    async def _bounded():
+        try:
+            return await asyncio.wait_for(_collect(), timeout=budget)
+        except Exception:
+            return not_ready
+
+    loop = asyncio.get_running_loop()
+    task = _inflight.get(loop)
+    if task is None or task.done():
+        task = asyncio.ensure_future(_bounded())
+        _inflight[loop] = task
+        task.add_done_callback(
+            lambda t: _inflight.pop(loop, None) if _inflight.get(loop) is t else None
+        )
     try:
-        return await asyncio.wait_for(_collect(), timeout=budget)
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        raise  # caller gone — the shared probe keeps running
     except Exception:
         return not_ready

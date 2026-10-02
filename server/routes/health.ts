@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express'
 import { checkDatabaseHealth, getPoolStats, makeProbeQuery } from '../db'
-import { checkReadiness } from '../readiness'
+import { checkReadiness, singleFlight } from '../readiness'
 import { validateStartupConfig } from '../startupConfig'
 import { asyncHandler } from '../utils/asyncHandler'
 
@@ -31,20 +31,24 @@ router.get('/live', (_req: Request, res: Response) => {
 })
 
 // Readiness: bounded, read-only dependency + schema checks. Labels only —
-// no hostnames, DSNs or driver error payloads.
+// no hostnames, DSNs or driver error payloads. Single-flight: overlapping
+// requests share one in-flight probe; nothing is cached between probes.
+const readinessProbe = singleFlight(() =>
+  checkReadiness({
+    // Dedicated probe client — see makeProbeQuery for why pool.query is
+    // not used (query_timeout does not cancel the backend statement).
+    query: makeProbeQuery(),
+    configValid: validateStartupConfig(process.env).length === 0,
+    // v1 proxy routes are served by FastAPI — a configured upstream is an
+    // essential dependency for the pilot workflow.
+    upstreamBaseUrl: process.env.DEEDLY_API_BASE_URL?.replace(/\/+$/, ''),
+  }),
+)
+
 router.get(
   '/ready',
   asyncHandler(async (_req: Request, res: Response) => {
-    const configValid = validateStartupConfig(process.env).length === 0
-    const result = await checkReadiness({
-      // Dedicated probe client — see makeProbeQuery for why pool.query is
-      // not used (query_timeout does not cancel the backend statement).
-      query: makeProbeQuery(),
-      configValid,
-      // v1 proxy routes are served by FastAPI — a configured upstream is an
-      // essential dependency for the pilot workflow.
-      upstreamBaseUrl: process.env.DEEDLY_API_BASE_URL?.replace(/\/+$/, ''),
-    })
+    const result = await readinessProbe()
     res.status(result.ready ? 200 : 503).json({
       status: result.ready ? 'ready' : 'not-ready',
       checks: result.checks,

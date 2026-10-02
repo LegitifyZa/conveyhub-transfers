@@ -70,6 +70,21 @@ export function resetReadinessCache(): void {
   manifestCache = undefined
 }
 
+// Single-flight: overlapping /ready requests share the in-flight probe —
+// a burst produces at most one probe pass (≤2 short-lived probe clients),
+// never N×. Results are NOT cached: once a probe settles, the next request
+// starts a fresh check, so recovery is prompt. The shared probe's internal
+// deadlines bound every waiter.
+export function singleFlight<T>(fn: () => Promise<T>): () => Promise<T> {
+  let inflight: Promise<T> | null = null
+  return () => {
+    if (!inflight) {
+      inflight = fn().finally(() => { inflight = null })
+    }
+    return inflight
+  }
+}
+
 async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   let timer: NodeJS.Timeout
   const timeout = new Promise<never>((_, reject) => {

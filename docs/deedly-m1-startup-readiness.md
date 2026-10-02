@@ -78,30 +78,44 @@ Timeout and resource coverage (verified against driver sources):
   the query from `_queryQueue` — **no CancelRequest is sent**, so a timed-
   out pooled statement keeps running. The readiness probe therefore does
   **not** use `pool.query`: it creates a dedicated `pg.Client` per probe
-  (`makeProbeQuery`). `connect()` is bounded by `connectionTimeoutMillis`,
-  which destroys the socket at expiry; the query is raced at 5 s; and
+  (`makeProbeQuery`). Server-side work is bounded by a session
+  `statement_timeout=5000` set via the startup `options` parameter — the
+  guaranteed bound. Separately, `connect()` is bounded by
+  `connectionTimeoutMillis` (pg destroys the socket at expiry) and
   `end()` during an in-flight query force-destroys the socket (pg does
-  this deliberately — "a hung query could block end forever"), so the
-  backend session and its statement die with the connection. Teardown
-  itself is bounded at 1 s. Each probe costs ≤1 transient connection,
-  always closed — nothing accumulates and no pool slot is burned.
+  this deliberately — "a hung query could block end forever"); teardown
+  asks the backend to abort the session's statement, but that abort is
+  **not instantaneous or guaranteed** — `statement_timeout` is the
+  enforceable bound, socket teardown is cleanup. Teardown itself is
+  bounded at 1 s. Each probe costs ≤1 transient connection, always
+  closed — nothing accumulates and no pool slot is burned.
 - **FastAPI — asyncpg.** `timeout=` on `fetch*` triggers a real
   protocol-level cancellation (the pool's `release()` waits on
   `_is_cancelling`/`_wait_for_cancellation`, and terminates the connection
   if reset fails); `timeout=10` on `create_pool` bounds connection
-  establishment. The whole readiness operation — **including waiting on
-  the pool-creation lock** — runs inside `asyncio.wait_for(..., 8s)`
-  (`collect_readiness`); expiry cancels the inner task, which releases the
-  lock for the next probe.
+  establishment.
+- **Request fan-out bound — single-flight on both services.** Overlapping
+  `/ready` requests share the in-flight probe (BFF `singleFlight`; FastAPI
+  `collect_readiness` per-loop task): a burst produces one probe pass —
+  at most two transient probe clients on the BFF, one acquisition + two
+  pooled statements on FastAPI — never N×. Nothing is cached: a request
+  after the probe settles starts a fresh check, so recovery is prompt and
+  results are never stale beyond one in-flight window. The whole FastAPI
+  operation — including waiting on the pool-creation lock — runs inside
+  `asyncio.wait_for(..., 8s)`; expiry cancels the inner task and frees the
+  lock. A cancelled caller shield()s away without aborting the shared
+  probe for others.
 - **Upstream probes** use `AbortSignal.timeout(3s)` — the socket is
   genuinely aborted.
 - **Concurrency:** `get_pool` creation is serialized by a per-event-loop
-  lock (asyncio primitives are loop-bound; a module-level lock wedged
-  multi-loop test runs), and a pool bound to a foreign/closed loop is
-  never served — matching the app's single-loop lifecycle. Regression
-  coverage: create-failure retry, cancelled lock waiter, stuck-acquire
-  budget, cross-loop ownership, and sustained overlapping probes with
-  bounded outstanding work and clean recovery.
+  lock, and a pool bound to a foreign/closed loop is never served.
+  **Lifecycle limitation:** dropping the reference is *not* cleanup — the
+  orphaned pool's sockets persist until its owning loop closes or the
+  process exits; the supported path is `close_pool()` on the owning loop
+  (lifespan does this). Regression coverage: create-failure retry,
+  cancelled lock waiter, stuck-acquire budget, cross-loop ownership,
+  shared-probe dedup, and sustained overlapping probes with bounded
+  outstanding work and clean recovery.
 
 ## Production configuration validation
 

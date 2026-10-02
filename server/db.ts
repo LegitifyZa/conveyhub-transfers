@@ -122,13 +122,27 @@ export async function checkDatabaseHealth(): Promise<{ healthy: boolean; latency
 // Readiness probes deliberately run on a dedicated short-lived Client, not
 // the shared pool: pg's `query_timeout` only fails the local call and
 // dequeues the query — it sends NO CancelRequest, so a statement that
-// outlives the race would keep running on a pooled connection. With a
-// dedicated client, `end()` while a query is in flight force-destroys the
-// socket (pg does this explicitly so a hung query can't block end), which
-// terminates the backend session and its statement. `connectionTimeoutMillis`
+// outlives the race would keep running on a pooled connection.
+//
+// Server-side work is bounded two ways: a session `statement_timeout` set
+// via the startup `options` parameter gives a guaranteed bound regardless
+// of client state, and `end()` while a query is in flight force-destroys
+// the socket (pg does this explicitly so a hung query can't block end) —
+// connection teardown asks the backend to abort the session's statement,
+// though that abort is not instantaneous or guaranteed. `connectionTimeoutMillis`
 // likewise destroys the socket on connect timeout. Net effect: each probe
 // uses at most one transient connection that is always torn down at the
-// deadline — no abandoned work, no pool-slot burn, no accumulation.
+// deadline — no abandoned client, no pool-slot burn, bounded server work.
+export const PROBE_STATEMENT_TIMEOUT_MS = 5000
+
+export function probeClientConfig(): PoolConfig {
+  return {
+    ...config,
+    // GUC via startup packet — applies only to this probe session.
+    options: `-c statement_timeout=${PROBE_STATEMENT_TIMEOUT_MS}`,
+  }
+}
+
 export interface ProbeClientLike {
   connect(): Promise<void>
   query(text: string): Promise<{ rows: Record<string, unknown>[] }>
@@ -136,8 +150,8 @@ export interface ProbeClientLike {
 }
 
 export function makeProbeQuery(
-  newClient: () => ProbeClientLike = () => new Client(config) as unknown as ProbeClientLike,
-  timeoutMs = 5000,
+  newClient: () => ProbeClientLike = () => new Client(probeClientConfig()) as unknown as ProbeClientLike,
+  timeoutMs = PROBE_STATEMENT_TIMEOUT_MS,
 ): (text: string) => Promise<{ rows: Record<string, unknown>[] }> {
   return async (text) => {
     const client = newClient()
