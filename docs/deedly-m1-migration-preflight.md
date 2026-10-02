@@ -136,11 +136,18 @@ a missing ledger is reported as `fresh`, never created by preflight.
   teardown, and a release failure never masks the run's own error.
   **Scope:** this serializes cooperating migration runners only — it is
   not a complete deployment lock and does not stop unrelated clients.
-  **Pooler caveat:** session advisory locks do not serialize through a
+  **Pooler guard:** session advisory locks do not serialize through a
   transaction-mode pooler (each client can land on a different backend
-  session) — the runner warns on `-pooler` hosts; use the direct endpoint
-  for migration runs. The operational rule remains a single operator
-  window with the deploy pipeline holding a deploy lock.
+  session — verified live on Neon: two pooler clients both acquired).
+  Known pooler hostnames (`-pooler`, `.pooler.`) are **rejected before
+  any write** — the runner requires an explicitly configured direct
+  endpoint and never derives or silently switches it. Limitation:
+  hostname matching cannot prove session affinity for arbitrary proxies;
+  unknown forwarders are outside this guard. The operational rule remains
+  a single operator window with the deploy pipeline holding a deploy lock.
+  **Connection hygiene:** a failed unlock destroys the connection rather
+  than returning it to the pool, so no surviving session can keep the
+  lock; every exit path releases the client and ends the pool.
 - **No automated rollback.** The runner has none; per-migration reversal
   is reviewed SQL authored for that migration (see the 024 doc's example),
   not a flag. Roll forward or restore from backup are the supported paths.

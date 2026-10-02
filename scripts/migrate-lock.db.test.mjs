@@ -63,8 +63,10 @@ test('migration advisory lock: contention, release, crash-release', { skip: !DSN
     const holder = await makeRunner()
     const challenger = await makeRunner()
     try {
-      const ledgerBefore = (await challenger.client.query(
-        'SELECT count(*)::int c FROM public.transfers_schema_migrations')).rows[0].c
+      const ledger = () => challenger.client.query(
+        'SELECT filename, checksum, applied_at FROM public.transfers_schema_migrations ORDER BY filename')
+        .then((r) => r.rows.map((x) => [x.filename, x.checksum, x.applied_at.toISOString()]))
+      const ledgerBefore = await ledger()
       let ran = false, heldDuring = null
       // Probe while the holder is still inside withMigrationLock.
       await holder.withMigrationLock(holder.client, async () => {
@@ -76,9 +78,7 @@ test('migration advisory lock: contention, release, crash-release', { skip: !DSN
       assert.equal(ran, false)
       assert.equal(heldDuring, false) // still held by holder during the callback
       assert.equal(await lockFree(challenger.client), true) // free after release
-      const ledgerAfter = (await challenger.client.query(
-        'SELECT count(*)::int c FROM public.transfers_schema_migrations')).rows[0].c
-      assert.equal(ledgerAfter, ledgerBefore) // no ledger change
+      assert.deepEqual(await ledger(), ledgerBefore) // complete ledger unchanged
     } finally {
       await holder.client.end(); await challenger.client.end()
     }

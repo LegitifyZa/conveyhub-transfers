@@ -17,13 +17,13 @@ const filename = '029_deedly_generate_transfer_id_ambiguity_fix.sql'
 const lf = fs.readFileSync(new URL('../src/lib/migrations/' + filename, import.meta.url), 'utf8').replaceAll('\r\n', '\n')
 const crlf = lf.replaceAll('\n', '\r\n')
 
-function sandbox(sql) {
+function sandbox(sql, env = {}) {
   const queries = []
   const context = vm.createContext({
-    createHash, path, fileURLToPath,
+    createHash, path, fileURLToPath, URL,
     config: () => {},
     fs: { readdirSync: () => [filename], readFileSync: () => sql },
-    process: { env: {}, argv: [] },
+    process: { env, argv: [] },
     console: { log: () => {}, warn: () => {}, error: () => {} },
     resolveDbTls: () => ({ connectionString: null, ssl: false, warnings: [], enableChannelBinding: false }),
     Pool: class {
@@ -32,7 +32,7 @@ function sandbox(sql) {
   })
   vm.runInContext(definitions, context)
   return {
-    ...vm.runInContext('({ sha256, loadMigrations, runMigrations, withMigrationLock })', context),
+    ...vm.runInContext('({ sha256, loadMigrations, runMigrations, withMigrationLock, runMigration })', context),
     client: { query: async (...args) => { queries.push(args); return { rows: [] } } },
     queries,
   }
@@ -144,4 +144,36 @@ test('an unlock failure does not break an otherwise successful run', async () =>
   const client = lockClient({ failUnlock: true })
   const result = await runner.withMigrationLock(client, async () => 'ok')
   assert.equal(result, 'ok')
+})
+
+test('a failed unlock destroys the connection so the lock cannot linger', async () => {
+  const released = []
+  const client = {
+    ...lockClient({ failUnlock: true }),
+    release: (err) => released.push(err),
+  }
+  await runner.withMigrationLock(client, async () => 'ok')
+  assert.equal(released.length, 1)
+  assert.equal(released[0].message, 'unlock boom') // destroyed with the cause
+})
+
+// --- Pooler-endpoint guard (offline) ---
+
+for (const [name, env] of [
+  ['DSN', { POSTGRES_URL: 'postgresql://u:p@ep-x-pooler.c-12.us-east-1.aws.neon.tech/db?sslmode=require' }],
+  ['discrete DB_HOST', { DB_HOST: 'db.project.pooler.supabase.com' }],
+]) {
+  test(`a pooler endpoint (${name}) is rejected before any connection or write`, async () => {
+    const r = sandbox(lf, env)
+    // The Pool stub throws 'must not open database connections' — the
+    // assertion matching the guard's message proves the refusal happens
+    // BEFORE any connection is opened, so no writes are possible.
+    await assert.rejects(r.runMigration(), /transaction-pooler|direct.*connection/i)
+  })
+}
+
+test('a direct endpoint passes the guard', async () => {
+  const r = sandbox(lf, { POSTGRES_URL: 'postgresql://u:p@ep-x.c-12.us-east-1.aws.neon.tech/db' })
+  // Reaches the Pool stub — i.e. past the guard — proving direct hosts pass.
+  await assert.rejects(r.runMigration(), /must not open database connections/)
 })
