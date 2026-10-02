@@ -4,6 +4,7 @@ import path from 'path'
 import { config } from 'dotenv'
 import { fileURLToPath } from 'url'
 import { createHash } from 'node:crypto'
+import { resolveDbTls } from './db-tls.mjs'
 
 config()
 
@@ -15,15 +16,20 @@ const MIGRATIONS_TABLE = 'public.transfers_schema_migrations'
 const postgresUrl = process.env.ConveyHub_Transfers_POSTGRES_URL || process.env.POSTGRES_URL || process.env.DATABASE_URL
 const hasPostgresUrl = Boolean(postgresUrl)
 
+// Certificate and hostname verification are the default whenever TLS is used.
+// no-verify is an explicit opt-out only; it never happens silently.
+const tls = resolveDbTls(postgresUrl || null, process.env)
+for (const warning of tls.warnings) console.warn(`⚠️ ${warning}`)
+
 const dbConfig = hasPostgresUrl
-  ? { connectionString: postgresUrl, ssl: { rejectUnauthorized: false } }
+  ? { connectionString: tls.connectionString, ssl: tls.ssl }
   : {
       host: process.env.DB_HOST || 'localhost',
       port: parseInt(process.env.DB_PORT || '5432'),
       database: process.env.DB_NAME || 'goldenrecordstemp',
       user: process.env.DB_USER || 'postgres',
       password: process.env.DB_PASSWORD || 'Password@01',
-      ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false,
+      ssl: tls.ssl,
     }
 
 function sha256(input) {

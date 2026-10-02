@@ -26,6 +26,8 @@ class Settings:
     db_max_connections: int
     db_schema: str
     db_ssl: bool
+    db_ssl_ca_file: Optional[str]
+    db_ssl_no_verify: bool
     node_env: str
     secret_key: str = field(repr=False)
     legitify_api_base_url: str
@@ -89,6 +91,8 @@ def load_settings() -> Settings:
         db_max_connections=int(os.getenv("DB_MAX_CONNECTIONS", "10")),
         db_schema=os.getenv("DB_SCHEMA", "transfers"),
         db_ssl=os.getenv("DB_SSL", "").lower() == "true",
+        db_ssl_ca_file=os.getenv("DB_SSL_CA_FILE") or os.getenv("PGSSLROOTCERT") or None,
+        db_ssl_no_verify=os.getenv("DB_SSL_NO_VERIFY", "").lower() == "true",
         node_env=node_env,
         secret_key=secret_key,
         jwt_secret=raw_jwt_secret,
