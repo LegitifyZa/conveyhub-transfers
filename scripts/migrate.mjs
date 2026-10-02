@@ -13,8 +13,92 @@ const __dirname = path.dirname(__filename)
 
 const MIGRATIONS_TABLE = 'public.transfers_schema_migrations'
 
+// Session-level advisory lock: serializes cooperating migration runners.
+// The key is pg_try_advisory_lock(hashtext('deedly-migration-runner')).
+// It is held on one dedicated connection for the whole run and survives
+// the per-migration BEGIN/COMMIT blocks (session, not transaction, scope).
+// It does NOT prevent other clients writing — it is a runner mutex only.
+const MIGRATION_LOCK_LABEL = 'deedly-migration-runner'
+
+async function acquireMigrationLock(client) {
+  const { rows } = await client.query(
+    'SELECT pg_try_advisory_lock(hashtext($1)) AS acquired',
+    [MIGRATION_LOCK_LABEL]
+  )
+  if (!rows[0]?.acquired) {
+    throw new Error(
+      `🔒 Another migration runner holds the '${MIGRATION_LOCK_LABEL}' advisory lock. ` +
+      'Refusing to proceed — no schema or ledger changes were made.'
+    )
+  }
+}
+
+async function withMigrationLock(client, fn) {
+  await acquireMigrationLock(client)
+  try {
+    return await fn()
+  } finally {
+    // Never let a release failure mask the run's own error.
+    try {
+      await client.query('SELECT pg_advisory_unlock(hashtext($1))', [MIGRATION_LOCK_LABEL])
+    } catch (releaseError) {
+      console.error('⚠️ Advisory-lock release failed:', releaseError.message)
+      // Lock state is now uncertain: the caller must destroy the
+      // connection rather than return it to the pool, so a surviving
+      // session cannot keep the lock held. The helper never releases a
+      // client it does not own — it hands the cause to the owner.
+      client.__migrationLockDestroy = releaseError
+    }
+  }
+}
+
 const postgresUrl = process.env.ConveyHub_Transfers_POSTGRES_URL || process.env.POSTGRES_URL || process.env.DATABASE_URL
 const hasPostgresUrl = Boolean(postgresUrl)
+
+// Connection-string validation runs before ANY driver parse or write:
+// malformed/unsupported DSNs and known transaction-pooler endpoints
+// (e.g. Neon '-pooler' hosts, where session-level advisory locks cannot
+// serialize — each client can land on a different backend session) are
+// REJECTED here, before a pool or database can be created. The runner
+// never derives or silently switches endpoints — the operator must
+// configure a direct migration connection.
+// LIMITATION: hostname matching cannot prove session affinity for an
+// arbitrary proxy — this guard covers known pooler conventions only.
+// Error messages carry scheme/host only; credentials never appear.
+const KNOWN_POOLER_PATTERNS = [/-pooler[.-]/i, /\.pooler\./i]
+
+function migrationTargetHost() {
+  if (postgresUrl) {
+    let url
+    try {
+      url = new URL(postgresUrl)
+    } catch {
+      throw new Error('❌ Migration connection string is not a valid URL — refusing to start.')
+    }
+    if (!/^postgres(ql)?:$/i.test(url.protocol)) {
+      throw new Error(`❌ Unsupported migration connection scheme '${url.protocol}' — expected postgresql://.`)
+    }
+    if (!url.hostname) {
+      throw new Error('❌ Migration connection string has no hostname — refusing to start.')
+    }
+    return url.hostname
+  }
+  return process.env.DB_HOST || 'localhost'
+}
+
+function assertDirectMigrationTarget() {
+  const host = migrationTargetHost()
+  if (KNOWN_POOLER_PATTERNS.some((p) => p.test(host))) {
+    throw new Error(
+      `❌ Refusing to migrate via '${host}': this is a known transaction-pooler ` +
+      'endpoint and the session-level advisory lock cannot serialize runners ' +
+      'through it. Configure a direct (non-pooled) connection string or DB_HOST ' +
+      'for migration runs — no schema or ledger changes were made.'
+    )
+  }
+}
+
+assertDirectMigrationTarget()
 
 // Certificate and hostname verification are the default whenever TLS is used.
 // no-verify is an explicit opt-out only; it never happens silently.
@@ -166,26 +250,32 @@ async function runBaseline(client, files, throughFile) {
 
 async function runMigration() {
   console.log('�️ Running database migrations...')
+  assertDirectMigrationTarget() // before any write, including DB creation
   await createDatabaseIfNeeded()
   const pool = new Pool(dbConfig)
   const client = await pool.connect()
   try {
-    await ensureLedger(client)
-    const files = await loadMigrations()
-    const args = parseArgs()
-    if (args.baselineThrough) {
-      await runBaseline(client, files, args.baselineThrough)
-    } else {
-      const applied = await getAppliedMigrations(client)
-      await runMigrations(client, files, applied)
-      console.log('✅ Migrations completed successfully')
-    }
+    // One dedicated connection holds the session-level advisory lock for
+    // the entire run — including across per-migration BEGIN/COMMIT blocks.
+    await withMigrationLock(client, async () => {
+      await ensureLedger(client)
+      const files = await loadMigrations()
+      const args = parseArgs()
+      if (args.baselineThrough) {
+        await runBaseline(client, files, args.baselineThrough)
+      } else {
+        const applied = await getAppliedMigrations(client)
+        await runMigrations(client, files, applied)
+        console.log('✅ Migrations completed successfully')
+      }
+    })
   } catch (error) {
     console.error('❌ Migration failed:', error.message)
     throw error
   } finally {
-    await client.release()
-    await pool.end()
+    // Exactly one release: destroy (err truthy) when the lock helper
+    // flagged an unlock failure, else return the client to the pool.
+    try { client.release(client.__migrationLockDestroy) } finally { await pool.end() }
   }
 }
 

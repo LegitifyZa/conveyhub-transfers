@@ -26,4 +26,4 @@ jobs:
           node-version: '24.21.0'
           package-manager-cache: false
       - name: Script test suite
-        run: node --test scripts/migrate.test.mjs scripts/migrate-preflight.test.mjs scripts/migration-manifest.test.mjs scripts/db-tls.test.mjs
+        run: node --test scripts/migrate.test.mjs scripts/migrate-preflight.test.mjs scripts/migration-manifest.test.mjs scripts/db-tls.test.mjs scripts/migrate-lock.db.test.mjs
