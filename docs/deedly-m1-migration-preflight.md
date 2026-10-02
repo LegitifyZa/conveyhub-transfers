@@ -139,9 +139,19 @@ a missing ledger is reported as `fresh`, never created by preflight.
 The ledger hash is over raw file bytes; `core.autocrlf=true` checkouts
 produce CRLF bytes — a different artifact that will (correctly) fail
 checksum comparison against an LF-applied ledger. The canonical artifact
-is LF (`manifest.json` `canonicalEol: lf`). If `migration-manifest.mjs
---check` fails on a Windows checkout, normalize the checkout, do not
+is LF (`manifest.json` `canonicalEol: lf`), now enforced by
+`.gitattributes` (`src/lib/migrations/*.sql text eol=lf`) so every
+platform materializes LF. If `migration-manifest.mjs --check` fails on a
+checkout predating `.gitattributes`, normalize the checkout, do not
 edit the manifest to match local bytes.
+
+**Applied evidence:** the first version of this manifest was generated
+from a CRLF (`autocrlf=true`) working tree and failed in CI, where the
+checkout is LF. The disposable database `deedly_m1_verify` was migrated
+from that same CRLF worktree, so its ledger rows hold CRLF digests — a
+re-run of the preflight there now reports `checksum-mismatch` on all 27
+entries until the ledger rows are reconciled to canonical digests or the
+database is recreated. Neither remediation is in scope for this PR.
 
 ## 5. Backup/restore prerequisites
 

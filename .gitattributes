@@ -1,0 +1,3 @@
+# Migration checksums are raw-byte digests; the ledger and manifest must be
+# identical on every platform, so .sql files always materialize LF.
+src/lib/migrations/*.sql text eol=lf

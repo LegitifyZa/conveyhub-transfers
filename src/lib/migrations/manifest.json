@@ -7,165 +7,165 @@
   "files": [
     {
       "file": "001_initial_schema.sql",
-      "sha256": "45ba8c3cdb61b119a697c4040ad3023b1bdb3580842eb1fd635bc5852c486fb1",
-      "eol": "crlf",
-      "bytes": 11969
+      "sha256": "db6fab14592fc5a741485bd3a1bbab3aee97122516e1013e761a264e634d9c7c",
+      "eol": "lf",
+      "bytes": 11640
     },
     {
       "file": "002_add_properties_table.sql",
-      "sha256": "46d0a26934fc54848ea8fb2b4655fed5e5907377377985872627b47989cf91bb",
-      "eol": "crlf",
-      "bytes": 7137
+      "sha256": "2b5a3dd22c43ebb9d535c9858b3ccbaa1d49f6c80352b3d6c4bec2375656bdc2",
+      "eol": "lf",
+      "bytes": 6959
     },
     {
       "file": "003_complete_conveyhub_schema.sql",
-      "sha256": "fde486c7cbeefc277c8b6d84aa2df890ad1026fee2fb1fa34350765dfb1197a7",
-      "eol": "crlf",
-      "bytes": 34886
+      "sha256": "207b19bbe93424e0af80bba534d01859f2805435ba1d4d4792c3019ae18ffa83",
+      "eol": "lf",
+      "bytes": 34220
     },
     {
       "file": "004_seed_reference_data.sql",
-      "sha256": "6d7a956f61c3be19fb2c4073ef1f9fa927868804f5091cfcfb259223127c98f6",
-      "eol": "crlf",
-      "bytes": 10847
+      "sha256": "04059d65e3c562ac54ba545bc3ab0fa14897af95a8ac649e6e70cc18f0cbaf3f",
+      "eol": "lf",
+      "bytes": 10752
     },
     {
       "file": "005_transfer_documents.sql",
-      "sha256": "af55e04aa8ba21a75a8622952a28937eef81aa75a96658ff32cb62c25cfa8b32",
-      "eol": "crlf",
-      "bytes": 1495
+      "sha256": "a4b0a811c1e9634f3c18d5c24093a99bbb5e0ec3f601456e97efb5d0f4feecc4",
+      "eol": "lf",
+      "bytes": 1458
     },
     {
       "file": "006_update_property_types.sql",
-      "sha256": "f66c23a0781acf51a4288e0f32be4e4c944601a0cd3726ca27b9f79105c55445",
-      "eol": "crlf",
-      "bytes": 945
+      "sha256": "e4fc770cca0406c0f61712356816acd363729d99d48ef79695e113ac6db9f6f1",
+      "eol": "lf",
+      "bytes": 917
     },
     {
       "file": "007_add_identification_document.sql",
-      "sha256": "ce654f0c77b7fc0c18a4960b2d81146fa2ae8d58fe31bdc11af2b721069f14fe",
-      "eol": "crlf",
-      "bytes": 347
+      "sha256": "966e521170a48ff4561a1500b93c80f8c5206cb110cac1a0811e2be7e4a86f5b",
+      "eol": "lf",
+      "bytes": 343
     },
     {
       "file": "008_create_transfer_parties.sql",
-      "sha256": "69e293f545212373a9c75b07d3dfdd8f21138a9cd87d5de8708d9c57dffd2bc9",
-      "eol": "crlf",
-      "bytes": 1850
+      "sha256": "d2b0d0fbed95b6a5109c728cf4387a588f2d74f6be9eae0fec5434b7b912632e",
+      "eol": "lf",
+      "bytes": 1805
     },
     {
       "file": "009_add_accountable_institution_id_to_matters_and_transfers.sql",
-      "sha256": "be9e695a049308083e6912f0ee8b52020db60de57dc6450831d31c1879e6b94a",
-      "eol": "crlf",
-      "bytes": 886
+      "sha256": "c38c50cebeb21f705a93b31f10fc8397a1f64860bfcf97f873f294782cb8b827",
+      "eol": "lf",
+      "bytes": 861
     },
     {
       "file": "010_move_transfer_owned_tables_to_transfers_schema.sql",
-      "sha256": "6f298a74668fda03c9ae53523e25e19fc693ff3d25046913184569ac07099e43",
-      "eol": "crlf",
-      "bytes": 2190
+      "sha256": "dcf79160f8d17c8bed32d193f693e74a7ee8d06921d79a7c2d977da1d8a250d6",
+      "eol": "lf",
+      "bytes": 2129
     },
     {
       "file": "011_add_property_created_for_transfer_id.sql",
-      "sha256": "ddcb57e35b60fe0b60b6dde22175ac470303a89551601f8e391dca7808b6d3bd",
-      "eol": "crlf",
-      "bytes": 704
+      "sha256": "9f60826b604a4ab96d01859f38b25d6983b0bab9365e0dc899a3e3b5f9f47e71",
+      "eol": "lf",
+      "bytes": 678
     },
     {
       "file": "012_backfill_qa_tenant_and_enforce_ownership.sql",
-      "sha256": "5c8b9d59818b632a7de419dec9ecb74b80a3df7ddc5fe4aba84940b206e33e58",
-      "eol": "crlf",
-      "bytes": 4353
+      "sha256": "ce478c6c30ee3b2cfa0d07657fdcd352d9064f9b39f712e4cea72283c9f34ffe",
+      "eol": "lf",
+      "bytes": 4228
     },
     {
       "file": "013_add_platform_user_actor_columns.sql",
-      "sha256": "9a6b6c9e3a9fa811529b96c7e276349a3677616b6e8b85c59dc8ab51516d05c1",
-      "eol": "crlf",
-      "bytes": 1299
+      "sha256": "1f254eabfbb7a99681d3326b2675014412123a650cc6a1544b3df4c396776158",
+      "eol": "lf",
+      "bytes": 1264
     },
     {
       "file": "014_rename_transfers_submitted_by_user_id_to_created_by_user_id.sql",
-      "sha256": "064e08125651435dced81a587bc2ee8a9f72cb085c9db68f125f02154587dc1c",
-      "eol": "crlf",
-      "bytes": 1996
+      "sha256": "afbf9543cc8cf08a773f9ffc9e1ea9ca623449294f44295901b9f274b18a5534",
+      "eol": "lf",
+      "bytes": 1949
     },
     {
       "file": "015_deedly_classification_taxonomy.sql",
-      "sha256": "a46c1967528eba62cb78336ba779fe476e74b657751f470018b64c4b1fe1b05a",
-      "eol": "crlf",
-      "bytes": 8973
+      "sha256": "ae9dc9d67bc7f680ad885ac07971ca25b8760c9ce760cc033489d74c1c22b598",
+      "eol": "lf",
+      "bytes": 8826
     },
     {
       "file": "016_deedly_status_lifecycle.sql",
-      "sha256": "4e3b1e23a76815be66193079b6c005f5419f67444df6630875d9b0e8b067d382",
-      "eol": "crlf",
-      "bytes": 4288
+      "sha256": "48381a39ee1970dc535b2068f513eb8ffab920f3e1e2aaeff2576729384dcc7f",
+      "eol": "lf",
+      "bytes": 4150
     },
     {
       "file": "017_create_accounts_billing_config.sql",
-      "sha256": "a9a08db96190e7ca5a7b5917b602ad878c64afc71113874bde4e5e9dc4b6b193",
-      "eol": "crlf",
-      "bytes": 3577
+      "sha256": "9b80663a2c60f554df95fce60b21357b6a91a8ca7a7ea2e25c1eca0b4d39b8b7",
+      "eol": "lf",
+      "bytes": 3498
     },
     {
       "file": "018_deedly_party_property_contract_foundation.sql",
-      "sha256": "f132b3eb9d370c7bc2bab43d16333ed51d1fcc86764ff09316cd63ec9c1fcd17",
-      "eol": "crlf",
-      "bytes": 13950
+      "sha256": "ef224ca0c3834731c2f7c5e24b3df4e83900721f579643588b95138882f06dd7",
+      "eol": "lf",
+      "bytes": 13658
     },
     {
       "file": "019_deedly_property_tenant_isolation.sql",
-      "sha256": "83a57238cbd939c455b165b57286fe916d96eed263343cef8c098cb2a10af99d",
-      "eol": "crlf",
-      "bytes": 12787
+      "sha256": "bf7ae917709dfb59d3f57c66ecd1f7e21202e90d276e0ea5c571084c1195ea4a",
+      "eol": "lf",
+      "bytes": 12438
     },
     {
       "file": "020_deedly_taxonomy_approved_classifications.sql",
-      "sha256": "336cb5884e62e0a30a164a5972824f842b1ff4fd5cfb859d43ccd184ddb307a8",
-      "eol": "crlf",
-      "bytes": 1270
+      "sha256": "be1f5cbf3fef2011ad2d8ec87d44c2375d3ba827be86c8b8a90ac4409208f310",
+      "eol": "lf",
+      "bytes": 1238
     },
     {
       "file": "021_deedly_specialist_role_capacity_persistence.sql",
-      "sha256": "e9fea0f9d3f0a2f148432a172aebd0df4a3db54d7a6db221f00eed735e858b40",
-      "eol": "crlf",
-      "bytes": 12759
+      "sha256": "688959a3d07f631e825e43c1794bae8f86c7158cff1136e28e28ea85b984ef72",
+      "eol": "lf",
+      "bytes": 12497
     },
     {
       "file": "023_deedly_manual_party_sources.sql",
-      "sha256": "d30b969cadbc2f7b4805e359794910cdcff93b5d9d31678ac5858e019097b80a",
-      "eol": "crlf",
-      "bytes": 4872
+      "sha256": "fd9c727c2afd33a03aefdd75642e44449451a987011f14b60705e2e69b51944a",
+      "eol": "lf",
+      "bytes": 4766
     },
     {
       "file": "024_deedly_property_link_idempotency.sql",
-      "sha256": "fa3f3f59e6fac55420b9e7ea8ffa66f9d8fd1ebbcbb6a80d32cced9afbd47fb5",
-      "eol": "crlf",
-      "bytes": 2221
+      "sha256": "c280d874bac164f936de012e452e91c004cd68691e5191cdc78bd9a4c2512108",
+      "eol": "lf",
+      "bytes": 2176
     },
     {
       "file": "025_deedly_matter_documents.sql",
-      "sha256": "ee32c1229d58e137e0c5f8d9ebd3cf34f8e7dee88483f3ca969502eb75a74c63",
-      "eol": "crlf",
-      "bytes": 12113
+      "sha256": "adc37e5e674572835d8b3a40ed1760b885a86db617b9b2ddff538e1e8914ba96",
+      "eol": "lf",
+      "bytes": 11882
     },
     {
       "file": "026_deedly_generate_property_id_ambiguity_fix.sql",
-      "sha256": "fbceba554476396550d16b3a1ff6dbf5378319aeb9f8a560ea34d6b278026ce5",
-      "eol": "crlf",
-      "bytes": 2720
+      "sha256": "29c5a0126d0cd1fd3f183da675aee7924e1c1afc5665d5b9f0fa62807d06ba5d",
+      "eol": "lf",
+      "bytes": 2661
     },
     {
       "file": "028_deedly_document_scan_attempt_ownership.sql",
-      "sha256": "5438baf8e30f407691455ea919ae3c063600f74cfc02f3f39dc3c230838f6386",
-      "eol": "crlf",
-      "bytes": 1507
+      "sha256": "df950cbc94ec9f179ee8526f4b3dd907a3e5a6b80114ae0178d7bd6f4b0137c8",
+      "eol": "lf",
+      "bytes": 1476
     },
     {
       "file": "029_deedly_generate_transfer_id_ambiguity_fix.sql",
-      "sha256": "1216db2a31a063673d65b420126fd24bd613c62e05bffded68b4b5226b982c16",
-      "eol": "crlf",
-      "bytes": 966
+      "sha256": "d5ddcf01c40900fa92b512beef854f103662f921a5d596b1e340a54fd36f4d08",
+      "eol": "lf",
+      "bytes": 936
     }
   ]
 }
