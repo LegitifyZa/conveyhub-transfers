@@ -128,6 +128,49 @@ across the repeat run.
 or missing `CREATE DATABASE` approval — stop; no drop/recreate, no
 retries that recreate databases.
 
+## Execution evidence — run on 2026-10-02 (runner `abddf15`)
+
+Artifact recovered from approved revision `2e81928` into
+`%TEMP%\m1ex-artifact` — 27 files, all sha256 verified, manifest digest
+`596bca2a…c854` matched the pinned value.
+
+| Step | Result |
+|---|---|
+| Create `deedly_m1_artifact_verify` | OK (absent beforehand; 4 evidence DBs untouched) |
+| Preflight vs artifact (fresh) | PASS — 27 pending, read-only session |
+| Clean install (`--migrations-dir`) | 27/27 applied, verified-bytes banner printed |
+| Repeat run | **0 applied, 27 skipped** |
+| a. schema vs `deedly_m1_verify_lf` | **identical** (reference = previously validated canonical-LF DB) |
+| b. constraints / c. indexes / d. extensions | identical / identical / identical (`plpgsql 1.0`, `uuid-ossp 1.1`) |
+| e. M1EX- fixtures across repeat run | counts + hash unchanged |
+| f. ledger deep-equal incl. `applied_at` | identical before/after; all 27 digests = manifest |
+| g. post-apply preflight | PASS — 27 applied / 0 pending |
+| h. advisory lock | `pg_try_advisory_lock` → `t` after both runs (released; the unlock ran on a separate session and warned "don't own" — benign) |
+| `test_transfer_list_db.py` | **8 tests, OK** (82.9s; M1V- fixtures self-clean) |
+| Fixture cleanup | 3 transfers + 1 doc row deleted, 0 residual |
+
+**Credential handling:** password entered via `Read-Host -AsSecureString`
+into ACL-protected `%TEMP%\m1ex_pgpass.conf` (protected, owner-only —
+independently re-verified via `Get-Acl` before each use), deleted by the
+shell's exit trap on every run. `PGPASSFILE`/`DB_PASSWORD`/DSN env vars
+scoped per-run.
+
+**Deviations recorded:**
+
+1. An early probe shell's exit trap deleted the pgpass before the main
+   run — credential entry was repeated (no DB impact).
+2. A `grep "Running "` false positive stopped the first script after the
+   repeat run — corrected to match per-file applies; the repeat run had
+   applied 0. Verification continued in a second credentialed shell.
+3. Operator supplied a `-pooler`/`sslmode=require` DSN in chat — not
+   used. The run used the approved direct host with `verify-full` + PEM
+   CA. **The pasted password should be rotated.**
+4. The ledger↔manifest node check needed a `C:/` path (MSYS `/c/` form
+   fails in Node); rerun in the continuation shell, passed 27/0-mismatch.
+
+Run log, dumps, ledger TSVs, preflight JSONs and pytest output preserved
+at `C:\Users\Dean\m1ex-run\`.
+
 ## What remains outside this slice
 
 - Executing the plan (needs `CREATE DATABASE` approval).
