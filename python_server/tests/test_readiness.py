@@ -189,6 +189,17 @@ class ReadinessTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(expected_migration_count(), 27)
 
 
+def _settings_stub():
+    import types
+    return types.SimpleNamespace(
+        database_url=None, db_host="localhost", db_port=5432,
+        db_name="x", db_user="u", db_password="p",
+        db_min_connections=1, db_max_connections=1,
+        db_schema="public", db_ssl=False, db_ssl_ca_file=None,
+        db_ssl_no_verify=False, node_env="development",
+    )
+
+
 class PoolCreationTests(unittest.IsolatedAsyncioTestCase):
     """Concurrent get_pool calls must share one create_pool — no leaked
     duplicate pools during outage flapping."""
@@ -211,20 +222,52 @@ class PoolCreationTests(unittest.IsolatedAsyncioTestCase):
             created.append(p)
             return p
 
-        import types
-        settings = types.SimpleNamespace(
-            database_url=None, db_host="localhost", db_port=5432,
-            db_name="x", db_user="u", db_password="p",
-            db_min_connections=1, db_max_connections=1,
-            db_schema="public", db_ssl=False, db_ssl_ca_file=None,
-            db_ssl_no_verify=False, node_env="development",
-        )
         with patch.object(self.db.asyncpg, "create_pool", side_effect=fake_create_pool):
             pools = await asyncio.gather(*(
-                self.db.get_pool(settings) for _ in range(5)
+                self.db.get_pool(_settings_stub()) for _ in range(5)
             ))
         self.assertEqual(len(created), 1)
         self.assertTrue(all(p is created[0] for p in pools))
+
+    async def test_create_pool_failure_retries_without_leaking_state(self):
+        attempts = []
+
+        async def flaky(**kwargs):
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise RuntimeError("database unreachable")
+            return object()
+
+        with patch.object(self.db.asyncpg, "create_pool", side_effect=flaky):
+            with self.assertRaises(RuntimeError):
+                await self.db.get_pool(_settings_stub())
+            self.assertIsNone(self.db._pool)  # no half-created pool retained
+            pool = await self.db.get_pool()   # retry: settings cached
+            self.assertEqual(len(attempts), 2)
+            self.assertIs(self.db._pool, pool)
+
+    async def test_cancelled_lock_waiter_does_not_block_later_acquisition(self):
+        release = asyncio.Event()
+        created = []
+
+        async def slow(**kwargs):
+            created.append(1)
+            await release.wait()
+            return object()
+
+        with patch.object(self.db.asyncpg, "create_pool", side_effect=slow):
+            first = asyncio.create_task(self.db.get_pool(_settings_stub()))
+            await asyncio.sleep(0)          # first enters create_pool
+            waiter = asyncio.create_task(self.db.get_pool())
+            await asyncio.sleep(0)          # waiter parks on the lock
+            waiter.cancel()
+            release.set()
+            pool = await first
+            with self.assertRaises(asyncio.CancelledError):
+                await waiter
+            # Lock released despite the cancelled waiter; recovery works.
+            self.assertIs(await self.db.get_pool(), pool)
+            self.assertEqual(len(created), 1)
 
 
 if __name__ == "__main__":

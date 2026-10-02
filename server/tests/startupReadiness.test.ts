@@ -132,7 +132,10 @@ function fakeQuery(opts: {
   }
 }
 
-const okFetch: typeof fetch = async () => new Response('{"status":"ok"}', { status: 200 })
+const okFetch: typeof fetch = async (url) => {
+  assert.ok(String(url).endsWith('/api/health/ready'), `must probe FastAPI readiness, got ${url}`)
+  return new Response('{"status":"ready"}', { status: 200 })
+}
 
 test('ready when ledger matches every manifest file and checksum', async () => {
   resetReadinessCache()
@@ -218,6 +221,69 @@ test('configured upstream is probed; down upstream means not-ready', async () =>
   })
   assert.equal(up.checks.upstream, 'ok')
   assert.equal(up.ready, true)
+})
+
+test('upstream live but not-ready means BFF not-ready; malformed body rejected', async () => {
+  resetReadinessCache()
+  // Liveness-style 200 with a non-ready readiness body must not count.
+  const liveOnly: typeof fetch = async () => new Response('{"status":"ok"}', { status: 200 })
+  const r1 = await checkReadiness({
+    query: fakeQuery({}).query, manifestPath: MANIFEST,
+    upstreamBaseUrl: 'https://deedly.internal', fetchImpl: liveOnly,
+  })
+  assert.equal(r1.checks.upstream, 'unavailable')
+  assert.equal(r1.ready, false)
+
+  // Explicit 503 readiness → not-ready.
+  const notReady: typeof fetch = async () => new Response('{"status":"not-ready"}', { status: 503 })
+  const r2 = await checkReadiness({
+    query: fakeQuery({}).query, manifestPath: MANIFEST,
+    upstreamBaseUrl: 'https://deedly.internal', fetchImpl: notReady,
+  })
+  assert.equal(r2.checks.upstream, 'unavailable')
+  assert.equal(r2.ready, false)
+
+  // 200 with unparseable body → not-ready.
+  const garbage: typeof fetch = async () => new Response('garbage', { status: 200 })
+  const r3 = await checkReadiness({
+    query: fakeQuery({}).query, manifestPath: MANIFEST,
+    upstreamBaseUrl: 'https://deedly.internal', fetchImpl: garbage,
+  })
+  assert.equal(r3.ready, false)
+})
+
+test('timeout bounds endpoint latency; issued work is capped and drains after the deadline', async () => {
+  resetReadinessCache()
+  // Fake pool: capacity 2 like a real pool max; slow (not hung) work so we
+  // can observe that issued queries still complete and release.
+  let active = 0, started = 0, finished = 0
+  const queue: (() => void)[] = []
+  const acquire = async () => {
+    if (active < 2) { active++; return }
+    await new Promise<void>(r => queue.push(r)); active++
+  }
+  const release = () => { active--; finished++; queue.shift()?.() }
+  const cappedQuery = async (text: string) => {
+    started++
+    await acquire()
+    try {
+      await new Promise(r => setTimeout(r, 60))
+      if (text.includes('transfers_schema_migrations')) return { rows: ledgerRows() }
+      return { rows: [{}] }
+    } finally {
+      release()
+    }
+  }
+  // 6 concurrent probes, probe timeout below the 60ms work.
+  const results = await Promise.all(Array.from({ length: 6 }, () =>
+    checkReadiness({ query: cappedQuery, manifestPath: MANIFEST, timeoutMs: 20 })))
+  for (const r of results) assert.equal(r.ready, false)
+  // Work issued is bounded per probe (≤2 queries), concurrency capped by capacity.
+  assert.ok(started <= 12 && started >= 6, `started=${started}`)
+  // Let the abandoned queries drain — nothing stays in flight or queued.
+  await new Promise(r => setTimeout(r, 300))
+  assert.equal(finished, started)
+  assert.equal(active, 0)
 })
 
 test('invalid config keeps a reachable service not-ready', async () => {

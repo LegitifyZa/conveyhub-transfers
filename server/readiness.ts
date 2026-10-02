@@ -141,12 +141,20 @@ export async function checkReadiness(opts: {
   }
 
   if (opts.upstreamBaseUrl) {
+    // Probe FastAPI READINESS (not liveness): a live-but-not-ready upstream
+    // cannot serve the v1 proxy routes, so 'not-ready' or a malformed body
+    // is 'unavailable' here. AbortSignal cancels the socket — no abandoned
+    // request remains after the deadline.
     const f = opts.fetchImpl ?? fetch
     try {
-      const res = await f(`${opts.upstreamBaseUrl}/api/health/live`, {
+      const res = await f(`${opts.upstreamBaseUrl}/api/health/ready`, {
         signal: AbortSignal.timeout(UPSTREAM_PROBE_TIMEOUT_MS),
       })
-      checks.upstream = res.ok ? 'ok' : 'unavailable'
+      let body: any = null
+      if (res.ok) {
+        try { body = await res.json() } catch { body = null }
+      }
+      checks.upstream = res.ok && body?.status === 'ready' ? 'ok' : 'unavailable'
     } catch {
       checks.upstream = 'unavailable'
     }

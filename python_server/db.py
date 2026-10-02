@@ -34,8 +34,19 @@ class QueryResult:
 _pool: Optional[asyncpg.Pool] = None
 _settings: Optional[Settings] = None
 # Serializes pool creation so concurrent probes/requests during an outage
-# cannot race create_pool and leak a duplicate pool.
-_pool_lock = asyncio.Lock()
+# cannot race create_pool and leak a duplicate pool. asyncio primitives are
+# loop-bound, so locks are kept per running loop — a stale test loop must
+# not wedge later loops.
+_pool_locks: dict = {}
+
+
+def _get_pool_lock() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    lock = _pool_locks.get(loop)
+    if lock is None:
+        lock = asyncio.Lock()
+        _pool_locks[loop] = lock
+    return lock
 
 
 def _dsn_param(dsn: Optional[str], name: str) -> Optional[str]:
@@ -146,7 +157,7 @@ async def get_pool(settings: Optional[Settings] = None) -> asyncpg.Pool:
     if _settings is None:
         raise RuntimeError("Database settings have not been configured.")
     if _pool is None:
-        async with _pool_lock:
+        async with _get_pool_lock():
             if _pool is None:
                 _pool = await asyncpg.create_pool(**_build_pool_kwargs(_settings))
     return _pool

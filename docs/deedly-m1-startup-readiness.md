@@ -10,7 +10,7 @@ Migration runner/artifact work is unchanged and referenced, not reopened.
 | Endpoint | BFF | FastAPI | Semantics |
 |---|---|---|---|
 | Liveness | `GET /api/health/live` | `GET /api/health/live` | Process is running. **No dependency checks** — a dead database must not keep an orchestrator from reaching it. Always 200. |
-| Readiness | `GET /api/health/ready` | `GET /api/health/ready` | 200 only when configuration is valid **and** the database answers a bounded read-only probe **and** the migration ledger contains every manifest file with its approved sha256 **and** (BFF) a configured `DEEDLY_API_BASE_URL` upstream answers liveness. Otherwise 503 with fixed label strings. |
+| Readiness | `GET /api/health/ready` | `GET /api/health/ready` | 200 only when configuration is valid **and** the database answers a bounded read-only probe **and** the migration ledger contains every manifest file with its approved sha256 **and** (BFF) a configured `DEEDLY_API_BASE_URL` upstream returns a validated `status:"ready"` from its own `/api/health/ready`. Otherwise 503 with fixed label strings. |
 | Legacy aggregate | `GET /api/health` | `GET /api/health/` | Unchanged back-compat health check for existing dashboards. |
 
 Readiness probe contract:
@@ -44,16 +44,38 @@ Essential vs optional dependencies:
 
 | Service | Essential (blocks readiness) | Optional |
 |---|---|---|
-| BFF | PostgreSQL + approved schema; FastAPI at `DEEDLY_API_BASE_URL` **when configured** (v1 golden-record/transfer/document proxies depend on it — required in production, optional locally for BFF-only dev) | — |
+| BFF | PostgreSQL + approved schema; FastAPI at `DEEDLY_API_BASE_URL` **when configured** — probed via `/api/health/ready`, so a live-but-not-ready FastAPI (DB down, schema drift) still fails BFF readiness for the v1 proxy workflow | — |
 | FastAPI | PostgreSQL + approved schema | `REDIS_URL`, `AUDIT_DATABASE_URL` (parsed into Settings but have no runtime consumer today), Legitify upstream at `LEGITIFY_API_BASE_URL` (config-required in production but deliberately **not probed** — an external S2S dependency outage must not flap DEEDLY readiness) |
 
-Timeout coverage: BFF — pool acquisition `connectionTimeoutMillis=10s`,
-queries `query_timeout=30s` plus an explicit 5s per-probe race, upstream
-GET `AbortSignal.timeout(3s)`. FastAPI — `fetch*(..., timeout=5)` covers
-acquisition + statement; `timeout=10` bounds connection establishment at
-pool creation; httpx reads/writes already carry `CONNECT_TIMEOUT_SECONDS`.
-`get_pool` is serialized by an asyncio lock so concurrent outage probes
-cannot race `create_pool` into duplicate pools.
+**Legitify outage policy (by workflow).** `/ready` reporting `ready` attests
+local dependencies only — it does not claim the full pilot workflow is
+available. During a Legitify outage:
+
+- **Still available:** BFF-native routes — transfer CRUD, manual parties,
+  financial capture/quotations, document upload/readback, wet-ink workflow,
+  existing staff sessions (JWTs verify locally against `JWT_SECRET`), the
+  read-only client portal for already-issued sessions.
+- **Unavailable (fail generic, no retry storm):** new logins and token
+  refresh (upstream OTP/`/refresh` — BFF auth proxy returns a generic 503),
+  Golden Record search/retrieve and specialist writes (FastAPI S2S via
+  `EntitiesClient` — bounded httpx timeouts + bounded retries, errors stay
+  credential-free), the Legitify e-signing handoff.
+- **Explicitly not readiness-gated:** `LEGITIFY_API_BASE_URL` must be
+  configured (production validation) but is never probed — an external
+  provider outage must not mark DEEDLY unready for its local workflows.
+
+Timeout and resource coverage: the explicit per-probe race bounds endpoint
+**latency**; underlying **resource use** is bounded separately — BFF pool
+acquisition `connectionTimeoutMillis=10s` and `max` cap in-flight work and
+waiters, `query_timeout=30s` issues a server-side cancel for statements
+that outlive the race, and the upstream probe's `AbortSignal.timeout(3s)`
+cancels the socket outright. FastAPI — `fetch*(..., timeout=5)` covers
+acquisition + statement (asyncpg issues a cancel), `timeout=10` bounds
+connection establishment at pool creation, httpx already carries connect
+and read timeouts. `get_pool` is serialized by an asyncio lock so
+concurrent outage probes cannot race `create_pool` into duplicate pools —
+covering create-failure retry, lock-waiter cancellation and later recovery
+is regression-tested.
 
 ## Production configuration validation
 
@@ -121,7 +143,7 @@ value. Errors are aggregated so one startup failure reports every problem.
 | Recovery for SQL-applied/ledger-not-recorded | **Done** — documented + rehearsed (PRs #12, #13) |
 | Backup/restore rehearsal | **Done** — `docs/deedly-m1-backup-restore-evidence.md` (PR #12) |
 | Migration preservation checks | **Done** — transaction-semantics preserved in runner |
-| Fail-closed startup readiness | **This slice** — `/ready` implemented; live-environment certification is operational acceptance, pending deployment |
+| Fail-closed startup readiness | **Implemented — pending review** (this slice); live-environment certification is operational acceptance, pending deployment |
 | Approved fresh pilot target | **Open** — no pilot database provisioned/approved yet |
 | Approved deployment/CI configuration + release manifest | **Open** — provider not decided; only offline CI exists |
 | Service credentials delivery | **Open** — provider contract undecided (see above) |
