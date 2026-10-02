@@ -62,7 +62,7 @@ jobs:
       - name: DB TLS resolver and fixture tests
         run: node --test scripts/db-tls.test.mjs scripts/db-tls-fixture.test.mjs
       - name: Python 3.12
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0a869d7b9fc55bd98
+        uses: actions/setup-python@8d9ed9ac5c53483de85588cdf95a591a75ab9f55 # v5.6.0
         with:
           python-version: '3.12'
       - name: Python DB TLS dependencies
