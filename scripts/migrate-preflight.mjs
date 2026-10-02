@@ -84,6 +84,7 @@ export function resolveTarget(env) {
       user: decodeURIComponent(url.username),
       connectionString: tls.connectionString,
       ssl: tls.ssl,
+      enableChannelBinding: tls.enableChannelBinding,
       tlsWarnings: tls.warnings,
     }
   }
@@ -94,6 +95,7 @@ export function resolveTarget(env) {
     user: env.DB_USER || 'postgres',
     password: env.DB_PASSWORD,
     ssl: tls.ssl,
+    enableChannelBinding: tls.enableChannelBinding,
     tlsWarnings: tls.warnings,
   }
 }
@@ -216,9 +218,13 @@ async function main() {
   config() // .env resolution identical to migrate.mjs — target must be explicit
   const target = resolveTarget(process.env)
   for (const warning of target.tlsWarnings || []) console.warn(`WARNING: ${warning}`)
-  const { connectionString, ssl, tlsWarnings, ...rest } = target
+  const { connectionString, ssl, enableChannelBinding, tlsWarnings, ...rest } = target
   void tlsWarnings
-  const pool = new Pool(connectionString ? { connectionString, ssl } : { ...rest, ssl })
+  const pool = new Pool(
+    connectionString
+      ? { connectionString, ssl, enableChannelBinding }
+      : { ...rest, ssl, enableChannelBinding },
+  )
   const client = await pool.connect()
   try {
     await client.query('SET default_transaction_read_only = on')

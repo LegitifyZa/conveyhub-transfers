@@ -20,10 +20,21 @@
 // 'no-verify' => no-verify). A DSN without sslmode defaults to verified TLS
 // (the previous tooling enabled TLS unconditionally — now it is verified).
 //
+// Channel binding: pg's DSN parser passes `channel_binding` through but pg
+// only honours its explicit `enableChannelBinding` option — the DSN param
+// alone is a silent no-op (verified live: the client fell back to plain
+// SCRAM-SHA-256). This resolver therefore maps channel_binding=require|
+// prefer onto `enableChannelBinding`. Caveat: pg treats even 'require' as
+// prefer-PLUS-if-offered; a server that does not advertise
+// SCRAM-SHA-256-PLUS silently degrades to plain SCRAM — strict failure is
+// not enforceable client-side with this driver.
+//
 // The ssl-related params are stripped from the returned connectionString so
 // pg-connection-string's parse cannot override the resolved ssl object.
 
 import fs from 'node:fs'
+import net from 'node:net'
+import tls from 'node:tls'
 
 const TLS_DSN_PARAMS = [
   'sslmode', 'sslcert', 'sslkey', 'sslpassword', 'sslrootcert', 'sslcrl',
@@ -51,6 +62,11 @@ export function resolveDbTls(dsn, env = {}) {
     sslrootcert = url.searchParams.get('sslrootcert')
   }
 
+  const channelBinding = url ? url.searchParams.get('channel_binding') : null
+  if (channelBinding === 'require' && (sslmodeParam === 'disable' || env.PGSSLMODE === 'disable')) {
+    throw new Error('channel_binding=require contradicts sslmode=disable — refusing the insecure combination')
+  }
+
   let mode = sslmodeParam || env.PGSSLMODE || null
   if (!mode) {
     if (env.DB_SSL === 'true') mode = 'require'
@@ -65,6 +81,9 @@ export function resolveDbTls(dsn, env = {}) {
   if (mode === 'disable') {
     ssl = false
   } else if (mode === 'no-verify') {
+    if (env.NODE_ENV === 'production') {
+      throw new Error('no-verify TLS is refused when NODE_ENV=production')
+    }
     warnings.push('TLS verification disabled by explicit no-verify configuration — do not use against production-shaped data')
     ssl = { ...NO_VERIFY }
   } else {
@@ -72,9 +91,28 @@ export function resolveDbTls(dsn, env = {}) {
     if (caFile) ssl.ca = readCa(caFile)
   }
 
-  if (!dsn) return { connectionString: null, ssl, warnings }
+  // pg only sets servername for non-IP hosts, so checkServerIdentity is
+  // silently skipped for IP literals (and a literal IP cannot be a
+  // servername — Node throws). Inject an identity check that validates the
+  // cert's IP SANs against the configured host instead.
+  const host = url ? url.hostname : env.DB_HOST
+  if (ssl && ssl.rejectUnauthorized && host && net.isIP(host) !== 0) {
+    const expected = host
+    ssl.checkServerIdentity = (_name, cert) => tls.checkServerIdentity(expected, cert)
+  }
+
+  // channel_binding=require/prefer only has an effect if pg gets its
+  // explicit enableChannelBinding option — map it. 'require' additionally
+  // fails closed when TLS is off.
+  const enableChannelBinding =
+    channelBinding === 'require' || channelBinding === 'prefer' ? true : undefined
+  if (enableChannelBinding && !ssl) {
+    throw new Error('channel_binding=require/prefer needs TLS — ssl resolved off')
+  }
+
+  if (!dsn) return { connectionString: null, ssl, enableChannelBinding, warnings }
 
   // Strip ssl params so pg's DSN parse cannot clobber the resolved ssl object.
   for (const p of TLS_DSN_PARAMS) url.searchParams.delete(p)
-  return { connectionString: url.toString(), ssl, warnings }
+  return { connectionString: url.toString(), ssl, enableChannelBinding, warnings }
 }
