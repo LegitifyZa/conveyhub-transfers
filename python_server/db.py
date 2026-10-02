@@ -63,6 +63,8 @@ def _resolve_db_tls(dsn: Optional[str], settings: Settings) -> Optional[ssl.SSLC
     if not use_tls:
         return None
     if no_verify:
+        if settings.node_env == "production":
+            raise RuntimeError("database no-verify TLS is refused in production")
         print("WARNING: database TLS verification disabled by explicit no-verify configuration")
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         ctx.check_hostname = False
@@ -86,6 +88,15 @@ def _build_pool_kwargs(settings: Settings) -> dict:
         "command_timeout": 30,
         "server_settings": {"jit": "off"},
     }
+
+    # asyncpg 0.31 has no channel-binding support (scram.pyx pins gs2 "n,,");
+    # a channel_binding requirement in the DSN would be silently ignored —
+    # warn rather than let it look enforced.
+    if dsn and _dsn_param(dsn, "channel_binding") in ("require", "prefer"):
+        print(
+            "WARNING: asyncpg cannot negotiate channel binding; "
+            "channel_binding in the DSN is not enforceable by this driver"
+        )
 
     tls = _resolve_db_tls(dsn, settings)
     if tls is not None:

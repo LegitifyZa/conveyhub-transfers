@@ -22,7 +22,7 @@ const tls = resolveDbTls(postgresUrl || null, process.env)
 for (const warning of tls.warnings) console.warn(`⚠️ ${warning}`)
 
 const dbConfig = hasPostgresUrl
-  ? { connectionString: tls.connectionString, ssl: tls.ssl }
+  ? { connectionString: tls.connectionString, ssl: tls.ssl, enableChannelBinding: tls.enableChannelBinding }
   : {
       host: process.env.DB_HOST || 'localhost',
       port: parseInt(process.env.DB_PORT || '5432'),
@@ -30,6 +30,7 @@ const dbConfig = hasPostgresUrl
       user: process.env.DB_USER || 'postgres',
       password: process.env.DB_PASSWORD || 'Password@01',
       ssl: tls.ssl,
+      enableChannelBinding: tls.enableChannelBinding,
     }
 
 function sha256(input) {

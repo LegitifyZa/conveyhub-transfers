@@ -79,3 +79,32 @@ test('a missing CA file fails closed', () => {
     /CA file not found/,
   )
 })
+
+test('channel_binding=require|prefer maps to pg enableChannelBinding (DSN param alone is ignored by pg)', () => {
+  assert.equal(resolveDbTls(`${DSN}?channel_binding=require`, {}).enableChannelBinding, true)
+  assert.equal(resolveDbTls(`${DSN}?channel_binding=prefer`, {}).enableChannelBinding, true)
+  assert.equal(resolveDbTls(`${DSN}?channel_binding=disable`, {}).enableChannelBinding, undefined)
+  // the param stays in the DSN (harmless) but the flag is what pg honours
+  assert.ok(resolveDbTls(`${DSN}?channel_binding=require`, {}).connectionString.includes('channel_binding=require'))
+})
+
+test('channel_binding=require refuses contradictory sslmode=disable', () => {
+  assert.throws(
+    () => resolveDbTls(`${DSN}?channel_binding=require&sslmode=disable`, {}),
+    /channel_binding/,
+  )
+})
+
+test('no-verify is refused under NODE_ENV=production', () => {
+  assert.throws(
+    () => resolveDbTls(`${DSN}?sslmode=no-verify`, { NODE_ENV: 'production' }),
+    /production/,
+  )
+})
+
+test('IP-literal hosts get a checkServerIdentity so hostname checks still run', () => {
+  const r = resolveDbTls('postgresql://u:p@127.0.0.1/db?sslmode=require', {})
+  assert.equal(typeof r.ssl.checkServerIdentity, 'function')
+  const named = resolveDbTls(`${DSN}?sslmode=require`, {})
+  assert.equal(named.ssl.checkServerIdentity, undefined) // pg sets servername itself for DNS hosts
+})

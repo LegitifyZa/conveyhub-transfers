@@ -10,7 +10,7 @@ import db
 
 
 def _settings(**kw):
-    base = dict(db_ssl=False, db_ssl_ca_file=None, db_ssl_no_verify=False)
+    base = dict(db_ssl=False, db_ssl_ca_file=None, db_ssl_no_verify=False, node_env="development")
     base.update(kw)
     return SimpleNamespace(**base)
 
@@ -52,6 +52,24 @@ class DbTlsResolutionTests(unittest.TestCase):
             with mock.patch.object(ctx, "load_verify_locations") as load:
                 db._resolve_db_tls(None, _settings(db_ssl_ca_file="/ca.pem"))
                 load.assert_called_once_with(cafile="/ca.pem")
+
+    def test_no_verify_refused_in_production(self):
+        for kw in (dict(), dict(db_ssl_no_verify=True)):
+            with self.subTest(kw=kw):
+                kw.setdefault("node_env", "production")
+                dsn = "postgresql://u:p@h/db?sslmode=no-verify" if not kw.get("db_ssl_no_verify") else "postgresql://u:p@h/db?sslmode=require"
+                with self.assertRaises(RuntimeError):
+                    db._resolve_db_tls(dsn, _settings(**kw))
+
+    def test_channel_binding_dsn_warns_it_is_unenforceable(self):
+        settings = _settings(
+            database_url="postgresql://u:p@h/db?sslmode=require&channel_binding=require",
+            db_min_connections=1, db_max_connections=2, db_schema="transfers",
+            db_host="h", db_port=5432, db_name="db", db_user="u", db_password="p",
+        )
+        with mock.patch("builtins.print") as printer:
+            db._build_pool_kwargs(settings)
+        self.assertTrue(any("channel binding" in str(c) for c in printer.call_args_list))
 
     def test_no_verify_is_explicit_and_warns(self):
         with mock.patch("builtins.print") as printer:
