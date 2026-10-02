@@ -494,6 +494,10 @@ approved. Nothing in this slice connects to a database.
   BFF takes a direct pool.
 - Immutable-artifact build + validation run on a disposable DB (needs the
   §6 approval).
+- ~~Migration-artifact recovery procedure~~ — delivered in
+  `docs/deedly-m1-artifact-recovery.md` (recover + byte-verify from a
+  recorded revision or retained copy). Release-artifact/immutable-blob
+  recovery remains open.
 - Migrator serialization mechanism (deploy-lock integration) and the
   reconciled-runbook sign-off.
 - Secrets delivery, environment health/readiness fail-closed startup.
