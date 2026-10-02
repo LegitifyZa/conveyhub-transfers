@@ -202,6 +202,104 @@ Before any apply on a target containing data:
   referenced property effectively undeletable (024 report §6) — relevant
   to fixture cleanup ordering on any non-empty target.
 
+### Backup/restore rehearsal plan (prepared — do not run yet)
+
+Bounded rehearsal of the §5 `pg_dump`/`pg_restore` path on two dedicated
+disposable databases. `deedly_m1_verify` (CRLF-ledger evidence) and
+`deedly_m1_verify_lf` (canonical-ledger evidence) are preserved unchanged —
+neither is a source, target, or subject of any statement below.
+
+**Prerequisites (confirm before step 0):**
+
+- **PostgreSQL 17 client tools** matching the server (17.11): install the
+  PG 17 `pg_dump`/`pg_restore`/`psql` binaries (EDB installer or
+  equivalent). Local machine currently has only PG 18 tools at
+  `C:\Program Files\PostgreSQL\18\bin` — record the resolved `pg_dump
+  --version` (17.x) in the run log; do not run with 18.x.
+- **Credentials without command-line passwords:** create a temporary
+  pgpass file `%TEMP%\m1br_pgpass.conf` containing
+  `ep-red-term-awh8wnfa.c-12.us-east-1.aws.neon.tech:5432:*:neondb_owner:<password>`,
+  ACL-restricted to the current user (`icacls ... /inheritance:r /grant:r
+  "$env:USERNAME:R"`), and point `PGPASSFILE` at it. Delete it after the
+  run. Passwords never appear on a command line, in a DSN argument, or in
+  committed files. For the Node scripts, use discrete `DB_*` env vars
+  (DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASSWORD, PGSSLMODE=verify-full) or
+  a DSN in `DATABASE_URL` — env vars only, never `psql`/`pg_dump`
+  arguments.
+- **TLS:** all connections use the **direct endpoint**
+  (`ep-red-term-awh8wnfa.c-12.us-east-1.aws.neon.tech`, no `-pooler`)
+  with `sslmode=verify-full` (`PGSSLMODE=verify-full` for libpq tools;
+  `resolveDbTls` maps it to full verification for the Node scripts).
+- Working tree clean on the rehearsal branch with
+  `migration-manifest.mjs --check` PASS (canonical LF bytes).
+
+**Sequence:**
+
+```text
+0. Probe (read-only, psql -d neondb): SELECT version() recorded;
+   deedly_m1_backup_src AND deedly_m1_restore_verify both absent.
+   If either exists → stop, report; do not reuse or drop silently.
+1. CREATE DATABASE deedly_m1_backup_src;            -- empty container
+   CREATE DATABASE deedly_m1_restore_verify;        -- empty container
+2. Build source from the canonical artifact:
+   a. preflight --expect-database=deedly_m1_backup_src
+      --expect-environment=disposable → PASS, fresh, 27 pending
+   b. node scripts/migrate.mjs → 27/27 applied
+   c. re-run preflight → PASS, 0 pending; ledger digests == manifest
+      canonical LF digests (cross-check all 27 rows)
+3. Seed source (marker M1BR-): 3 transfers.transfers rows across two
+   random 800M-range accountable_institution_ids with mixed statuses;
+   1 transfers.transfer_documents row FK'd via the transfer's uuid id
+   with file_path/file_size/file_type set, pointing at a local synthetic
+   artifact file whose sha256 is recorded (metadata↔file relationship
+   only — see separation note below).
+4. Snapshot source state (saved to run log):
+   - per-table row counts (all tables)
+   - ordered content hash per seeded table (sha256 over COPY ... ORDER BY pk)
+   - ledger export: SELECT * FROM transfers_schema_migrations ORDER BY filename
+   - extension inventory: SELECT extname, extversion FROM pg_extension
+   - constraint defs: pg_get_constraintdef for all constraints;
+     index defs: pg_get_indexdef for all non-pg_internal indexes
+5. pg_dump --format=custom --no-owner --no-acl -d deedly_m1_backup_src
+   -f %TEMP%\m1br.dump   → exit 0, nonzero size; record duration + size.
+6. Prepare target: pre-create exactly the source's extension set
+   (expected: uuid-ossp only — migrations 001/003 create it
+   IF NOT EXISTS; enumerate pg_extension at step 4 and match exactly).
+7. pg_restore --no-owner --no-acl --exit_on_error -d
+   deedly_m1_restore_verify %TEMP%\m1br.dump
+   → --exit_on_error aborts on any error; stderr captured; record
+   duration. Any error = stop and report, no retry-by-omission.
+8. Verify target against source snapshots:
+   a. Schema: pg_dump --schema-only on both, normalize before diff —
+      strip comment banners (-- Dumped from database version / pg_dump
+      version / timestamps), \connect, SET, and SELECT set_config lines.
+      Only those lines may differ legitimately; ANY remaining diff is
+      substantive and fails the check.
+   b. Catalog parity (immune to dump formatting): information_schema
+      tables/columns, all pg_get_constraintdef and pg_get_indexdef output
+      equal.
+   c. Per-table row counts equal to step-4 snapshot.
+   d. Ordered content hashes on seeded tables equal.
+   e. Ledger deep-equal: all 27 rows identical including applied_at.
+   f. migrate-preflight on target → PASS, 27 applied, 0 pending —
+      certifies the restored DB as a migrated target.
+   g. node scripts/migrate.mjs on target → 0 applied, all skipped —
+      proves the advisory-lock runner path works post-restore.
+   h. FK spot-check: seeded transfer_documents row resolves to its
+      transfer; artifact file sha256 unchanged (metadata↔file link).
+9. Cleanup: DELETE seeded M1BR- rows from the source (children before
+   parents); 0-residual check. Delete PGPASSFILE. Preserve the dump file,
+   run log, and BOTH new databases as evidence unless drop is separately
+   approved — they contain only synthetic and migration-seed data.
+10. Stop on any mismatch or unexpected failure; no automatic
+    drop/recreate.
+```
+
+**Separation of concerns:** the artifact file seeded in step 3 and
+checked in 8h is a *synthetic* local file with a recorded checksum — it
+verifies the DB-side metadata↔file linkage only. Real immutable-blob storage recovery is NOT
+rehearsed here and stays outstanding in §7.
+
 ## 6. Isolated PostgreSQL verification plan (prepared — do not run yet)
 
 **Exact setup (when separately approved):**
