@@ -128,7 +128,7 @@ across the repeat run.
 or missing `CREATE DATABASE` approval — stop; no drop/recreate, no
 retries that recreate databases.
 
-## Execution evidence — run on 2026-10-02 (runner `abddf15`)
+## Execution evidence — run on 2026-10-02 (runner `abddf15`, report committed as `153eb1f`)
 
 Artifact recovered from approved revision `2e81928` into
 `%TEMP%\m1ex-artifact` — 27 files, all sha256 verified, manifest digest
@@ -145,7 +145,7 @@ Artifact recovered from approved revision `2e81928` into
 | e. M1EX- fixtures across repeat run | counts + hash unchanged |
 | f. ledger deep-equal incl. `applied_at` | identical before/after; all 27 digests = manifest |
 | g. post-apply preflight | PASS — 27 applied / 0 pending |
-| h. advisory lock | `pg_try_advisory_lock` → `t` after both runs (released; the unlock ran on a separate session and warned "don't own" — benign) |
+| h. advisory lock | `pg_try_advisory_lock` → `t` after both runs — the probe **acquired** the free lock in its own `psql` session, which closed on exit (releasing it). A second session's explicit `pg_advisory_unlock` warned "you don't own a lock" — benign, since it owned none |
 | `test_transfer_list_db.py` | **8 tests, OK** (82.9s; M1V- fixtures self-clean) |
 | Fixture cleanup | 3 transfers + 1 doc row deleted, 0 residual |
 
