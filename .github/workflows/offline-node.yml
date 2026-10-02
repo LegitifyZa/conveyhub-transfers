@@ -59,3 +59,5 @@ jobs:
         run: npm run build
       - name: Offline migration checksum tests
         run: node --test scripts/migrate.test.mjs
+      - name: DB TLS resolver and fixture tests
+        run: node --test scripts/db-tls.test.mjs scripts/db-tls-fixture.test.mjs
