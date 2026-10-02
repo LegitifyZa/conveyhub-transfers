@@ -43,10 +43,11 @@ async function withMigrationLock(client, fn) {
       await client.query('SELECT pg_advisory_unlock(hashtext($1))', [MIGRATION_LOCK_LABEL])
     } catch (releaseError) {
       console.error('⚠️ Advisory-lock release failed:', releaseError.message)
-      // Lock state is now uncertain: destroy the connection rather than
-      // returning it to the pool, so a surviving connection cannot keep
-      // the session lock held.
-      try { client.release(releaseError) } catch { /* already released */ }
+      // Lock state is now uncertain: the caller must destroy the
+      // connection rather than return it to the pool, so a surviving
+      // session cannot keep the lock held. The helper never releases a
+      // client it does not own — it hands the cause to the owner.
+      client.__migrationLockDestroy = releaseError
     }
   }
 }
@@ -54,25 +55,33 @@ async function withMigrationLock(client, fn) {
 const postgresUrl = process.env.ConveyHub_Transfers_POSTGRES_URL || process.env.POSTGRES_URL || process.env.DATABASE_URL
 const hasPostgresUrl = Boolean(postgresUrl)
 
-// Certificate and hostname verification are the default whenever TLS is used.
-// no-verify is an explicit opt-out only; it never happens silently.
-const tls = resolveDbTls(postgresUrl || null, process.env)
-for (const warning of tls.warnings) console.warn(`⚠️ ${warning}`)
-
-// Session-level advisory locks do not serialize through a transaction-mode
-// pooler (e.g. Neon '-pooler' endpoints): each client can land on a
-// different backend session, so two runners could both acquire. Known
-// pooler hostnames are therefore REJECTED before any ledger or migration
-// write — the operator must configure a direct migration connection; the
-// runner never derives or silently switches endpoints.
+// Connection-string validation runs before ANY driver parse or write:
+// malformed/unsupported DSNs and known transaction-pooler endpoints
+// (e.g. Neon '-pooler' hosts, where session-level advisory locks cannot
+// serialize — each client can land on a different backend session) are
+// REJECTED here, before a pool or database can be created. The runner
+// never derives or silently switches endpoints — the operator must
+// configure a direct migration connection.
 // LIMITATION: hostname matching cannot prove session affinity for an
 // arbitrary proxy — this guard covers known pooler conventions only.
+// Error messages carry scheme/host only; credentials never appear.
 const KNOWN_POOLER_PATTERNS = [/-pooler[.-]/i, /\.pooler\./i]
 
 function migrationTargetHost() {
   if (postgresUrl) {
-    // Fail closed: an unparseable DSN still gets pattern-matched raw.
-    try { return new URL(postgresUrl).hostname } catch { return postgresUrl }
+    let url
+    try {
+      url = new URL(postgresUrl)
+    } catch {
+      throw new Error('❌ Migration connection string is not a valid URL — refusing to start.')
+    }
+    if (!/^postgres(ql)?:$/i.test(url.protocol)) {
+      throw new Error(`❌ Unsupported migration connection scheme '${url.protocol}' — expected postgresql://.`)
+    }
+    if (!url.hostname) {
+      throw new Error('❌ Migration connection string has no hostname — refusing to start.')
+    }
+    return url.hostname
   }
   return process.env.DB_HOST || 'localhost'
 }
@@ -88,6 +97,13 @@ function assertDirectMigrationTarget() {
     )
   }
 }
+
+assertDirectMigrationTarget()
+
+// Certificate and hostname verification are the default whenever TLS is used.
+// no-verify is an explicit opt-out only; it never happens silently.
+const tls = resolveDbTls(postgresUrl || null, process.env)
+for (const warning of tls.warnings) console.warn(`⚠️ ${warning}`)
 
 const dbConfig = hasPostgresUrl
   ? { connectionString: tls.connectionString, ssl: tls.ssl, enableChannelBinding: tls.enableChannelBinding }
@@ -257,10 +273,9 @@ async function runMigration() {
     console.error('❌ Migration failed:', error.message)
     throw error
   } finally {
-    // Always return the client to the pool and close it; release() may
-    // throw if the lock helper already destroyed the connection.
-    try { client.release() } catch { /* already released */ }
-    await pool.end()
+    // Exactly one release: destroy (err truthy) when the lock helper
+    // flagged an unlock failure, else return the client to the pool.
+    try { client.release(client.__migrationLockDestroy) } finally { await pool.end() }
   }
 }
 
