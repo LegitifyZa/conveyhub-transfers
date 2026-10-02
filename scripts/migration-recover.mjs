@@ -13,8 +13,12 @@
 // mismatch by editing anything.
 //
 // Usage:
-//   node scripts/migration-recover.mjs --revision=<sha> --output=<dir>
-//   node scripts/migration-recover.mjs --verify=<dir>
+//   node scripts/migration-recover.mjs --revision=<sha> --output=<dir> [--expect-manifest-sha256=<hex>]
+//   node scripts/migration-recover.mjs --verify=<dir> [--expect-manifest-sha256=<hex>]
+//
+// --expect-manifest-sha256 pins the recovered manifest to an independent
+// trust reference (the approved revision's manifest digest) — otherwise a
+// retained copy carrying a rewritten manifest would verify against itself.
 
 import fs from 'node:fs'
 import path from 'node:path'
@@ -41,32 +45,69 @@ function loadManifest(dir) {
   }
 }
 
+// A manifest file entry must be a plain basename inside the artifact
+// directory — reject traversal, absolute or nested paths and anything
+// that is not a regular file (symlinks can escape the directory).
+function entryNameProblem(name) {
+  if (typeof name !== 'string' || !name) return 'empty file name'
+  if (path.basename(name) !== name || name.includes('/') || name.includes('\\') ||
+      path.isAbsolute(name) || path.win32.isAbsolute(name) || name === '..' || name.includes('..'))
+    return `unsafe manifest path: ${JSON.stringify(name)}`
+  if (name === 'manifest.json') return 'manifest.json must not appear in files[]'
+  return null
+}
+
 // Verify a directory of recovered files against its manifest.json.
-export function verifyArtifactDir(dir) {
+// opts.expectedManifestSha256 pins the manifest itself to an independent
+// trust reference (e.g. the approved revision's manifest digest) —
+// without it a directory that ships its own rewritten manifest would
+// verify against itself.
+export function verifyArtifactDir(dir, opts = {}) {
   const { manifest, manifestSha256, error } = loadManifest(dir)
   if (error) return fail(error)
+  if (opts.expectedManifestSha256 &&
+      manifestSha256 !== String(opts.expectedManifestSha256).toLowerCase())
+    return fail(`manifest digest mismatch: expected ${String(opts.expectedManifestSha256).toLowerCase()} got ${manifestSha256}`)
 
   const recorded = manifest.files
-  const orderOk = recorded.every((f, i) => i === 0 || recorded[i - 1].file < f.file)
-  if (!orderOk) return fail('manifest files[] not in canonical sorted order')
-  if (manifest.fileCount !== recorded.length)
-    return fail(`manifest fileCount ${manifest.fileCount} != files[] length ${recorded.length}`)
-
   const problems = []
   for (const f of recorded) {
+    const p = entryNameProblem(f && f.file)
+    if (p) problems.push(p)
+  }
+  const names = recorded.map(f => f.file)
+  if (new Set(names).size !== names.length) problems.push('manifest files[] contains duplicate entries')
+  const orderOk = recorded.every((f, i) => i === 0 || recorded[i - 1].file < f.file)
+  if (!orderOk) problems.push('manifest files[] not in canonical sorted order')
+  if (manifest.fileCount !== recorded.length)
+    problems.push(`manifest fileCount ${manifest.fileCount} != files[] length ${recorded.length}`)
+
+  for (const f of recorded) {
+    if (entryNameProblem(f.file)) continue
     const p = path.join(dir, f.file)
     if (!fs.existsSync(p)) { problems.push(`missing file ${f.file}`); continue }
+    const st = fs.lstatSync(p)
+    if (!st.isFile() || st.isSymbolicLink()) { problems.push(`not a regular file: ${f.file}`); continue }
     const actual = sha256(fs.readFileSync(p))
     if (actual !== f.sha256) problems.push(`checksum mismatch in ${f.file}`)
   }
-  const listed = new Set(recorded.map(f => f.file))
-  for (const extra of fs.readdirSync(dir).filter(n => n !== 'manifest.json' && !listed.has(n)))
-    problems.push(`unlisted file present: ${extra}`)
+  const listed = new Set(names)
+  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (e.name === 'manifest.json' || listed.has(e.name)) continue
+    if (!e.isFile() || e.isSymbolicLink())
+      problems.push(`unexpected non-file entry: ${e.name}`)
+    else
+      problems.push(`unlisted file present: ${e.name}`)
+  }
   if (problems.length) return fail(problems.join('; '))
   return { ok: true, fileCount: recorded.length, manifestSha256 }
 }
 
 // Extract the artifact at a git revision into an empty output dir.
+// All blob bytes are fetched before anything touches disk, and a
+// `.recovery-incomplete` marker exists for the whole write window — a
+// partial/interrupted recovery can never verify as a complete artifact
+// (the marker is itself an unlisted file).
 export function extractRevision(revision, outputDir, repoRoot) {
   if (fs.existsSync(outputDir) && fs.readdirSync(outputDir).length)
     return fail(`output dir not empty: ${outputDir} (refusing to overwrite)`)
@@ -80,39 +121,56 @@ export function extractRevision(revision, outputDir, repoRoot) {
   }
   if (!names.includes(`${MIGRATIONS_SUBDIR}/manifest.json`))
     return fail(`no manifest.json at revision ${revision}`)
+  const nested = names.filter(n => n.slice(MIGRATIONS_SUBDIR.length + 1).includes('/'))
+  if (nested.length)
+    return fail(`unexpected nested paths in ${MIGRATIONS_SUBDIR} at ${revision}: ${nested.join(', ')}`)
 
-  fs.mkdirSync(outputDir, { recursive: true })
+  const blobs = new Map()
   for (const n of names) {
-    const base = path.basename(n)
-    const bytes = execFileSync('git', ['show', `${revision}:${n}`], { ...opts, encoding: 'buffer', maxBuffer: 64 << 20 })
-    fs.writeFileSync(path.join(outputDir, base), bytes)
+    try {
+      blobs.set(path.basename(n), execFileSync('git', ['show', `${revision}:${n}`],
+        { ...opts, encoding: 'buffer', maxBuffer: 64 << 20 }))
+    } catch (e) {
+      return fail(`cannot read ${n} at ${revision}: ${e.message.split('\n')[0]}`)
+    }
+  }
+
+  const marker = path.join(outputDir, '.recovery-incomplete')
+  try {
+    fs.mkdirSync(outputDir, { recursive: true })
+    fs.writeFileSync(marker, 'incomplete recovery — do not use\n')
+    for (const [base, bytes] of blobs) fs.writeFileSync(path.join(outputDir, base), bytes)
+    fs.unlinkSync(marker)
+  } catch (e) {
+    return fail(`write failed (directory left marked .recovery-incomplete): ${e.message}`)
   }
   return { ok: true, filesWritten: names.length }
 }
 
 const args = Object.fromEntries(
   process.argv.slice(2).map(a => {
-    const m = a.match(/^--(revision|verify|output|repo)=(.+)$/)
+    const m = a.match(/^--(revision|verify|output|repo|expect-manifest-sha256)=(.+)$/)
     return m ? [m[1], m[2]] : [a, true]
   }),
 )
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const repo = path.resolve(args.repo || path.join(path.dirname(fileURLToPath(import.meta.url)), '..'))
+  const expect = args['expect-manifest-sha256']
   if (args.revision && args.output) {
     const ex = extractRevision(args.revision, path.resolve(args.output), repo)
     if (!ex.ok) { console.error(`RECOVERY FAILED: ${ex.reason}`); process.exitCode = 1 }
     else {
-      const v = verifyArtifactDir(args.output)
+      const v = verifyArtifactDir(args.output, { expectedManifestSha256: expect })
       if (!v.ok) { console.error(`RECOVERY FAILED: ${v.reason}`); process.exitCode = 1 }
-      else console.log(`Recovered ${v.fileCount} migrations + manifest at ${args.revision} into ${args.output}; all sha256 verified. manifest sha256=${v.manifestSha256}`)
+      else console.log(`Recovered ${v.fileCount} migrations + manifest at ${args.revision} into ${args.output}; all sha256 verified${expect ? ' against expected manifest digest' : ''}. manifest sha256=${v.manifestSha256}`)
     }
   } else if (args.verify) {
-    const v = verifyArtifactDir(path.resolve(args.verify))
+    const v = verifyArtifactDir(path.resolve(args.verify), { expectedManifestSha256: expect })
     if (!v.ok) { console.error(`VERIFY FAILED: ${v.reason}`); process.exitCode = 1 }
-    else console.log(`Verified ${v.fileCount} migrations + manifest in ${args.verify}; all sha256 match. manifest sha256=${v.manifestSha256}`)
+    else console.log(`Verified ${v.fileCount} migrations + manifest in ${args.verify}; all sha256 match${expect ? ' and manifest matches the expected digest' : ''}. manifest sha256=${v.manifestSha256}`)
   } else {
-    console.error('Usage: --revision=<sha> --output=<dir> | --verify=<dir> [--repo=<path>]')
+    console.error('Usage: --revision=<sha> --output=<dir> | --verify=<dir> [--repo=<path>] [--expect-manifest-sha256=<hex>]')
     process.exitCode = 2
   }
 }

@@ -497,7 +497,9 @@ approved. Nothing in this slice connects to a database.
 - ~~Migration-artifact recovery procedure~~ — delivered in
   `docs/deedly-m1-artifact-recovery.md` (recover + byte-verify from a
   recorded revision or retained copy). Release-artifact/immutable-blob
-  recovery remains open.
-- Migrator serialization mechanism (deploy-lock integration) and the
+  recovery remains open and is M0-operational/M7 scope, not M1.
+- ~~Migrator serialization~~ — session-advisory-lock serialization merged
+  (PR #11). Still open: broader deployment coordination (deploy-lock
+  integration so CI/release never races a migrator) and the
   reconciled-runbook sign-off.
 - Secrets delivery, environment health/readiness fail-closed startup.

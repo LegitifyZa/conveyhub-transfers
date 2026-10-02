@@ -6,9 +6,13 @@ under `src/lib/migrations/` plus `manifest.json`, which together are the
 reviewed, sha256-pinned bytes the runner applies and ledgers.
 
 **Out of scope:** external document/blob storage recovery (files in
-`transfer_documents.file_path`, generated/signed evidence) — that is
-M7/provider work and is not verified here. Database content recovery is
-the §5 `pg_dump`/`pg_restore` procedure, not this slice.
+`transfer_documents.file_path`, generated/signed evidence). Per the
+megaplan, immutable-file recovery belongs to the M0 operational-acceptance
+restore rehearsal ("database, immutable files and the metadata/file
+relationship") and M7's document-transport/immutable-version work — it
+is not part of M1's recoverable-release-procedure exit and is not
+verified here. Database content recovery is the §5 `pg_dump`/`pg_restore`
+procedure, not this slice.
 
 ## What is being recovered
 
@@ -29,17 +33,40 @@ the §5 `pg_dump`/`pg_restore` procedure, not this slice.
 
 ```powershell
 # From a recorded revision — extracts then verifies every byte:
-node scripts/migration-recover.mjs --revision=<sha> --output=<empty-dir>
+node scripts/migration-recover.mjs --revision=<sha> --output=<empty-dir> `
+  --expect-manifest-sha256=<approved-manifest-digest>
 
 # Verify a retained copy in place:
-node scripts/migration-recover.mjs --verify=<dir>
+node scripts/migration-recover.mjs --verify=<dir> `
+  --expect-manifest-sha256=<approved-manifest-digest>
+```
+
+`--expect-manifest-sha256` pins the manifest itself to an **independent
+trust reference** — required for retained-copy verification and strongly
+recommended for revision recovery. Without it a copy carrying a *rewritten*
+manifest (digests recomputed over tampered files) verifies against itself
+and reports OK. Obtain the approved digest from the recorded revision:
+
+```powershell
+git show <approved-sha>:src/lib/migrations/manifest.json | sha256sum
+# Windows without sha256sum:
+git show <approved-sha>:src/lib/migrations/manifest.json |
+  Set-Content -AsByteStream $env:TEMP\m1-mf.json -NoNewline
+Get-FileHash -Algorithm SHA256 $env:TEMP\m1-mf.json
 ```
 
 Both modes fail closed: missing file, checksum mismatch, unlisted extra
-file, malformed/missing manifest, unsorted manifest, non-empty output
-dir, or unreadable revision → named failure, non-zero exit, nothing
-written elsewhere. The tool never writes the schema ledger, never edits
-a migration, and never reconciles a mismatch by changing bytes.
+file, malformed/missing manifest, unsafe manifest path (traversal,
+absolute or nested entries), duplicate entries, symlink or non-regular
+entries (a link can resolve outside the artifact dir — rejected via
+`lstat`, never followed), unsorted manifest, manifest-digest mismatch
+against the expected value, non-empty output dir, or unreadable revision
+→ named failure, non-zero exit. Extraction fetches all blob bytes before
+any disk write and leaves a `.recovery-incomplete` marker for the whole
+write window, so a partial or interrupted recovery can never verify as a
+complete artifact. Recovery is confined to the selected output directory.
+The tool never writes the schema ledger, never edits a migration, and
+never reconciles a mismatch by changing bytes.
 
 ## After recovery — before any apply
 
@@ -72,11 +99,31 @@ a migration, and never reconciles a mismatch by changing bytes.
 - Whether the rehearsal DBs' dumps (`m1br.dump` etc.) become the
   retained DB-side artifact or stay disposable evidence.
 
+## Does the earlier disposable-DB validation cover the recovered bytes?
+
+Partially, and precisely: `deedly_m1_verify_lf` was built by applying the
+canonical LF artifact at its recorded revision, and its ledger digests
+matched the manifest (27/27). Recovery from that same recorded revision
+produces **byte-identical** files (proven by the rehearsal's
+`git show`-equality check and the manifest digests), so that validation
+transfers to the recovered copy of *that* revision. A separate
+artifact-based apply is required when: (a) recovering a different
+revision than the validated one, or (b) acceptance requires applying
+from the recovered directory itself rather than the working tree — the
+runner currently reads `src/lib/migrations`, so applying a recovered copy
+would need an explicit reviewed step. No new DB rehearsal was run for
+this slice.
+
 ## Verification performed (offline rehearsal)
 
-`scripts/migration-recover.test.mjs` — 8 tests on temp copies only:
+`scripts/migration-recover.test.mjs` — 12 tests on temp copies only:
 intact recovery (27/27 digests), tampered-file detection by name,
-missing-file detection, unlisted-extra detection, missing/malformed
-manifest rejection, exact-blob recovery from `HEAD` (byte-for-byte vs
-`git show`), non-empty-output and bad-revision refusal. The original
-artifact and all evidence files are untouched.
+missing-file detection, unlisted-extra detection, tampered-file +
+rewritten-manifest rejected when the approved manifest digest is pinned
+(proving a self-referential manifest is not accepted as the approved
+artifact), unsafe manifest path entries (traversal/absolute/nested)
+rejected, duplicate entries rejected, symlink-in-place-of-file rejected
+via `lstat` without following it, missing/malformed manifest rejection,
+exact-blob recovery from `HEAD` (byte-for-byte vs `git show`), and
+non-empty-output / bad-revision refusal. The original artifact and all
+evidence files are untouched.

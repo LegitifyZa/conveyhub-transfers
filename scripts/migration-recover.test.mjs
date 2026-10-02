@@ -8,6 +8,7 @@ import path from 'node:path'
 import os from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { extractRevision, verifyArtifactDir } from './migration-recover.mjs'
 
 const repo = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -56,6 +57,74 @@ test('detects an unlisted extra file', () => {
   const v = verifyArtifactDir(d)
   assert.equal(v.ok, false)
   assert.match(v.reason, /unlisted file present: 999_sneaky\.sql/)
+})
+
+test('tampered file + rewritten manifest still fails against the approved digest', () => {
+  const d = copyArtifact()
+  // Attacker edits a migration AND recomputes the copied manifest to match.
+  const victim = '001_initial_schema.sql'
+  fs.writeFileSync(path.join(d, victim), fs.readFileSync(path.join(d, victim)) + '-- tampered\n')
+  const mPath = path.join(d, 'manifest.json')
+  const m = JSON.parse(fs.readFileSync(mPath))
+  const entry = m.files.find(f => f.file === victim)
+  entry.sha256 = createHash('sha256').update(fs.readFileSync(path.join(d, victim))).digest('hex')
+  fs.writeFileSync(mPath, JSON.stringify(m, null, 2))
+
+  // Self-referential verify passes — the copy is internally consistent…
+  assert.equal(verifyArtifactDir(d).ok, true)
+  // …but it is NOT the approved artifact: the pinned manifest digest fails.
+  const approved = createHash('sha256').update(
+    execFileSync('git', ['show', 'HEAD:src/lib/migrations/manifest.json'], { cwd: repo })).digest('hex')
+  const v = verifyArtifactDir(d, { expectedManifestSha256: approved })
+  assert.equal(v.ok, false)
+  assert.match(v.reason, /manifest digest mismatch/)
+})
+
+test('rejects manifest path entries that escape the artifact dir', () => {
+  const cases = [
+    ['..\\..\\evil.sql', /unsafe manifest path/],
+    ['../evil.sql', /unsafe manifest path/],
+    ['C:/abs/evil.sql', /unsafe manifest path/],
+    ['/abs/evil.sql', /unsafe manifest path/],
+    ['sub/dir.sql', /unsafe manifest path/],
+  ]
+  for (const [name, re] of cases) {
+    const d = copyArtifact()
+    const mPath = path.join(d, 'manifest.json')
+    const m = JSON.parse(fs.readFileSync(mPath))
+    m.files.push({ file: name, sha256: '0'.repeat(64) })
+    fs.writeFileSync(mPath, JSON.stringify(m, null, 2))
+    const v = verifyArtifactDir(d)
+    assert.equal(v.ok, false, `${name} should fail`)
+    assert.match(v.reason, re)
+  }
+})
+
+test('rejects duplicate manifest entries', () => {
+  const d = copyArtifact()
+  const mPath = path.join(d, 'manifest.json')
+  const m = JSON.parse(fs.readFileSync(mPath))
+  m.files.push({ ...m.files[0] })
+  fs.writeFileSync(mPath, JSON.stringify(m, null, 2))
+  const v = verifyArtifactDir(d)
+  assert.equal(v.ok, false)
+  assert.match(v.reason, /duplicate entries/)
+})
+
+test('rejects a symlink in place of a migration file', () => {
+  const d = copyArtifact()
+  const victim = path.join(d, '001_initial_schema.sql')
+  const outside = path.join(d, '..', `outside-${Date.now()}`)
+  fs.mkdirSync(outside)
+  fs.unlinkSync(victim)
+  // 'junction' is the unprivileged Windows symlink type; lstat reports it
+  // as a symlink and it resolves outside the artifact dir — the verifier
+  // must reject it rather than follow it.
+  fs.symlinkSync(outside, victim, 'junction')
+  const v = verifyArtifactDir(d)
+  assert.equal(v.ok, false)
+  assert.match(v.reason, /not a regular file: 001_initial_schema\.sql/)
+  fs.rmSync(outside, { recursive: true })
 })
 
 test('fails on a missing manifest', () => {
