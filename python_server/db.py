@@ -1,3 +1,4 @@
+import asyncio
 import os
 import re
 import ssl
@@ -32,6 +33,20 @@ class QueryResult:
 
 _pool: Optional[asyncpg.Pool] = None
 _settings: Optional[Settings] = None
+# Serializes pool creation so concurrent probes/requests during an outage
+# cannot race create_pool and leak a duplicate pool. asyncio primitives are
+# loop-bound, so locks are kept per running loop — a stale test loop must
+# not wedge later loops.
+_pool_locks: dict = {}
+
+
+def _get_pool_lock() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    lock = _pool_locks.get(loop)
+    if lock is None:
+        lock = asyncio.Lock()
+        _pool_locks[loop] = lock
+    return lock
 
 
 def _dsn_param(dsn: Optional[str], name: str) -> Optional[str]:
@@ -86,6 +101,9 @@ def _build_pool_kwargs(settings: Settings) -> dict:
         "min_size": min_size,
         "max_size": max_size,
         "command_timeout": 30,
+        # Bound connection establishment itself — an unreachable host must
+        # not hang startup or the readiness probe indefinitely.
+        "timeout": 10,
         "server_settings": {"jit": "off"},
     }
 
@@ -138,8 +156,22 @@ async def get_pool(settings: Optional[Settings] = None) -> asyncpg.Pool:
         _settings = settings
     if _settings is None:
         raise RuntimeError("Database settings have not been configured.")
+    # An asyncpg pool is bound to the loop that created it — never hand a
+    # foreign/closed loop's pool to this loop. LIMITATION: dropping the
+    # reference is not resource cleanup — the orphaned pool's connections
+    # persist until the owning loop closes them or the process exits. The
+    # supported lifecycle is one loop that owns the pool and calls
+    # close_pool() on that loop during shutdown (as lifespan does); the
+    # discard here only prevents a stale test loop from poisoning a fresh
+    # one, and callers must not rely on it to free sockets.
+    if _pool is not None:
+        bound = getattr(_pool, "_loop", None)
+        if bound is not None and bound is not asyncio.get_running_loop():
+            _pool = None
     if _pool is None:
-        _pool = await asyncpg.create_pool(**_build_pool_kwargs(_settings))
+        async with _get_pool_lock():
+            if _pool is None:
+                _pool = await asyncpg.create_pool(**_build_pool_kwargs(_settings))
     return _pool
 
 
@@ -222,12 +254,12 @@ async def close_pool() -> None:
     global _pool
     if _pool is not None:
         try:
-            # If the pool was created in a now-closed test loop the connections
-            # are already defunct.  Do not attempt to close it; just discard the
-            # stale reference so the next test can create a pool bound to the
-            # current loop.
+            # If the pool was created in another loop (a now-closed test
+            # loop, or any foreign loop) the connections are unusable from
+            # here — discard the reference rather than await close() on the
+            # wrong loop.
             loop = getattr(_pool, "_loop", None)
-            if loop is not None and loop.is_closed():
+            if loop is not None and (loop.is_closed() or loop is not asyncio.get_running_loop()):
                 _pool = None
                 return
             await _pool.close()

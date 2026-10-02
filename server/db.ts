@@ -1,11 +1,15 @@
-import { Pool, PoolConfig, QueryResultRow } from 'pg'
+import { Client, Pool, PoolConfig, QueryResultRow } from 'pg'
 import dotenv from 'dotenv'
+// Shared M1 resolver: verified TLS by default, explicit no-verify refused in
+// production, channel_binding=require rejected (pg cannot enforce it).
+import { resolveDbTls } from '../scripts/db-tls.mjs'
 
 dotenv.config()
 
 interface DatabaseConfig extends PoolConfig {
   min?: number
   max?: number
+  enableChannelBinding?: boolean
 }
 
 // The specialist DB suite may redirect this whole process — including the
@@ -22,15 +26,25 @@ if (process.env.RUN_SPECIALIST_DB_TESTS === '1') {
 
 const connectionString = specialistTestUrl || process.env.ConveyHub_Transfers_POSTGRES_URL_NON_POOLING || process.env.POSTGRES_URL_NON_POOLING || process.env.ConveyHub_Transfers_POSTGRES_URL || process.env.POSTGRES_URL || process.env.DATABASE_URL
 
-const config: DatabaseConfig = connectionString
+const tls = resolveDbTls(connectionString || null, process.env)
+for (const warning of tls.warnings) {
+  console.warn(`Database TLS: ${warning}`)
+}
+
+const poolBounds = {
+  min: parseInt(process.env.DB_MIN_CONNECTIONS || '2', 10),
+  max: parseInt(process.env.DB_MAX_CONNECTIONS || '10', 10),
+  connectionTimeoutMillis: 10000,
+  idleTimeoutMillis: 30000,
+  query_timeout: 30000,
+}
+
+const config: DatabaseConfig = tls.connectionString
   ? {
-      connectionString,
-      ssl: { rejectUnauthorized: false },
-      min: parseInt(process.env.DB_MIN_CONNECTIONS || '2', 10),
-      max: parseInt(process.env.DB_MAX_CONNECTIONS || '10', 10),
-      connectionTimeoutMillis: 10000,
-      idleTimeoutMillis: 30000,
-      query_timeout: 30000,
+      connectionString: tls.connectionString,
+      ssl: tls.ssl,
+      enableChannelBinding: tls.enableChannelBinding,
+      ...poolBounds,
     }
   : {
       host: process.env.DB_HOST || 'localhost',
@@ -38,12 +52,9 @@ const config: DatabaseConfig = connectionString
       database: process.env.DB_NAME || 'legitify_convey_hub',
       user: process.env.DB_USER || 'your_username',
       password: process.env.DB_PASSWORD || 'your_password',
-      ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false,
-      min: parseInt(process.env.DB_MIN_CONNECTIONS || '2', 10),
-      max: parseInt(process.env.DB_MAX_CONNECTIONS || '10', 10),
-      connectionTimeoutMillis: 10000,
-      idleTimeoutMillis: 30000,
-      query_timeout: 30000,
+      ssl: tls.ssl,
+      enableChannelBinding: tls.enableChannelBinding,
+      ...poolBounds,
     }
 
 const schema = process.env.DB_SCHEMA || 'transfers'
@@ -104,6 +115,69 @@ export async function checkDatabaseHealth(): Promise<{ healthy: boolean; latency
       healthy: false,
       latencyMs: Date.now() - start,
       error: 'Database unavailable',
+    }
+  }
+}
+
+// Readiness probes deliberately run on a dedicated short-lived Client, not
+// the shared pool: pg's `query_timeout` only fails the local call and
+// dequeues the query — it sends NO CancelRequest, so a statement that
+// outlives the race would keep running on a pooled connection.
+//
+// Server-side work is bounded two ways: a session `statement_timeout` set
+// via the startup `options` parameter gives a guaranteed bound regardless
+// of client state, and `end()` while a query is in flight force-destroys
+// the socket (pg does this explicitly so a hung query can't block end) —
+// connection teardown asks the backend to abort the session's statement,
+// though that abort is not instantaneous or guaranteed. `connectionTimeoutMillis`
+// likewise destroys the socket on connect timeout. Net effect: each probe
+// uses at most one transient connection that is always torn down at the
+// deadline — no abandoned client, no pool-slot burn, bounded server work.
+export const PROBE_STATEMENT_TIMEOUT_MS = 5000
+
+export function probeClientConfig(): PoolConfig {
+  return {
+    ...config,
+    // GUC via startup packet — applies only to this probe session.
+    options: `-c statement_timeout=${PROBE_STATEMENT_TIMEOUT_MS}`,
+  }
+}
+
+export interface ProbeClientLike {
+  connect(): Promise<void>
+  query(text: string): Promise<{ rows: Record<string, unknown>[] }>
+  end(): Promise<unknown>
+}
+
+export function makeProbeQuery(
+  newClient: () => ProbeClientLike = () => new Client(probeClientConfig()) as unknown as ProbeClientLike,
+  timeoutMs = PROBE_STATEMENT_TIMEOUT_MS,
+): (text: string) => Promise<{ rows: Record<string, unknown>[] }> {
+  return async (text) => {
+    const client = newClient()
+    const work = (async () => {
+      await client.connect()
+      return client.query(text)
+    })()
+    let timer: ReturnType<typeof setTimeout>
+    try {
+      const result = await Promise.race([
+        work,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error('probe timed out')), timeoutMs)
+        }),
+      ])
+      return result
+    } finally {
+      clearTimeout(timer!)
+      // Late settlement of the raced-out work must not be unhandled.
+      work.catch(() => {})
+      // end() destroys the socket when a query is still in flight — the
+      // statement dies with the session. Bound the teardown itself.
+      await Promise.race([
+        client.end().catch(() => {}),
+        new Promise(r => setTimeout(r, 1000)),
+      ])
     }
   }
 }

@@ -21,7 +21,14 @@ from routers.v1 import transfers as v1_transfers
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.settings = load_settings()
-    await get_pool(app.state.settings)
+    try:
+        await get_pool(app.state.settings)
+    except Exception:
+        # Dependency down at boot: stay up so /api/health/live answers and
+        # /api/health/ready reports the outage. Pool creation is retried on
+        # demand (per-request get_pool and the readiness probe) and recovers
+        # when the database returns.
+        print("Database pool unavailable at startup — serving liveness only")
     # One Legitify client for the process. httpx pools connections inside the
     # client, so a per-request client would create a new pool on every call.
     # Routes reach it through clients.dependencies.get_entities_client.
@@ -92,6 +99,8 @@ async def root():
         "version": "1.0.0",
         "endpoints": [
             "GET /api/health",
+            "GET /api/health/live",
+            "GET /api/health/ready",
             "GET /api/transfers",
             "POST /api/transfers",
             "GET /api/transfers/:id",

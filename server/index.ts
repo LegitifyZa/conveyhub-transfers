@@ -18,8 +18,20 @@ import documentsRouter from './routes/documents'
 import usersRouter from './routes/users'
 import accountsRouter from './routes/accounts'
 import { pool } from './db'
+import { validateStartupConfig } from './startupConfig'
 
 dotenv.config()
+
+// Fail closed on missing/unsafe production configuration before the
+// listener is opened. Issue messages carry variable names only — never
+// values. Development is unaffected (validation is a no-op there).
+const startupIssues = validateStartupConfig(process.env)
+if (startupIssues.length) {
+  for (const i of startupIssues) {
+    console.error(`Startup configuration error: ${i.name} — ${i.reason}`)
+  }
+  process.exit(1)
+}
 
 const app = express()
 const PORT = parseInt(process.env.PORT || '3001', 10)
@@ -56,6 +68,8 @@ app.get('/api', (_req: Request, res: Response) => {
     version: '1.0.0',
     endpoints: [
       'GET /api/health',
+      'GET /api/health/live',
+      'GET /api/health/ready',
       'GET /api/transfers',
       'POST /api/transfers',
       'GET /api/transfers/:id',
