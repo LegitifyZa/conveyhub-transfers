@@ -1,11 +1,15 @@
 import { Pool, PoolConfig, QueryResultRow } from 'pg'
 import dotenv from 'dotenv'
+// Shared M1 resolver: verified TLS by default, explicit no-verify refused in
+// production, channel_binding=require rejected (pg cannot enforce it).
+import { resolveDbTls } from '../scripts/db-tls.mjs'
 
 dotenv.config()
 
 interface DatabaseConfig extends PoolConfig {
   min?: number
   max?: number
+  enableChannelBinding?: boolean
 }
 
 // The specialist DB suite may redirect this whole process — including the
@@ -22,15 +26,25 @@ if (process.env.RUN_SPECIALIST_DB_TESTS === '1') {
 
 const connectionString = specialistTestUrl || process.env.ConveyHub_Transfers_POSTGRES_URL_NON_POOLING || process.env.POSTGRES_URL_NON_POOLING || process.env.ConveyHub_Transfers_POSTGRES_URL || process.env.POSTGRES_URL || process.env.DATABASE_URL
 
-const config: DatabaseConfig = connectionString
+const tls = resolveDbTls(connectionString || null, process.env)
+for (const warning of tls.warnings) {
+  console.warn(`Database TLS: ${warning}`)
+}
+
+const poolBounds = {
+  min: parseInt(process.env.DB_MIN_CONNECTIONS || '2', 10),
+  max: parseInt(process.env.DB_MAX_CONNECTIONS || '10', 10),
+  connectionTimeoutMillis: 10000,
+  idleTimeoutMillis: 30000,
+  query_timeout: 30000,
+}
+
+const config: DatabaseConfig = tls.connectionString
   ? {
-      connectionString,
-      ssl: { rejectUnauthorized: false },
-      min: parseInt(process.env.DB_MIN_CONNECTIONS || '2', 10),
-      max: parseInt(process.env.DB_MAX_CONNECTIONS || '10', 10),
-      connectionTimeoutMillis: 10000,
-      idleTimeoutMillis: 30000,
-      query_timeout: 30000,
+      connectionString: tls.connectionString,
+      ssl: tls.ssl,
+      enableChannelBinding: tls.enableChannelBinding,
+      ...poolBounds,
     }
   : {
       host: process.env.DB_HOST || 'localhost',
@@ -38,12 +52,9 @@ const config: DatabaseConfig = connectionString
       database: process.env.DB_NAME || 'legitify_convey_hub',
       user: process.env.DB_USER || 'your_username',
       password: process.env.DB_PASSWORD || 'your_password',
-      ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false,
-      min: parseInt(process.env.DB_MIN_CONNECTIONS || '2', 10),
-      max: parseInt(process.env.DB_MAX_CONNECTIONS || '10', 10),
-      connectionTimeoutMillis: 10000,
-      idleTimeoutMillis: 30000,
-      query_timeout: 30000,
+      ssl: tls.ssl,
+      enableChannelBinding: tls.enableChannelBinding,
+      ...poolBounds,
     }
 
 const schema = process.env.DB_SCHEMA || 'transfers'

@@ -1,10 +1,82 @@
 import os
+import urllib.parse
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import List, Optional
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Values that must never be accepted as real production configuration.
+PLACEHOLDER_VALUES = frozenset({
+    "your_username",
+    "your_password",
+    "dev-secret-change-me",
+    "changeme",
+    "password",
+})
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
+
+
+def _is_placeholder(value: Optional[str]) -> bool:
+    return not value or value.strip().lower() in PLACEHOLDER_VALUES
+
+
+def _production_config_errors(env=os.environ) -> List[str]:
+    """Missing/unsafe production configuration. Messages name the variable
+    and the rule only — never the offending value."""
+    errors: List[str] = []
+
+    dsn = _resolve_database_url()
+    if dsn:
+        try:
+            parsed = urllib.parse.urlparse(dsn)
+        except ValueError:
+            errors.append("database connection string is not a valid URL")
+            parsed = None
+        if parsed is not None:
+            if parsed.scheme not in ("postgres", "postgresql"):
+                errors.append("database connection string has an unsupported scheme")
+            if not parsed.hostname:
+                errors.append("database connection string has no hostname")
+            if not parsed.password:
+                errors.append("database connection string carries no password")
+            sslmode = urllib.parse.parse_qs(parsed.query).get("sslmode", [None])[0]
+            if sslmode in ("disable", "no-verify"):
+                errors.append("database connection string sslmode=%s is not allowed in production" % sslmode)
+    else:
+        for name in ("DB_HOST", "DB_NAME", "DB_USER", "DB_PASSWORD"):
+            if _is_placeholder(env.get(name)):
+                errors.append(f"{name} missing or still a placeholder value")
+
+    for name in ("SECRET_KEY", "JWT_SECRET"):
+        if _is_placeholder(env.get(name)):
+            errors.append(f"{name} missing or still a placeholder value")
+
+    if env.get("DB_SSL_NO_VERIFY", "").lower() == "true":
+        errors.append("DB_SSL_NO_VERIFY=true is refused in production")
+
+    upstream = env.get("LEGITIFY_API_BASE_URL")
+    if not upstream or not upstream.strip():
+        errors.append("LEGITIFY_API_BASE_URL missing")
+    else:
+        try:
+            u = urllib.parse.urlparse(upstream)
+        except ValueError:
+            errors.append("LEGITIFY_API_BASE_URL is not a valid URL")
+        else:
+            if u.scheme not in ("http", "https"):
+                errors.append("LEGITIFY_API_BASE_URL must be an http(s) URL")
+            elif u.hostname in _LOOPBACK_HOSTS:
+                errors.append("LEGITIFY_API_BASE_URL loopback is not a valid upstream in production")
+
+    if env.get("LEGACY_ACCOUNTABLE_INSTITUTION_ID"):
+        errors.append(
+            "LEGACY_ACCOUNTABLE_INSTITUTION_ID must not be configured in production "
+            "(unauthenticated legacy-tenant bridge)"
+        )
+
+    return errors
 
 
 # NOTE: The shared Legitify package `legitify_shared` is not available in this
@@ -65,6 +137,13 @@ def load_settings() -> Settings:
             raise ValueError("The default development SECRET_KEY cannot be used in production")
 
     raw_jwt_secret = os.getenv("JWT_SECRET")
+
+    if node_env == "production":
+        errors = _production_config_errors()
+        if errors:
+            raise ValueError(
+                "Invalid production configuration: " + "; ".join(errors)
+            )
 
     # TEMPORARY: parse the legacy tenant bridge without any production default.
     legacy_ai: Optional[int] = None
