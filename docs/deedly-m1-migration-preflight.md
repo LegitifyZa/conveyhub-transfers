@@ -126,10 +126,21 @@ a missing ledger is reported as `fresh`, never created by preflight.
   file changed post-application or the target's history belongs to a
   different artifact line. Never reconcile by editing the ledger to match
   new bytes, never use `--baseline-through` to silence it (megaplan §3.8).
-- **Serialization:** one migrator process at a time per database. An
-  advisory lock alone is not the guarantee (megaplan); the operational
-  rule is a single operator window with the deploy pipeline holding a
-  deploy lock. Concurrent migrator runs are not supported.
+- **Serialization:** `migrate.mjs` takes a non-blocking session-level
+  advisory lock — `pg_try_advisory_lock(hashtext('deedly-migration-runner'))`
+  — on one dedicated connection before any ledger mutation or migration
+  SQL, and holds it for the whole run (session scope survives the
+  per-migration `BEGIN`/`COMMIT` blocks). A competing runner fails
+  immediately with no schema or ledger change. The lock is released on
+  success and handled failure; a crashed session frees it via connection
+  teardown, and a release failure never masks the run's own error.
+  **Scope:** this serializes cooperating migration runners only — it is
+  not a complete deployment lock and does not stop unrelated clients.
+  **Pooler caveat:** session advisory locks do not serialize through a
+  transaction-mode pooler (each client can land on a different backend
+  session) — the runner warns on `-pooler` hosts; use the direct endpoint
+  for migration runs. The operational rule remains a single operator
+  window with the deploy pipeline holding a deploy lock.
 - **No automated rollback.** The runner has none; per-migration reversal
   is reviewed SQL authored for that migration (see the 024 doc's example),
   not a flag. Roll forward or restore from backup are the supported paths.

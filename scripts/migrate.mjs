@@ -13,6 +13,40 @@ const __dirname = path.dirname(__filename)
 
 const MIGRATIONS_TABLE = 'public.transfers_schema_migrations'
 
+// Session-level advisory lock: serializes cooperating migration runners.
+// The key is pg_try_advisory_lock(hashtext('deedly-migration-runner')).
+// It is held on one dedicated connection for the whole run and survives
+// the per-migration BEGIN/COMMIT blocks (session, not transaction, scope).
+// It does NOT prevent other clients writing — it is a runner mutex only.
+const MIGRATION_LOCK_LABEL = 'deedly-migration-runner'
+
+async function acquireMigrationLock(client) {
+  const { rows } = await client.query(
+    'SELECT pg_try_advisory_lock(hashtext($1)) AS acquired',
+    [MIGRATION_LOCK_LABEL]
+  )
+  if (!rows[0]?.acquired) {
+    throw new Error(
+      `🔒 Another migration runner holds the '${MIGRATION_LOCK_LABEL}' advisory lock. ` +
+      'Refusing to proceed — no schema or ledger changes were made.'
+    )
+  }
+}
+
+async function withMigrationLock(client, fn) {
+  await acquireMigrationLock(client)
+  try {
+    return await fn()
+  } finally {
+    // Never let a release failure mask the run's own error.
+    try {
+      await client.query('SELECT pg_advisory_unlock(hashtext($1))', [MIGRATION_LOCK_LABEL])
+    } catch (releaseError) {
+      console.error('⚠️ Advisory-lock release failed (session teardown will still free it):', releaseError.message)
+    }
+  }
+}
+
 const postgresUrl = process.env.ConveyHub_Transfers_POSTGRES_URL || process.env.POSTGRES_URL || process.env.DATABASE_URL
 const hasPostgresUrl = Boolean(postgresUrl)
 
@@ -20,6 +54,14 @@ const hasPostgresUrl = Boolean(postgresUrl)
 // no-verify is an explicit opt-out only; it never happens silently.
 const tls = resolveDbTls(postgresUrl || null, process.env)
 for (const warning of tls.warnings) console.warn(`⚠️ ${warning}`)
+
+// Session-level advisory locks do not serialize through a transaction-mode
+// pooler (e.g. Neon '-pooler' endpoints): each client can land on a
+// different backend session, so two runners could both acquire. Migrations
+// must run against a direct endpoint.
+if (/-pooler[.-]/i.test(postgresUrl || '')) {
+  console.warn('⚠️ Target host looks like a connection pooler: the migration advisory lock will NOT serialize runners. Use the direct endpoint for migration runs.')
+}
 
 const dbConfig = hasPostgresUrl
   ? { connectionString: tls.connectionString, ssl: tls.ssl, enableChannelBinding: tls.enableChannelBinding }
@@ -170,16 +212,20 @@ async function runMigration() {
   const pool = new Pool(dbConfig)
   const client = await pool.connect()
   try {
-    await ensureLedger(client)
-    const files = await loadMigrations()
-    const args = parseArgs()
-    if (args.baselineThrough) {
-      await runBaseline(client, files, args.baselineThrough)
-    } else {
-      const applied = await getAppliedMigrations(client)
-      await runMigrations(client, files, applied)
-      console.log('✅ Migrations completed successfully')
-    }
+    // One dedicated connection holds the session-level advisory lock for
+    // the entire run — including across per-migration BEGIN/COMMIT blocks.
+    await withMigrationLock(client, async () => {
+      await ensureLedger(client)
+      const files = await loadMigrations()
+      const args = parseArgs()
+      if (args.baselineThrough) {
+        await runBaseline(client, files, args.baselineThrough)
+      } else {
+        const applied = await getAppliedMigrations(client)
+        await runMigrations(client, files, applied)
+        console.log('✅ Migrations completed successfully')
+      }
+    })
   } catch (error) {
     console.error('❌ Migration failed:', error.message)
     throw error

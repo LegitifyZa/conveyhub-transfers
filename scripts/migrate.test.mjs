@@ -32,7 +32,7 @@ function sandbox(sql) {
   })
   vm.runInContext(definitions, context)
   return {
-    ...vm.runInContext('({ sha256, loadMigrations, runMigrations })', context),
+    ...vm.runInContext('({ sha256, loadMigrations, runMigrations, withMigrationLock })', context),
     client: { query: async (...args) => { queries.push(args); return { rows: [] } } },
     queries,
   }
@@ -88,4 +88,60 @@ test('a new migration records its raw checksum only after SQL execution', async 
   assert.equal(runner.queries[1][1][0], filename)
   assert.equal(runner.queries[1][1][1], runner.sha256(lf))
   assert.doesNotMatch(runner.queries[1][0], /UPDATE|ON CONFLICT/)
+})
+
+// --- Advisory-lock serialization (offline; fake client only) ---
+
+function lockClient({ acquired = true, failUnlock = false } = {}) {
+  const queries = []
+  return {
+    queries,
+    query: async (sql) => {
+      queries.push(sql)
+      if (failUnlock && /pg_advisory_unlock/.test(sql)) throw new Error('unlock boom')
+      return { rows: [{ acquired }] }
+    },
+  }
+}
+
+const runner = sandbox(lf)
+
+test('a competing runner fails clearly without issuing any other query', async () => {
+  const client = lockClient({ acquired: false })
+  let ran = false
+  await assert.rejects(runner.withMigrationLock(client, async () => { ran = true }), /advisory lock|Another migration runner/)
+  assert.equal(ran, false)
+  assert.equal(client.queries.length, 1)
+  assert.match(client.queries[0], /pg_try_advisory_lock/)
+})
+
+test('the lock is acquired before work and released after it', async () => {
+  const client = lockClient()
+  let sawLock = false
+  await runner.withMigrationLock(client, async () => {
+    sawLock = /pg_try_advisory_lock/.test(client.queries[0])
+    client.query('select 1') // simulate migration work
+  })
+  assert.ok(sawLock)
+  assert.match(client.queries.at(-1), /pg_advisory_unlock/)
+})
+
+test('the lock is released when the wrapped work throws', async () => {
+  const client = lockClient()
+  await assert.rejects(runner.withMigrationLock(client, async () => { throw new Error('mid-run failure') }), /mid-run failure/)
+  assert.match(client.queries.at(-1), /pg_advisory_unlock/)
+})
+
+test('an unlock failure never masks the run error', async () => {
+  const client = lockClient({ failUnlock: true })
+  await assert.rejects(
+    runner.withMigrationLock(client, async () => { throw new Error('primary failure') }),
+    /primary failure/ // not 'unlock boom'
+  )
+})
+
+test('an unlock failure does not break an otherwise successful run', async () => {
+  const client = lockClient({ failUnlock: true })
+  const result = await runner.withMigrationLock(client, async () => 'ok')
+  assert.equal(result, 'ok')
 })
