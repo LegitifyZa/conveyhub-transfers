@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express'
-import { checkDatabaseHealth, getPoolStats, query } from '../db'
+import { checkDatabaseHealth, getPoolStats, makeProbeQuery } from '../db'
 import { checkReadiness } from '../readiness'
 import { validateStartupConfig } from '../startupConfig'
 import { asyncHandler } from '../utils/asyncHandler'
@@ -37,7 +37,9 @@ router.get(
   asyncHandler(async (_req: Request, res: Response) => {
     const configValid = validateStartupConfig(process.env).length === 0
     const result = await checkReadiness({
-      query,
+      // Dedicated probe client — see makeProbeQuery for why pool.query is
+      // not used (query_timeout does not cancel the backend statement).
+      query: makeProbeQuery(),
       configValid,
       // v1 proxy routes are served by FastAPI — a configured upstream is an
       // essential dependency for the pilot workflow.

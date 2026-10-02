@@ -51,31 +51,57 @@ Essential vs optional dependencies:
 local dependencies only — it does not claim the full pilot workflow is
 available. During a Legitify outage:
 
-- **Still available:** BFF-native routes — transfer CRUD, manual parties,
-  financial capture/quotations, document upload/readback, wet-ink workflow,
-  existing staff sessions (JWTs verify locally against `JWT_SECRET`), the
-  read-only client portal for already-issued sessions.
+- **Still available:** DB-backed workflows served by the local services —
+  transfer listing/CRUD and milestones (note: these live on FastAPI's
+  `/api/v1/transfers` — the BFF proxies them, so they require FastAPI
+  *healthy*, which is exactly what the BFF upstream probe gates; they do
+  **not** need Legitify), manual parties, financial capture/quotations,
+  document upload/readback, wet-ink workflow, existing staff sessions
+  (JWTs verify locally against `JWT_SECRET`), read-only client portal
+  reads for already-issued sessions.
 - **Unavailable (fail generic, no retry storm):** new logins and token
   refresh (upstream OTP/`/refresh` — BFF auth proxy returns a generic 503),
   Golden Record search/retrieve and specialist writes (FastAPI S2S via
   `EntitiesClient` — bounded httpx timeouts + bounded retries, errors stay
   credential-free), the Legitify e-signing handoff.
+- **Separate dependency:** a *FastAPI* outage (not Legitify) takes the v1
+  proxy routes with it — transfer listing included — which is why BFF
+  readiness probes FastAPI `/api/health/ready`.
 - **Explicitly not readiness-gated:** `LEGITIFY_API_BASE_URL` must be
   configured (production validation) but is never probed — an external
   provider outage must not mark DEEDLY unready for its local workflows.
 
-Timeout and resource coverage: the explicit per-probe race bounds endpoint
-**latency**; underlying **resource use** is bounded separately — BFF pool
-acquisition `connectionTimeoutMillis=10s` and `max` cap in-flight work and
-waiters, `query_timeout=30s` issues a server-side cancel for statements
-that outlive the race, and the upstream probe's `AbortSignal.timeout(3s)`
-cancels the socket outright. FastAPI — `fetch*(..., timeout=5)` covers
-acquisition + statement (asyncpg issues a cancel), `timeout=10` bounds
-connection establishment at pool creation, httpx already carries connect
-and read timeouts. `get_pool` is serialized by an asyncio lock so
-concurrent outage probes cannot race `create_pool` into duplicate pools —
-covering create-failure retry, lock-waiter cancellation and later recovery
-is regression-tested.
+Timeout and resource coverage (verified against driver sources):
+
+- **BFF — `pg` 8.x.** `query_timeout` was inspected in
+  `pg/lib/client.js`: on expiry it only fails the local call and removes
+  the query from `_queryQueue` — **no CancelRequest is sent**, so a timed-
+  out pooled statement keeps running. The readiness probe therefore does
+  **not** use `pool.query`: it creates a dedicated `pg.Client` per probe
+  (`makeProbeQuery`). `connect()` is bounded by `connectionTimeoutMillis`,
+  which destroys the socket at expiry; the query is raced at 5 s; and
+  `end()` during an in-flight query force-destroys the socket (pg does
+  this deliberately — "a hung query could block end forever"), so the
+  backend session and its statement die with the connection. Teardown
+  itself is bounded at 1 s. Each probe costs ≤1 transient connection,
+  always closed — nothing accumulates and no pool slot is burned.
+- **FastAPI — asyncpg.** `timeout=` on `fetch*` triggers a real
+  protocol-level cancellation (the pool's `release()` waits on
+  `_is_cancelling`/`_wait_for_cancellation`, and terminates the connection
+  if reset fails); `timeout=10` on `create_pool` bounds connection
+  establishment. The whole readiness operation — **including waiting on
+  the pool-creation lock** — runs inside `asyncio.wait_for(..., 8s)`
+  (`collect_readiness`); expiry cancels the inner task, which releases the
+  lock for the next probe.
+- **Upstream probes** use `AbortSignal.timeout(3s)` — the socket is
+  genuinely aborted.
+- **Concurrency:** `get_pool` creation is serialized by a per-event-loop
+  lock (asyncio primitives are loop-bound; a module-level lock wedged
+  multi-loop test runs), and a pool bound to a foreign/closed loop is
+  never served — matching the app's single-loop lifecycle. Regression
+  coverage: create-failure retry, cancelled lock waiter, stuck-acquire
+  budget, cross-loop ownership, and sustained overlapping probes with
+  bounded outstanding work and clean recovery.
 
 ## Production configuration validation
 

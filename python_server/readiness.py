@@ -13,6 +13,7 @@ Check labels are fixed strings — never connection details, hostnames or
 driver error payloads that could carry credentials.
 """
 
+import asyncio
 import json
 import os
 from typing import Optional
@@ -110,3 +111,25 @@ async def check_readiness(pool, *, config_valid: bool = True,
 
     ready = checks["config"] == "ok" and checks["schema"] == "ok"
     return {"ready": ready, "checks": checks}
+
+
+async def collect_readiness(get_pool, *, budget: float = 8.0) -> dict:
+    """Bounded end-to-end readiness: pool creation/acquisition (which may
+    wait on the creation lock behind a slow connect) plus the probes, all
+    inside one deadline. wait_for cancels the inner task on expiry, so a
+    stuck acquire/lock-wait cannot pin the endpoint — and the lock itself
+    is released for the next probe."""
+    not_ready = {"ready": False, "checks": {
+        "config": "ok", "database": "unavailable", "schema": "unknown"}}
+
+    async def _collect():
+        try:
+            pool = await get_pool()
+        except Exception:
+            return not_ready
+        return await check_readiness(pool)
+
+    try:
+        return await asyncio.wait_for(_collect(), timeout=budget)
+    except Exception:
+        return not_ready

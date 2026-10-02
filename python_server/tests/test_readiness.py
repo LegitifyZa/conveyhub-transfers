@@ -4,7 +4,13 @@ import os
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from readiness import check_readiness, load_manifest, expected_migration_count, reset_readiness_cache
+from readiness import (
+    check_readiness,
+    collect_readiness,
+    load_manifest,
+    expected_migration_count,
+    reset_readiness_cache,
+)
 
 SECRET = "s3cr3t-pr0d-pw"
 MANIFEST = os.path.join(
@@ -181,6 +187,18 @@ class ReadinessTests(unittest.IsolatedAsyncioTestCase):
         for r in recovered:
             self.assertTrue(r["ready"])
 
+    async def test_sustained_overlapping_probes_stay_bounded_and_recover(self):
+        pool = FakePool(db_fails=True)
+        for _ in range(3):
+            results = await asyncio.gather(*(check_readiness(pool) for _ in range(4)))
+            self.assertTrue(all(not r["ready"] for r in results))
+        # Each probe issued exactly one query — no accumulation over time.
+        self.assertEqual(len(pool.calls), 12)
+        pool.db_fails = False
+        pool.calls.clear()
+        recovered = await asyncio.gather(*(check_readiness(pool) for _ in range(4)))
+        self.assertTrue(all(r["ready"] for r in recovered))
+
     async def test_output_contains_only_fixed_labels(self):
         r = await check_readiness(FakePool(db_fails=True))
         body = json.dumps(r)
@@ -267,6 +285,43 @@ class PoolCreationTests(unittest.IsolatedAsyncioTestCase):
                 await waiter
             # Lock released despite the cancelled waiter; recovery works.
             self.assertIs(await self.db.get_pool(), pool)
+            self.assertEqual(len(created), 1)
+
+    async def test_collect_readiness_bounds_a_stuck_pool_wait(self):
+        never = asyncio.Event()  # never set — create_pool hangs forever
+
+        async def stuck(**kwargs):
+            await never.wait()
+
+        with patch.object(self.db.asyncpg, "create_pool", side_effect=stuck):
+            r = await collect_readiness(
+                lambda: self.db.get_pool(_settings_stub()), budget=0.05)
+            self.assertFalse(r["ready"])
+            self.assertEqual(r["checks"]["database"], "unavailable")
+        # The timed-out wait was cancelled — the creation lock is free and
+        # a healthy create succeeds immediately afterwards.
+        async def quick(**kwargs):
+            return object()
+        with patch.object(self.db.asyncpg, "create_pool", side_effect=quick):
+            pool = await self.db.get_pool(_settings_stub())
+            self.assertIsNotNone(pool)
+
+    async def test_foreign_loop_pool_is_never_served(self):
+        import types
+        stale = types.SimpleNamespace(_loop=object())  # foreign loop marker
+        self.db._pool = stale
+        created = []
+
+        async def make(**kwargs):
+            pool = types.SimpleNamespace(_loop=asyncio.get_running_loop())
+            created.append(pool)
+            return pool
+
+        with patch.object(self.db.asyncpg, "create_pool", side_effect=make):
+            pool = await self.db.get_pool(_settings_stub())
+            self.assertIsNot(pool, stale)
+            self.assertIs(pool._loop, asyncio.get_running_loop())
+            self.assertIs(await self.db.get_pool(), pool)  # same-loop reuse
             self.assertEqual(len(created), 1)
 
 

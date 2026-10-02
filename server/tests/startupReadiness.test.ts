@@ -9,6 +9,7 @@ import {
   loadManifest,
   resetReadinessCache,
 } from '../readiness'
+import { makeProbeQuery } from '../db'
 import { validateStartupConfig } from '../startupConfig'
 
 const MANIFEST = path.join(
@@ -284,6 +285,50 @@ test('timeout bounds endpoint latency; issued work is capped and drains after th
   await new Promise(r => setTimeout(r, 300))
   assert.equal(finished, started)
   assert.equal(active, 0)
+})
+
+test('sustained overlapping probes during an outage stay bounded and recover', async () => {
+  resetReadinessCache()
+  const f = fakeQuery({ dbFails: true })
+  for (let round = 0; round < 3; round++) {
+    const results = await Promise.all(
+      Array.from({ length: 4 }, () => checkReadiness({ query: f.query, manifestPath: MANIFEST })))
+    for (const r of results) assert.equal(r.ready, false)
+  }
+  // Each probe issued exactly one query — no accumulation over time.
+  assert.equal(f.calls.length, 12)
+  f.query = fakeQuery({}).query
+  const recovered = await Promise.all(
+    Array.from({ length: 4 }, () => checkReadiness({ query: f.query, manifestPath: MANIFEST })))
+  for (const r of recovered) assert.equal(r.ready, true)
+})
+
+// makeProbeQuery: dedicated-client lifecycle, verified against pg's source —
+// query_timeout never cancels the backend statement, so teardown uses
+// end(), which force-destroys the socket while a query is in flight.
+test('probe client connects, queries and is always closed', async () => {
+  const events: string[] = []
+  const q = makeProbeQuery(() => ({
+    connect: async () => { events.push('connect') },
+    query: async () => { events.push('query'); return { rows: [{}] } },
+    end: async () => { events.push('end') },
+  }), 1000)
+  await q('SELECT 1')
+  assert.deepEqual(events, ['connect', 'query', 'end'])
+})
+
+test('probe timeout tears down the session; late-settling work is swallowed', async () => {
+  const events: string[] = []
+  let lateResolve: (() => void) | undefined
+  const q = makeProbeQuery(() => ({
+    connect: async () => { events.push('connect') },
+    query: () => new Promise<any>(r => { lateResolve = () => r({ rows: [] }) }),
+    end: async () => { events.push('end') }, // real pg end() destroys the socket mid-query
+  }), 20)
+  await assert.rejects(q('SELECT 1'), /probe timed out/)
+  assert.deepEqual(events, ['connect', 'end'])
+  lateResolve?.() // abandoned promise settles silently — no unhandled rejection
+  await new Promise(r => setTimeout(r, 10))
 })
 
 test('invalid config keeps a reachable service not-ready', async () => {

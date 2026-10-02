@@ -1,7 +1,9 @@
 // Readiness checks (M1). Read-only and bounded: the database probe is two
-// SELECTs against the pool, each wrapped in an explicit race timeout, and
-// the upstream probe is a single GET to the FastAPI liveness endpoint with
-// an abort deadline. No writes, no migrations, no database creation.
+// SELECTs on a dedicated per-probe client (see db.ts makeProbeQuery — pg's
+// query_timeout does not cancel backend statements, so probes use a
+// client whose socket teardown kills in-flight work), each raced against
+// an explicit timeout, plus an abort-bounded GET of the FastAPI readiness
+// endpoint. No writes, no migrations, no database creation.
 //
 // The schema prerequisite is the approved migration manifest: every file in
 // the manifest must be recorded in public.transfers_schema_migrations with

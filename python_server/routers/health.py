@@ -4,7 +4,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from db import check_database_health, get_pool, get_pool_stats
-from readiness import check_readiness
+from readiness import collect_readiness
 
 router = APIRouter()
 
@@ -38,14 +38,7 @@ async def get_liveness():
 # Readiness: bounded, read-only dependency + schema checks. Labels only.
 @router.get("/ready")
 async def get_readiness(request: Request):
-    try:
-        pool = await get_pool()
-    except Exception:
-        pool = None
-    if pool is None:
-        result = {"ready": False, "checks": {"config": "ok", "database": "unavailable", "schema": "unknown"}}
-    else:
-        result = await check_readiness(pool)
+    result = await collect_readiness(get_pool)
     return JSONResponse(
         status_code=200 if result["ready"] else 503,
         content={
