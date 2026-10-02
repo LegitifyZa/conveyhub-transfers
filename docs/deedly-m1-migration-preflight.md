@@ -202,103 +202,188 @@ Before any apply on a target containing data:
   referenced property effectively undeletable (024 report §6) — relevant
   to fixture cleanup ordering on any non-empty target.
 
-### Backup/restore rehearsal plan (prepared — do not run yet)
+### Backup/restore rehearsal procedure (prepared — do not run yet)
 
 Bounded rehearsal of the §5 `pg_dump`/`pg_restore` path on two dedicated
-disposable databases. `deedly_m1_verify` (CRLF-ledger evidence) and
-`deedly_m1_verify_lf` (canonical-ledger evidence) are preserved unchanged —
-neither is a source, target, or subject of any statement below.
+disposable databases, run from PowerShell. `deedly_m1_verify` (CRLF-ledger
+evidence) and `deedly_m1_verify_lf` (canonical-ledger evidence) are
+preserved unchanged — neither is a source, target, or subject of any
+statement below.
 
-**Prerequisites (confirm before step 0):**
+**Tool source and verification:**
 
-- **PostgreSQL 17 client tools** matching the server (17.11): install the
-  PG 17 `pg_dump`/`pg_restore`/`psql` binaries (EDB installer or
-  equivalent). Local machine currently has only PG 18 tools at
-  `C:\Program Files\PostgreSQL\18\bin` — record the resolved `pg_dump
-  --version` (17.x) in the run log; do not run with 18.x.
-- **Credentials without command-line passwords:** create a temporary
-  pgpass file `%TEMP%\m1br_pgpass.conf` containing
-  `ep-red-term-awh8wnfa.c-12.us-east-1.aws.neon.tech:5432:*:neondb_owner:<password>`,
-  ACL-restricted to the current user (`icacls ... /inheritance:r /grant:r
-  "$env:USERNAME:R"`), and point `PGPASSFILE` at it. Delete it after the
-  run. Passwords never appear on a command line, in a DSN argument, or in
-  committed files. For the Node scripts, use discrete `DB_*` env vars
-  (DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASSWORD, PGSSLMODE=verify-full) or
-  a DSN in `DATABASE_URL` — env vars only, never `psql`/`pg_dump`
-  arguments.
-- **TLS:** all connections use the **direct endpoint**
-  (`ep-red-term-awh8wnfa.c-12.us-east-1.aws.neon.tech`, no `-pooler`)
-  with `sslmode=verify-full` (`PGSSLMODE=verify-full` for libpq tools;
-  `resolveDbTls` maps it to full verification for the Node scripts).
-- Working tree clean on the rehearsal branch with
-  `migration-manifest.mjs --check` PASS (canonical LF bytes).
+- Install the **PostgreSQL 17 client tools** matching the server (17.11)
+  — EDB Windows installer for PostgreSQL 17 (client components suffice),
+  or `winget install PostgreSQL.PostgreSQL.17`. Only PG 18 tools are
+  currently present (`C:\Program Files\PostgreSQL\18\bin`) — do not use
+  them; a newer-major `pg_dump` is explicitly unsupported for dumping a
+  17 server in this rehearsal.
+- Before step 0, record and assert: `pg_dump --version`,
+  `pg_restore --version`, `psql --version` — each must report major
+  version **17**; `$LASTEXITCODE` 0.
+
+**Credentials (never printed, never on a command line):**
+
+```powershell
+$PGBIN = 'C:\Program Files\PostgreSQL\17\bin'
+$env:PGHOST   = 'ep-red-term-awh8wnfa.c-12.us-east-1.aws.neon.tech'  # direct endpoint
+$env:PGPORT   = '5432'
+$env:PGUSER   = 'neondb_owner'
+$env:PGSSLMODE = 'verify-full'
+$env:PGPASSFILE = Join-Path $env:TEMP 'm1br_pgpass.conf'
+# PGSSLROOTCERT is NOT exported globally: 'system' is a libpq-only value
+# (PG17+ loads the Windows trusted root store). The Node resolveDbTls
+# treats PGSSLROOTCERT as a file path and would fail closed on it, so the
+# wrapper below scopes it to libpq invocations only. Fallback for libpq:
+# set it to an explicit PEM root path (%APPDATA%\postgresql\root.crt).
+
+# Password is typed, never echoed or passed as an argument:
+$pw  = Read-Host -AsSecureString 'Neon password'
+$ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($pw)
+try {
+  [IO.File]::WriteAllText($env:PGPASSFILE,
+    "${env:PGHOST}:5432:*:${env:PGUSER}:$([Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr))")
+} finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr) }
+
+icacls $env:PGPASSFILE /inheritance:r /grant:r "${env:USERNAME}:R" | Out-Null
+# Verify the effective ACL: protected from inheritance, only this user:
+$acl = Get-Acl $env:PGPASSFILE
+if (-not $acl.AreAccessRulesProtected) { throw 'pgpass ACL still inherits' }
+if ($acl.Access | Where-Object {
+      $_.IdentityReference -notlike "*$env:USERNAME" -or
+      $_.AccessControlType -ne 'Allow' }) { throw 'pgpass ACL too broad' }
+```
+
+- libpq tools (`psql`/`pg_dump`/`pg_restore`) authenticate via
+  `PGPASSFILE` — no `-W`, no password in `PGPASSWORD`, nothing typed into
+  a visible prompt per-call. Trusted CA: `PGSSLROOTCERT=system` is set
+  per-invocation inside the libpq wrapper below.
+- Node scripts (`migrate.mjs`, `migrate-preflight.mjs`) receive
+  credentials via discrete env vars only — `DB_HOST`, `DB_PORT`,
+  `DB_NAME`, `DB_USER`, `DB_PASSWORD` (set from the same secure string;
+  env vars are not printed). `PGSSLMODE=verify-full` propagates through
+  `resolveDbTls`. `DB_NAME` is set per-operation (see below) — never rely
+  on a leftover value.
+- Delete `%TEMP%\m1br_pgpass.conf` at cleanup; clear `$env:DB_PASSWORD`.
+
+**psql discipline:** every invocation uses `-X -v ON_ERROR_STOP=1` (no
+psqlrc, fail fast, nonzero exit on error) and an explicit `-d <database>`.
+Before any mutating operation assert the connected database name:
+
+```powershell
+function Invoke-Libpq([string]$exe, [string[]]$toolArgs) {
+  # Scopes PGSSLROOTCERT=system to libpq only; never leaks to Node.
+  $prev = $env:PGSSLROOTCERT; $env:PGSSLROOTCERT = 'system'
+  try { & "$PGBIN\$exe" @toolArgs } finally { $env:PGSSLROOTCERT = $prev }
+  if ($LASTEXITCODE -ne 0) { throw "$exe exited $LASTEXITCODE" }
+}
+
+function Invoke-Psql([string]$db, [string]$sql) {
+  # Assert connected database before executing.
+  $prev = $env:PGSSLROOTCERT; $env:PGSSLROOTCERT = 'system'
+  try {
+    $name = & "$PGBIN\psql.exe" -X -v ON_ERROR_STOP=1 -d $db -tAc 'SELECT current_database()'
+  } finally { $env:PGSSLROOTCERT = $prev }
+  if ($LASTEXITCODE -ne 0 -or $name.Trim() -ne $db) { throw "target assert failed: $db" }
+  Invoke-Libpq 'psql' @('-X', '-v', 'ON_ERROR_STOP=1', '-d', $db, '-c', $sql)
+}
+```
+
+Any unexpected target state or nonzero exit stops the run — no automatic
+retry, drop, or recreate.
 
 **Sequence:**
 
-```text
-0. Probe (read-only, psql -d neondb): SELECT version() recorded;
-   deedly_m1_backup_src AND deedly_m1_restore_verify both absent.
-   If either exists → stop, report; do not reuse or drop silently.
-1. CREATE DATABASE deedly_m1_backup_src;            -- empty container
-   CREATE DATABASE deedly_m1_restore_verify;        -- empty container
-2. Build source from the canonical artifact:
-   a. preflight --expect-database=deedly_m1_backup_src
-      --expect-environment=disposable → PASS, fresh, 27 pending
-   b. node scripts/migrate.mjs → 27/27 applied
-   c. re-run preflight → PASS, 0 pending; ledger digests == manifest
-      canonical LF digests (cross-check all 27 rows)
-3. Seed source (marker M1BR-): 3 transfers.transfers rows across two
-   random 800M-range accountable_institution_ids with mixed statuses;
-   1 transfers.transfer_documents row FK'd via the transfer's uuid id
-   with file_path/file_size/file_type set, pointing at a local synthetic
-   artifact file whose sha256 is recorded (metadata↔file relationship
-   only — see separation note below).
-4. Snapshot source state (saved to run log):
-   - per-table row counts (all tables)
-   - ordered content hash per seeded table (sha256 over COPY ... ORDER BY pk)
-   - ledger export: SELECT * FROM transfers_schema_migrations ORDER BY filename
-   - extension inventory: SELECT extname, extversion FROM pg_extension
-   - constraint defs: pg_get_constraintdef for all constraints;
-     index defs: pg_get_indexdef for all non-pg_internal indexes
-5. pg_dump --format=custom --no-owner --no-acl -d deedly_m1_backup_src
-   -f %TEMP%\m1br.dump   → exit 0, nonzero size; record duration + size.
-6. Prepare target: pre-create exactly the source's extension set
-   (expected: uuid-ossp only — migrations 001/003 create it
-   IF NOT EXISTS; enumerate pg_extension at step 4 and match exactly).
-7. pg_restore --no-owner --no-acl --exit_on_error -d
-   deedly_m1_restore_verify %TEMP%\m1br.dump
-   → --exit_on_error aborts on any error; stderr captured; record
-   duration. Any error = stop and report, no retry-by-omission.
-8. Verify target against source snapshots:
-   a. Schema: pg_dump --schema-only on both, normalize before diff —
-      strip comment banners (-- Dumped from database version / pg_dump
-      version / timestamps), \connect, SET, and SELECT set_config lines.
-      Only those lines may differ legitimately; ANY remaining diff is
-      substantive and fails the check.
-   b. Catalog parity (immune to dump formatting): information_schema
-      tables/columns, all pg_get_constraintdef and pg_get_indexdef output
-      equal.
-   c. Per-table row counts equal to step-4 snapshot.
-   d. Ordered content hashes on seeded tables equal.
-   e. Ledger deep-equal: all 27 rows identical including applied_at.
-   f. migrate-preflight on target → PASS, 27 applied, 0 pending —
-      certifies the restored DB as a migrated target.
-   g. node scripts/migrate.mjs on target → 0 applied, all skipped —
-      proves the advisory-lock runner path works post-restore.
-   h. FK spot-check: seeded transfer_documents row resolves to its
-      transfer; artifact file sha256 unchanged (metadata↔file link).
-9. Cleanup: DELETE seeded M1BR- rows from the source (children before
-   parents); 0-residual check. Delete PGPASSFILE. Preserve the dump file,
-   run log, and BOTH new databases as evidence unless drop is separately
-   approved — they contain only synthetic and migration-seed data.
-10. Stop on any mismatch or unexpected failure; no automatic
-    drop/recreate.
+```powershell
+$Src = 'deedly_m1_backup_src'
+$Dst = 'deedly_m1_restore_verify'
+
+# 0. Probe (read-only) — both must be absent; record SELECT version()
+Invoke-Psql 'neondb' "SELECT datname FROM pg_database WHERE datname IN ('$Src','$Dst')"
+#    → 0 rows expected; abort if either exists.
+
+# 1. Create empty containers
+Invoke-Psql 'neondb' "CREATE DATABASE $Src"
+Invoke-Psql 'neondb' "CREATE DATABASE $Dst"
+Invoke-Psql $Dst "SELECT count(*) FROM information_schema.tables
+                  WHERE table_schema NOT IN ('pg_catalog','information_schema')"
+#    → 0 tables on the target before any restore.
+
+# 2. Build the source from the canonical migration artifact.
+#    DSN env vars take precedence over DB_* — clear leftovers so the
+#    discrete vars (and thus $Src) actually select the target:
+Remove-Item Env:DATABASE_URL,Env:POSTGRES_URL,Env:ConveyHub_Transfers_POSTGRES_URL `
+    -ErrorAction SilentlyContinue
+$env:DB_NAME = $Src
+node scripts/migrate-preflight.mjs --expect-host=$env:PGHOST `
+    --expect-database=$Src --expect-environment=disposable   # PASS, fresh, 27 pending
+node scripts/migrate.mjs                                     # 27/27 applied
+node scripts/migrate-preflight.mjs --expect-host=$env:PGHOST `
+    --expect-database=$Src --expect-environment=disposable   # PASS, 0 pending
+#    + cross-check: all 27 ledger digests == manifest canonical LF digests.
+
+# 3. Seed source — marker M1BR-: 3 transfers.transfers rows across two
+#    random 800M-range accountable_institution_ids (mixed statuses);
+#    1 transfers.transfer_documents row (FK via the transfer's uuid id)
+#    with file_path/file_size/file_type pointing at a local synthetic
+#    artifact file whose sha256 is recorded.
+
+# 4. Snapshot source (saved to run log):
+#    - per-table row counts (all tables)
+#    - ordered content hash per seeded table (COPY ... ORDER BY pk TO STDOUT | sha256)
+#    - ledger export ORDER BY filename
+#    - extension inventory: SELECT extname, extversion FROM pg_extension ORDER BY extname
+#    - all pg_get_constraintdef + pg_get_indexdef output
+
+# 5. Dump (timed)
+$dumpMs = Measure-Command { Invoke-Libpq 'pg_dump' @(
+    '--format=custom', '--no-owner', '--no-acl', '-d', $Src,
+    '-f', "$env:TEMP\m1br.dump") }
+#    → exit 0; record $dumpMs.TotalSeconds + file size.
+
+# 6. Target extension prerequisites — pre-create exactly what step 4
+#    enumerated on the source, by name:
+Invoke-Psql $Dst 'CREATE EXTENSION IF NOT EXISTS "uuid-ossp"'
+#    (expected set: uuid-ossp — created by migrations 001/003; confirm
+#    against the recorded inventory, do not assume)
+
+# 7. Restore (fail-on-error, timed)
+$restoreMs = Measure-Command { Invoke-Libpq 'pg_restore' @(
+    '--no-owner', '--no-acl', '--exit_on_error',
+    '-d', $Dst, "$env:TEMP\m1br.dump") }
+#    → --exit_on_error aborts on first error; record $restoreMs.TotalSeconds;
+#      any error = stop + report, no retry-by-omission.
+
+# 8. Verify target against snapshots:
+#    a. Schema diff: Invoke-Libpq 'pg_dump' '--schema-only' on $Src and
+#       $Dst. Preserve both raw outputs in the run dir. Normalize by removing ONLY these known
+#       non-semantic line classes — banner comments (^--\s*(Dumped|pg_dump
+#       version|Started on|Completed on)), \connect/\restrict/\unrestrict
+#       lines, SET statements, SELECT pg_catalog.set_config — then compare
+#       as sorted line sets. Any residual difference is substantive → fail.
+#    b. Catalog parity: information_schema tables/columns,
+#       pg_get_constraintdef and pg_get_indexdef output identical.
+#    c. Extension parity: extname+extversion set identical to source.
+#    d. Per-table row counts equal; seeded-table content hashes equal.
+#    e. Ledger deep-equal: 27 rows identical including applied_at.
+#    f. $env:DB_NAME = $Dst; migrate-preflight on $Dst with all three
+#       --expect-* flags → PASS, 27 applied, 0 pending.
+#    g. node scripts/migrate.mjs on $Dst → 0 applied, all skipped
+#       (advisory-lock runner path works post-restore).
+#    h. FK spot-check: seeded transfer_documents row resolves to its
+#       transfer; artifact file sha256 unchanged.
+
+# 9. Cleanup: marker-scoped DELETE of M1BR- rows from $Src (children
+#    before parents); 0-residual check. Delete $env:PGPASSFILE, clear
+#    $env:DB_PASSWORD. Preserve the raw schema dumps, custom dump, run
+#    log, and BOTH databases as evidence unless drop is separately
+#    approved — they contain only synthetic and migration-seed data.
 ```
 
-**Separation of concerns:** the artifact file seeded in step 3 and
-checked in 8h is a *synthetic* local file with a recorded checksum — it
-verifies the DB-side metadata↔file linkage only. Real immutable-blob storage recovery is NOT
-rehearsed here and stays outstanding in §7.
+**Separation of concerns:** the artifact file in steps 3/8h is a
+*synthetic* local file with a recorded checksum — it verifies the
+DB-side metadata↔file linkage only. Real immutable-blob storage recovery
+is NOT rehearsed here and stays outstanding in §7.
 
 ## 6. Isolated PostgreSQL verification plan (prepared — do not run yet)
 
