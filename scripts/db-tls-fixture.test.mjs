@@ -13,7 +13,11 @@ const havePg = (() => {
   try { createRequire(import.meta.url)('pg'); return true } catch { return false }
 })()
 
-test('pg client TLS behaviour through resolveDbTls', { skip: !(haveOpenssl() && havePg) && 'needs openssl + pg' }, async (t) => {
+// Local runs may skip when the toolchain is absent; CI must have it.
+const missingPrereqs = !(haveOpenssl() && havePg)
+const skip = missingPrereqs && !process.env.CI && 'needs openssl + pg'
+
+test('pg client TLS behaviour through resolveDbTls', { skip }, async (t) => {
   const certs = generateTestCerts()
   const good = await startTlsServer(certs.good)
   const badName = await startTlsServer(certs.badName)

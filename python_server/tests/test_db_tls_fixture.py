@@ -4,9 +4,11 @@ Generates throwaway test certificates with the local openssl binary and
 serves a minimal Postgres SSLRequest negotiation + TLS endpoint locally.
 Clients connect through db._resolve_db_tls + asyncpg — the application's
 real TLS configuration path. No live credentials or production material.
-Skips cleanly without openssl or asyncpg.
+Skips cleanly without openssl or asyncpg on local runs; a missing
+prerequisite is a failure under CI.
 """
 
+import os
 import shutil
 import socket
 import ssl
@@ -17,14 +19,15 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-import db
-
 try:
     import asyncpg
+    import db
 except ImportError:  # pragma: no cover
     asyncpg = None
+    db = None
 
 OPENSSL = shutil.which("openssl")
+MISSING_PREREQS = OPENSSL is None or asyncpg is None
 
 
 def _openssl(*args):
@@ -103,10 +106,14 @@ def _settings(**kw):
     return SimpleNamespace(**base)
 
 
-@unittest.skipUnless(OPENSSL and asyncpg, "needs openssl and asyncpg")
+# Local runs skip without the toolchain; under CI a missing
+# prerequisite must fail loudly rather than skip.
+@unittest.skipUnless(not MISSING_PREREQS or os.environ.get("CI"), "needs openssl and asyncpg")
 class DbTlsFixtureTests(unittest.IsolatedAsyncioTestCase):
     @classmethod
     def setUpClass(cls):
+        if MISSING_PREREQS:
+            raise AssertionError("openssl and asyncpg are required in CI")
         cls.tmp = tempfile.TemporaryDirectory()
         cls.certs = _generate_certs(Path(cls.tmp.name))
 

@@ -61,3 +61,12 @@ jobs:
         run: node --test scripts/migrate.test.mjs
       - name: DB TLS resolver and fixture tests
         run: node --test scripts/db-tls.test.mjs scripts/db-tls-fixture.test.mjs
+      - name: Python 3.12
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0a869d7b9fc55bd98
+        with:
+          python-version: '3.12'
+      - name: Python DB TLS dependencies
+        run: pip install 'asyncpg==0.31.0' 'python-dotenv>=1'
+      - name: Python DB TLS resolver and fixture tests
+        working-directory: python_server
+        run: python -m unittest tests.test_db_ssl_context tests.test_db_tls_fixture
